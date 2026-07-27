@@ -7,7 +7,7 @@ return one compact, auditable packet for final review.**
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Apple silicon](https://img.shields.io/badge/Apple%20silicon-MLX-111111?logo=apple)](https://github.com/ml-explore/mlx)
-[![Tests](https://img.shields.io/badge/tests-85%20passed-2ea44f)](#testing)
+[![CI](https://github.com/fbzz/swarm-agents/actions/workflows/ci.yml/badge.svg)](https://github.com/fbzz/swarm-agents/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
