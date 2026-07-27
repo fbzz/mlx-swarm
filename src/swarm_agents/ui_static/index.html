@@ -1,0 +1,153 @@
+<!doctype html>
+<!-- @lat: [[UI]] -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Local operator cockpit for swarm runs">
+  <title>Swarm Work Cockpit</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#dag-panel">Skip to task graph</a>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+      <div>
+        <p class="eyebrow">Local execution surface</p>
+        <h1>Swarm Work Cockpit</h1>
+      </div>
+    </div>
+    <div class="topbar-status" aria-label="System and run status">
+      <div class="status-item">
+        <span class="status-label">Model</span>
+        <span id="model-status" class="status-value"><span class="status-dot pending"></span> Checking</span>
+      </div>
+      <div class="status-item">
+        <span class="status-label">Run</span>
+        <span id="run-status" class="status-value"><span class="status-dot pending"></span> No run</span>
+      </div>
+      <div class="status-item"><span class="status-label">Elapsed</span><strong id="metric-elapsed">—</strong></div>
+      <div class="status-item"><span class="status-label">Local tokens</span><strong id="metric-tokens">—</strong></div>
+      <div class="status-item compact-only"><span class="status-label">Calls</span><strong id="metric-calls">—</strong></div>
+      <div class="status-item compact-only"><span class="status-label">Loads</span><strong id="metric-loads">—</strong></div>
+    </div>
+  </header>
+
+  <main class="workspace">
+    <aside class="left-rail" aria-label="Plans and run history">
+      <section class="panel launch-panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Approved work</p><h2>Launch plan</h2></div>
+          <span id="plan-count" class="count-badge">0</span>
+        </div>
+        <form id="launch-form">
+          <label for="plan-select">Frontier-authored plan</label>
+          <select id="plan-select" required aria-describedby="plan-description">
+            <option value="">Loading plans…</option>
+          </select>
+          <p id="plan-description" class="field-hint">Select a validated plan from the configured directory.</p>
+          <div class="launch-controls">
+            <div>
+              <label for="max-repair">Repair cap</label>
+              <select id="max-repair">
+                <option value="0">0</option><option value="1">1</option>
+                <option value="2" selected>2</option><option value="3">3</option>
+                <option value="4">4</option><option value="5">5</option>
+              </select>
+            </div>
+            <button id="launch-button" class="button primary" type="submit">
+              <span>Launch run</span><span aria-hidden="true">↗</span>
+            </button>
+          </div>
+        </form>
+        <div id="plan-warning" class="inline-alert warning" hidden></div>
+      </section>
+
+      <section class="panel history-panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Immutable history</p><h2>Runs</h2></div>
+          <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh runs" title="Refresh runs">↻</button>
+        </div>
+        <label class="search-field" for="run-search">
+          <span aria-hidden="true">⌕</span>
+          <input id="run-search" type="search" placeholder="Search plan or session" autocomplete="off">
+        </label>
+        <div id="run-list" class="run-list" aria-live="polite"></div>
+      </section>
+    </aside>
+
+    <section id="dag-panel" class="panel dag-panel" tabindex="-1" aria-labelledby="dag-title">
+      <div id="empty-state" class="empty-state">
+        <div class="empty-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
+        <p class="eyebrow">Operator ready</p>
+        <h2>Select a run to inspect its execution graph</h2>
+        <p>Launch an approved plan or choose an immutable run from the history rail.</p>
+      </div>
+
+      <div id="run-workspace" hidden>
+        <header class="run-heading">
+          <div>
+            <div class="run-kicker">
+              <span id="run-state-chip" class="state-chip pending">pending</span>
+              <span id="run-session-id" class="mono muted"></span>
+            </div>
+            <h2 id="dag-title">Run</h2>
+            <p id="run-objective" class="run-objective"></p>
+          </div>
+          <div class="run-actions">
+            <button id="resume-button" class="button secondary" type="button" hidden>Resume</button>
+            <button id="retry-button" class="button secondary" type="button" hidden>Retry as new run</button>
+          </div>
+        </header>
+        <div class="run-progress" aria-label="Task completion progress">
+          <div class="progress-track"><span id="progress-fill"></span></div>
+          <span id="progress-label">0 / 0 complete</span>
+        </div>
+        <div class="graph-toolbar">
+          <div><p class="eyebrow">Dependency execution</p><h3>Task DAG</h3></div>
+          <div class="legend" aria-label="Task state legend">
+            <span><i class="pending"></i>Pending</span><span><i class="running"></i>Running</span>
+            <span><i class="completed"></i>Complete</span><span><i class="rejected"></i>Rejected</span>
+            <span><i class="failed"></i>Failed</span><span><i class="blocked"></i>Blocked</span>
+          </div>
+        </div>
+        <div id="dag" class="dag" role="group" aria-label="Task dependency graph"></div>
+        <footer id="frontier-surface" class="frontier-surface" hidden>
+          <div>
+            <span class="frontier-icon" aria-hidden="true">F</span>
+            <div><p class="eyebrow">Final review surface</p><strong>Frontier packet ready</strong></div>
+          </div>
+          <span id="frontier-usage" class="mono"></span>
+        </footer>
+      </div>
+    </section>
+
+    <aside class="panel inspector" aria-labelledby="inspector-title">
+      <div id="inspector-empty" class="inspector-empty">
+        <span aria-hidden="true">↖</span>
+        <h2 id="inspector-title">Task inspector</h2>
+        <p>Select a node to inspect its contract, output, gate evidence, and runtime statistics.</p>
+      </div>
+      <div id="inspector-content" hidden>
+        <header class="inspector-heading">
+          <div><p id="task-role" class="eyebrow"></p><h2 id="task-title">Task</h2></div>
+          <span id="task-state-chip" class="state-chip pending">pending</span>
+        </header>
+        <div class="tab-list" role="tablist" aria-label="Task details">
+          <button id="tab-overview" role="tab" aria-selected="true" aria-controls="tab-panel" data-tab="overview">Overview</button>
+          <button id="tab-output" role="tab" aria-selected="false" aria-controls="tab-panel" data-tab="output">Output</button>
+          <button id="tab-gate" role="tab" aria-selected="false" aria-controls="tab-panel" data-tab="gate">Gate</button>
+          <button id="tab-runtime" role="tab" aria-selected="false" aria-controls="tab-panel" data-tab="runtime">Runtime</button>
+        </div>
+        <div id="tab-panel" class="tab-panel" role="tabpanel" tabindex="0"></div>
+      </div>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

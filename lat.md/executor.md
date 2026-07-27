@@ -1,0 +1,50 @@
+# Executor
+
+DAG executor — runs tasks in dependency order with gate-feedback repair loops.
+
+The executor in [[src/swarm_agents/executor.py#execute_plan]] orchestrates the full plan execution.
+
+## Execution Flow
+
+1. **Initialize session**: Create or resume a [[Session]].
+2. **Topological sort**: Group tasks by dependency level via `plan.topological_order()`.
+3. **For each level**:
+   a. Block tasks whose dependencies were rejected, failed, or blocked.
+   b. Filter out already-completed tasks and chunk the rest by `maxWorkers`.
+   c. Mark runnable tasks as "running".
+   d. Compose prompts using [[Prompting|compose_prompt]] with successful dependency outputs.
+   e. Validate prompt lengths against `maxPromptCharacters`.
+   f. Call the persistent [[Backend]].
+   g. Process outputs: evaluate [[Gates]], normalize, update session.
+   h. **Repair loop**: For rejected tasks within both task and CLI repair caps, compose repair prompts with [[Gates#Gate Feedback]].
+4. **Final status**: "completed" if all pass, "failed" if execution failed, "partial" otherwise.
+5. **Frontier handoff**: Persist one compact `frontier-result.json` for final frontier review.
+
+See [[src/swarm_agents/executor.py#execute_plan]].
+
+## Repair Loop
+
+After initial generation, rejected tasks with remaining task-level and global `--max-repair` budget enter the repair loop:
+
+1. Collect all rejected tasks with remaining repair budget.
+2. Compose repair prompts with [[Gates#Gate Feedback]] and previous output.
+3. Run repair batch through [[Backend|generate_batch]].
+4. Process outputs and evaluate gates again.
+5. Repeat until all pass or budget exhausted.
+
+See [[src/swarm_agents/executor.py#_process_task_output]].
+
+## Output Processing
+
+`_process_task_output` handles each worker's output:
+1. Evaluate the gate (or auto-pass if no gate).
+2. Normalize output (strip preamble, code fences).
+3. Update session state with status, output, gate result.
+
+## Batch Records
+
+Each bounded chunk is recorded in the session's `batches` array with:
+- Level index, chunk index, phase, task IDs.
+- Start/finish timestamps.
+- Generation statistics from the backend.
+- Repair round details and real elapsed timing.

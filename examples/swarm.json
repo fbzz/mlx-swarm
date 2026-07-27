@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "model": {
+    "repository": "mlx-community/Qwen3-4B-4bit",
+    "revision": "",
+    "localPath": ""
+  },
+  "batch": {
+    "maxWorkers": 32,
+    "prefillStepSize": 512,
+    "maxPromptCharacters": 120000
+  },
+  "artifacts": ".swarm/runs",
+  "enableThinking": false,
+  "seed": 20260727
+}

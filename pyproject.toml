@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "swarm-agents"
+version = "0.1.0"
+description = "Run bounded DAGs of local MLX agents with deterministic gates and durable sessions"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+keywords = ["agents", "mlx", "local-llm", "dag", "apple-silicon"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: MacOS X",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "mlx>=0.31.2",
+    "mlx-lm>=0.31.2",
+    "huggingface-hub>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+swarm = "swarm_agents.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/fbzz/swarm-agents"
+Repository = "https://github.com/fbzz/swarm-agents.git"
+Issues = "https://github.com/fbzz/swarm-agents/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+swarm_agents = ["ui_static/*.html", "ui_static/*.css", "ui_static/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

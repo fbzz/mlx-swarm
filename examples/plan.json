@@ -1,0 +1,98 @@
+{
+  "schemaVersion": 1,
+  "planId": "example-impl-test-review",
+  "objective": "Implement a Python function that checks whether a string is a palindrome, write tests for it, and review the implementation.",
+  "context": {
+    "objective": "Produce a correct, tested, and reviewed palindrome checker module.",
+    "authoritativeSources": [
+      {
+        "label": "Interface Contract",
+        "content": "Target module: is_palindrome_module.py\n\ndef is_palindrome(s: str) -> bool: '''Return True if s reads the same forwards and backwards, ignoring case and non-alphanumeric characters.'''"
+      }
+    ],
+    "constraints": [
+      "Must handle empty strings (return True).",
+      "Must ignore case and non-alphanumeric characters.",
+      "Must be pure Python, no external dependencies."
+    ],
+    "rejectionCriteria": [
+      "Normalized artifact contains prose outside the requested source or JSON.",
+      "Output does not define is_palindrome.",
+      "Output uses external libraries."
+    ],
+    "outputProtocol": "Return only the requested artifact."
+  },
+  "tasks": [
+    {
+      "id": "implement",
+      "role": "implementation",
+      "prompt": "Implement the is_palindrome function per the interface contract above, including its exact contract docstring. Return only the Python source code.",
+      "outputProtocol": "Return complete Python source only — no prose or preamble.",
+      "gate": {
+        "requiredPatterns": [
+          { "id": "has-def", "pattern": "def is_palindrome\\(" },
+          { "id": "has-return", "pattern": "return " },
+          { "id": "has-contract-docstring", "pattern": "Return True if s reads the same forwards and backwards" }
+        ],
+        "forbiddenPatterns": [
+          { "id": "no-import", "pattern": "^import |^from " }
+        ],
+        "maxCharacters": 5000,
+        "format": "text",
+        "stripSingleCodeFence": true,
+        "pythonSyntax": true
+      },
+      "maxRepairAttempts": 2,
+      "generationOverride": {
+        "max_tokens": 300
+      }
+    },
+    {
+      "id": "test",
+      "role": "test",
+      "prompt": "Write a pytest test suite for the is_palindrome function. The implementation from the previous worker is provided as DEPENDENCY OUTPUT. Import it from is_palindrome_module. Use exactly these cases and expected values, without inventing additional cases: empty string -> True; racecar -> True; RaceCar -> True; A man, a plan, a canal: Panama -> True; Hello, World! -> False. Return only the Python test code.",
+      "outputProtocol": "Return complete pytest source only — no prose or preamble.",
+      "dependsOn": ["implement"],
+      "gate": {
+        "requiredPatterns": [
+          { "id": "has-test-def", "pattern": "def test_" },
+          { "id": "has-assert", "pattern": "assert " }
+        ],
+        "forbiddenPatterns": [],
+        "maxCharacters": 5000,
+        "format": "text",
+        "stripSingleCodeFence": true,
+        "pythonSyntax": true
+      },
+      "maxRepairAttempts": 2,
+      "generationOverride": {
+        "max_tokens": 600
+      }
+    },
+    {
+      "id": "review",
+      "role": "review",
+      "prompt": "Review the is_palindrome implementation for correctness, edge cases, and style. Return a brief JSON object with keys: {\"verdict\": \"approve|reject\", \"issues\": [...], \"suggestions\": [...]}.",
+      "outputProtocol": "Return exactly one JSON object and no surrounding prose.",
+      "dependsOn": ["implement"],
+      "gate": {
+        "requiredPatterns": [
+          { "id": "has-verdict", "pattern": "\"verdict\"" }
+        ],
+        "forbiddenPatterns": [],
+        "maxCharacters": 3000,
+        "format": "json",
+        "stripSingleCodeFence": true,
+        "jsonRequiredKeys": ["verdict", "issues", "suggestions"],
+        "jsonAllowedKeys": ["verdict", "issues", "suggestions"],
+        "jsonFieldEnums": {
+          "verdict": ["approve", "reject"]
+        }
+      },
+      "maxRepairAttempts": 1,
+      "generationOverride": {
+        "max_tokens": 250
+      }
+    }
+  ]
+}

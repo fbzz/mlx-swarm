@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Environments and local tooling
+.venv/
+venv/
+.env
+.env.*
+.DS_Store
+
+# Local models and generated run artifacts
+models/
+.swarm/
+**/.swarm/
+
+# Editor state
+.idea/
+.vscode/
+*.swp
