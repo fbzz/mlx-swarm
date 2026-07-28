@@ -18,9 +18,11 @@ from mlx_swarm.evaluation import (
     aggregate_results,
     bootstrap_mean_interval,
     container_path,
+    copy_fixed_test_support,
     docker_runtime_argv,
     empty_local_usage,
     evaluation_write_roots,
+    evaluation_case,
     exclusive_case_lock,
     inspect_container,
     is_dependency_or_project_install,
@@ -403,6 +405,98 @@ def test_selection_is_seeded_disjoint_balanced_and_project_bounded(
         project: sum(case["project"] == project for case in measured)
         for project in ("alpha", "beta", "gamma")
     } == {"alpha": 2, "beta": 2, "gamma": 2}
+
+
+def test_evaluation_case_has_stable_objective() -> None:
+    case = evaluation_case(_case("alpha-1", "alpha", "small"), "pilot")
+    assert case["phase"] == "pilot"
+    assert "alpha-1" in case["objective"]
+    with pytest.raises(EvaluationError, match="phase"):
+        evaluation_case(case, "warmup")
+
+
+def test_prepare_replaces_failed_oracle_candidates_before_freeze(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    store = EvaluationStore(config, root=tmp_path / "evaluations")
+    candidates = [
+        _case(f"{project}-{index}", project, stratum)
+        for project in ("alpha", "beta", "gamma")
+        for index, stratum in enumerate(
+            ("small", "medium", "large", "small", "medium", "large"),
+            start=1,
+        )
+    ]
+    failed: list[str] = []
+
+    class Runner:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def prepare_case(
+            self,
+            evaluation_dir: Path,
+            case: dict[str, Any],
+            *,
+            retain_mirror: bool = False,
+        ) -> dict[str, Any]:
+            case_dir = evaluation_dir / "cases" / case["caseId"]
+            case_dir.mkdir(parents=True, exist_ok=True)
+            if not failed:
+                failed.append(case["caseId"])
+                raise EvaluationError("buggy snapshot passed")
+            (case_dir / "runtime.json").write_text("{}", encoding="utf-8")
+            return {}
+
+    def clone(_profile: Any, target: Path) -> Path:
+        target.mkdir(parents=True)
+        return target
+
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.mlx_swarm_source_revision",
+        lambda: {
+            "root": str(tmp_path),
+            "commit": "a" * 40,
+            "dirty": False,
+        },
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.inspect_container",
+        lambda _profile: {"digest": _profile.container.digest},
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.enumerate_bugsinpy_candidates",
+        lambda *args: list(candidates),
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.resolve_case_commits",
+        lambda *args: None,
+    )
+    monkeypatch.setattr("mlx_swarm.evaluation.EvaluationRunner", Runner)
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.environment_fingerprint",
+        lambda *args, **kwargs: {
+            "profileSha256": "digest",
+            "mlxSwarmCommit": "a" * 40,
+        },
+    )
+
+    detail = store.prepare(profile, clone=clone)
+    frozen_ids = {
+        case["caseId"] for case in detail["suite"]["cases"]
+    }
+    assert failed[0] not in frozen_ids
+    exclusions = json.loads(
+        (
+            store._dir(detail["evaluation"]["evaluationId"])
+            / "preparation-exclusions.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert exclusions["cases"][0]["caseId"] == failed[0]
+    assert len(frozen_ids) == 9
 
 
 def test_codex_usage_aggregates_every_completed_turn() -> None:
@@ -870,6 +964,44 @@ def test_repository_symlinks_remain_internal(tmp_path: Path) -> None:
     (repository / "escape").symlink_to("../../outside")
     with pytest.raises(EvaluationError, match="escapes"):
         validate_repository_symlinks(repository)
+
+
+def test_fixed_test_support_copies_new_helpers_without_future_source(
+    tmp_path: Path,
+) -> None:
+    fixed = tmp_path / "fixed"
+    buggy = tmp_path / "buggy"
+    (fixed / "tests" / "helpers").mkdir(parents=True)
+    (buggy / "tests").mkdir(parents=True)
+    (fixed / "tests" / "test_bug.py").write_text(
+        "from .helpers import value\n",
+        encoding="utf-8",
+    )
+    (fixed / "tests" / "helpers" / "__init__.py").write_text(
+        "value = 1\n",
+        encoding="utf-8",
+    )
+    (fixed / "tests" / "existing.py").write_text(
+        "value = 'future'\n",
+        encoding="utf-8",
+    )
+    (buggy / "tests" / "existing.py").write_text(
+        "value = 'buggy'\n",
+        encoding="utf-8",
+    )
+    (fixed / "src").mkdir()
+    (fixed / "src" / "future.py").write_text(
+        "secret = True\n",
+        encoding="utf-8",
+    )
+
+    copy_fixed_test_support(fixed, buggy, ["tests/test_bug.py"])
+    assert (buggy / "tests" / "test_bug.py").is_file()
+    assert (buggy / "tests" / "helpers" / "__init__.py").is_file()
+    assert (
+        buggy / "tests" / "existing.py"
+    ).read_text(encoding="utf-8") == "value = 'buggy'\n"
+    assert not (buggy / "src" / "future.py").exists()
 
 
 @pytest.mark.parametrize(

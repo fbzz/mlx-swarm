@@ -9,9 +9,10 @@ See [[src/mlx_swarm/evaluation.py]].
 `mlx-swarm eval prepare PROFILE` clones the pinned BugsInPy metadata revision,
 filters unsupported cases, and freezes the calibration and measured cases.
 
-The committed profile uses seed `20260728`, six projects, no more than five
-measured cases per project, and balanced reference patch-size strata. It
-selects six calibration cases and thirty measured cases.
+The committed profile uses seed `20260728`, a seven-project allowlist, at
+least six represented projects, no more than five measured cases per project,
+and balanced reference patch-size strata. It selects six calibration cases
+and thirty measured cases.
 
 The frozen suite contains only metadata needed to reproduce the study. Fixed
 patch text is never copied into an arm workspace or model prompt. Every arm
@@ -19,6 +20,8 @@ starts from a history-free repository containing only the buggy tree and the
 fixed revision's designated tests.
 
 Preparation requires a clean MLX Swarm checkout and records its source commit.
+Every selected case must prove buggy-fails and fixed-passes before freezing;
+failed candidates are recorded, excluded, and deterministically replaced.
 After selection, the BugsInPy metadata clone and project mirrors are deleted.
 Fixed-revision compilation bypasses the shared ccache so fixed objects are not
 retained for model execution.

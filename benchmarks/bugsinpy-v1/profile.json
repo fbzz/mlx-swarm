@@ -21,7 +21,8 @@
       "luigi",
       "scrapy",
       "sanic",
-      "tornado"
+      "tornado",
+      "PySnooper"
     ]
   },
   "storage": {
@@ -29,8 +30,8 @@
     "minFreeBytes": 16106127360
   },
   "container": {
-    "image": "mlx-swarm-bugsinpy-amd64:11c5f1eea954",
-    "digest": "sha256:f31e283b5e5eb3c81e88673b749aaefb323fda0c6a527b5339123890155e8995",
+    "image": "mlx-swarm-bugsinpy-amd64:11c5f1eea954-py37",
+    "digest": "sha256:01da253f9c61f30b389dc7c5cb7e741e03d4daf386405d62f0b768bb81dff07a",
     "platform": "linux/amd64"
   },
   "frontier": {
@@ -92,7 +93,10 @@
       "pytest-sanic",
       "websockets"
     ],
-    "tornado": []
+    "tornado": [],
+    "PySnooper": [
+      "pytest"
+    ]
   },
   "dependencyPins": {
     "black": [],
@@ -100,7 +104,18 @@
     "luigi": [],
     "scrapy": [],
     "sanic": [],
-    "tornado": []
+    "tornado": [],
+    "PySnooper": [
+      "pytest==5.4.3",
+      "attrs==19.3.0",
+      "more-itertools==8.3.0",
+      "packaging==20.4",
+      "pluggy==0.13.1",
+      "py==1.8.1",
+      "pyparsing==2.4.7",
+      "six==1.15.0",
+      "wcwidth==0.1.9"
+    ]
   },
   "local": {
     "maxRepair": 2

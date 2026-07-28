@@ -917,6 +917,23 @@ def select_cases(
     return pilot, measured
 
 
+def evaluation_case(
+    candidate: dict[str, Any],
+    phase: str,
+) -> dict[str, Any]:
+    if phase not in {"pilot", "measured"}:
+        raise EvaluationError("Evaluation case phase is invalid.")
+    return {
+        **candidate,
+        "phase": phase,
+        "objective": (
+            f"Repair BugsInPy case {candidate['caseId']} so every "
+            "frozen verification command passes without modifying "
+            "tests or benchmark evidence."
+        ),
+    }
+
+
 def parse_codex_usage_jsonl(text: str) -> dict[str, Any]:
     """Aggregate exact usage from every Codex turn.completed JSONL event."""
     prompt_tokens = 0
@@ -1527,23 +1544,71 @@ class EvaluationStore:
         clone_fn = clone or clone_benchmark_metadata
         metadata_root = clone_fn(profile, evaluation_dir / "benchmark")
         candidates = enumerate_bugsinpy_candidates(metadata_root, profile)
-        pilot, measured = select_cases(candidates, profile)
         resolve_case_commits(
-            [*pilot, *measured],
+            candidates,
             evaluation_dir / "cache" / "repositories",
         )
-        cases: list[dict[str, Any]] = []
-        for phase, values in (("pilot", pilot), ("measured", measured)):
-            for value in values:
-                cases.append({
-                    **value,
-                    "phase": phase,
-                    "objective": (
-                        f"Repair BugsInPy case {value['caseId']} so every "
-                        "frozen verification command passes without modifying "
-                        "tests or benchmark evidence."
-                    ),
-                })
+        runner = EvaluationRunner(self.config, self, profile)
+        excluded: list[dict[str, Any]] = []
+        while True:
+            pilot, measured = select_cases(candidates, profile)
+            cases = [
+                evaluation_case(value, phase)
+                for phase, values in (
+                    ("pilot", pilot),
+                    ("measured", measured),
+                )
+                for value in values
+            ]
+            failures: list[dict[str, Any]] = []
+            for case in cases:
+                try:
+                    runner.prepare_case(
+                        evaluation_dir,
+                        case,
+                        retain_mirror=True,
+                    )
+                    self._check_storage(profile)
+                except Exception as exc:
+                    failures.append({
+                        "caseId": case["caseId"],
+                        "reason": str(exc)[:8_000],
+                    })
+                    shutil.rmtree(
+                        evaluation_dir / "cases" / case["caseId"],
+                        ignore_errors=True,
+                    )
+            if not failures:
+                break
+            failed_ids = {value["caseId"] for value in failures}
+            excluded.extend(failures)
+            candidates = [
+                value
+                for value in candidates
+                if value["caseId"] not in failed_ids
+            ]
+        selected_ids = {case["caseId"] for case in cases}
+        cases_root = evaluation_dir / "cases"
+        if cases_root.is_dir():
+            for case_dir in cases_root.iterdir():
+                if (
+                    case_dir.is_dir()
+                    and case_dir.name not in selected_ids
+                ):
+                    shutil.rmtree(case_dir)
+        _atomic_json(
+            evaluation_dir / "preparation-exclusions.json",
+            {
+                "schemaVersion": 1,
+                "cases": excluded,
+                "recordedAt": utc_now(),
+            },
+        )
+        source_after = mlx_swarm_source_revision()
+        if source_after != source:
+            raise EvaluationError(
+                "MLX Swarm source changed while preparing the evaluation."
+            )
         suite = {
             "schemaVersion": SUITE_SCHEMA_VERSION,
             "suiteId": evaluation_id,
@@ -1968,6 +2033,8 @@ class EvaluationRunner:
         self,
         evaluation_dir: Path,
         case: dict[str, Any],
+        *,
+        retain_mirror: bool = False,
     ) -> dict[str, Any]:
         """Create a history-free case snapshot and prove its oracle."""
         started = time.perf_counter()
@@ -2052,15 +2119,11 @@ class EvaluationRunner:
         _git_worktree_add(mirror, buggy_checkout, case["buggyCommit"])
         _git_worktree_add(mirror, fixed_checkout, case["fixedCommit"])
         try:
-            for relative in case["testFiles"]:
-                source = fixed_checkout / relative
-                target = buggy_checkout / relative
-                if not source.is_file():
-                    raise EvaluationError(
-                        f"Fixed test file is missing: {relative}"
-                    )
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
+            copy_fixed_test_support(
+                fixed_checkout,
+                buggy_checkout,
+                case["testFiles"],
+            )
             base_snapshot = case_root / "base"
             if base_snapshot.exists():
                 raise EvaluationError("Case base snapshot already exists.")
@@ -2182,7 +2245,8 @@ class EvaluationRunner:
         finally:
             _git_worktree_remove(mirror, buggy_checkout)
             _git_worktree_remove(mirror, fixed_checkout)
-            shutil.rmtree(mirror, ignore_errors=True)
+            if not retain_mirror:
+                shutil.rmtree(mirror, ignore_errors=True)
             shutil.rmtree(work_root, ignore_errors=True)
 
     def _prepare_environment(
@@ -3813,6 +3877,53 @@ def fresh_arm_repository(base: Path, destination: Path) -> Path:
     validate_repository_symlinks(base)
     shutil.copytree(base, destination, symlinks=True)
     return destination
+
+
+def copy_fixed_test_support(
+    fixed_checkout: Path,
+    buggy_checkout: Path,
+    test_files: Sequence[str],
+) -> None:
+    """Copy designated fixed tests and newly introduced Python support files."""
+    copied: set[Path] = set()
+    copied_bytes = 0
+    for relative_text in test_files:
+        relative = Path(relative_text)
+        source = fixed_checkout / relative
+        if not source.is_file():
+            raise EvaluationError(
+                f"Fixed test file is missing: {relative_text}"
+            )
+        target = buggy_checkout / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+        copied.add(relative)
+        copied_bytes += source.stat().st_size
+        if not any(
+            part.lower() in {"test", "tests", "testing"}
+            for part in relative.parent.parts
+        ):
+            continue
+        support_root = source.parent
+        for support in support_root.rglob("*.py"):
+            support_relative = support.relative_to(fixed_checkout)
+            support_target = buggy_checkout / support_relative
+            if (
+                support_relative in copied
+                or (
+                    support_target.exists()
+                    and support.name not in {"__init__.py", "conftest.py"}
+                )
+            ):
+                continue
+            copied_bytes += support.stat().st_size
+            if len(copied) >= 512 or copied_bytes > 10_000_000:
+                raise EvaluationError(
+                    "Fixed test support exceeds the preparation limit."
+                )
+            support_target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(support, support_target)
+            copied.add(support_relative)
 
 
 def validate_repository_symlinks(repository: Path) -> None:

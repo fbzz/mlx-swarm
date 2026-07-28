@@ -201,6 +201,9 @@ Codex usage capture, storage enforcement, and immutable result serialization.
 Preparation also requires a clean MLX Swarm source checkout so the recorded
 commit identifies the exact harness. The metadata checkout, upstream project
 mirrors, and fixed-validation tree are removed before either model arm starts.
+Every selected case is oracle-preflighted during preparation; a case that does
+not prove buggy-fails/fixed-passes is recorded, excluded, and deterministically
+replaced before the suite is frozen.
 Historical compiled projects use a bounded four-job ccache during unscored
 preparation; fixed-revision objects are not admitted to that shared cache.
 Inspect progress or export sanitized evidence and the generated tables:
