@@ -421,8 +421,8 @@ failure behavior remain fast and reproducible:
 python -m pytest -q
 ```
 
-Current release baseline: **132 passed** when localhost sockets are available.
-In a socket-restricted sandbox, the same suite reports **126 passed, 6 skipped**;
+Current release baseline: **133 passed** when localhost sockets are available.
+In a socket-restricted sandbox, the same suite reports **127 passed, 6 skipped**;
 the skipped cases are the live HTTP-server checks.
 
 The screenshot above is a real completed local run on an Apple M4 Pro: three
