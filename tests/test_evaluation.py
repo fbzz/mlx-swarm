@@ -24,6 +24,7 @@ from mlx_swarm.evaluation import (
     evaluation_write_roots,
     evaluation_case,
     exclusive_case_lock,
+    fresh_arm_repository,
     inspect_codex_version,
     inspect_container,
     is_dependency_or_project_install,
@@ -37,6 +38,7 @@ from mlx_swarm.evaluation import (
     profile_payload,
     remove_sensitive_preparation_sources,
     render_readme_economics,
+    run_command,
     run_swarm_with_synthetic_operator,
     sanitize_suite,
     select_cases,
@@ -287,6 +289,48 @@ def test_codex_version_pin_and_constraint_chunking(
     chunks = split_constraint_text(packet)
     assert "".join(chunks) == packet
     assert all(0 < len(chunk) <= 4_000 for chunk in chunks)
+
+
+def test_fresh_arm_repository_refreshes_copied_git_index(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base"
+    base.mkdir()
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.name", "Benchmark"],
+        ["git", "config", "user.email", "benchmark@example.invalid"],
+    ):
+        assert run_command(argv, cwd=base, timeout=30).returncode == 0
+    source = base / "module.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    assert run_command(
+        ["git", "add", "module.py"],
+        cwd=base,
+        timeout=30,
+    ).returncode == 0
+    assert run_command(
+        ["git", "commit", "-qm", "base"],
+        cwd=base,
+        timeout=30,
+    ).returncode == 0
+
+    arm = fresh_arm_repository(base, tmp_path / "arm")
+    (arm / "module.py").write_text("value = 2\n", encoding="utf-8")
+    patch = run_command(
+        ["git", "diff", "HEAD", "--"],
+        cwd=arm,
+        timeout=30,
+    ).stdout
+    oracle = fresh_arm_repository(base, tmp_path / "oracle")
+    applied = run_command(
+        ["git", "apply", "--index", "-"],
+        cwd=oracle,
+        timeout=30,
+        input_text=patch,
+    )
+    assert applied.returncode == 0
+    assert (oracle / "module.py").read_text(encoding="utf-8") == "value = 2\n"
 
 
 def test_source_revision_uses_package_checkout_and_reports_dirty(

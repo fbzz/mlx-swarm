@@ -2897,15 +2897,10 @@ class EvaluationRunner:
             input_text=diff,
         )
         if apply_result.returncode != 0:
-            return {
-                "passed": False,
-                "exitCode": apply_result.returncode,
-                "evidence": (
-                    "Independent oracle could not apply candidate patch: "
-                    + (apply_result.stderr or apply_result.stdout)
-                )[:MAX_LOG_BYTES],
-                "elapsedSeconds": apply_result.elapsed_seconds,
-            }
+            raise EvaluationError(
+                "Independent oracle could not apply candidate patch: "
+                + (apply_result.stderr or apply_result.stdout)
+            )
         return run_case_verifier(
             Path(runtime["verifierManifest"]),
             repository,
@@ -2982,6 +2977,15 @@ def validate_pilot_evidence(
         if result["frontierUsage"]["usageStatus"] != "reported":
             raise EvaluationError(
                 "Pilot usage capture is incomplete; measured work is locked."
+            )
+        if (
+            result["patch"]["sha256"] is not None
+            and str(result["oracle"]["evidence"]).startswith(
+                "Independent oracle could not apply candidate patch:"
+            )
+        ):
+            raise EvaluationError(
+                "Pilot oracle isolation failed; measured work is locked."
             )
     for case in cases:
         runtime_path = (
@@ -3925,6 +3929,14 @@ def fresh_arm_repository(base: Path, destination: Path) -> Path:
         shutil.rmtree(destination)
     validate_repository_symlinks(base)
     shutil.copytree(base, destination, symlinks=True)
+    # A copied Git index retains the source checkout's inode/stat cache. Git
+    # can therefore reject an otherwise exact clean-base patch with "does not
+    # match index" until the destination index is refreshed.
+    _run_checked(
+        ["git", "update-index", "--refresh"],
+        cwd=destination,
+        timeout=60,
+    )
     return destination
 
 
