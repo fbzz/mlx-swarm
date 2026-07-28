@@ -40,6 +40,7 @@ from mlx_swarm.evaluation import (
     fresh_arm_repository,
     inspect_codex_version,
     inspect_container,
+    install_frozen_prompt_replay,
     is_dependency_or_project_install,
     load_evaluation_profile,
     local_replay_promotion_gate,
@@ -68,6 +69,7 @@ from mlx_swarm.evaluation import (
     validate_repository_symlinks,
     validate_resolved_dependencies,
 )
+from mlx_swarm.session import Session
 
 
 def _write_config(tmp_path: Path) -> Path:
@@ -1674,6 +1676,42 @@ def test_local_replay_gate_requires_every_calibration_case() -> None:
     gate = local_replay_promotion_gate(required, both_pass)
     assert gate["status"] == "passed"
     assert gate["passedCases"] == required
+
+
+def test_frozen_prompt_replay_copies_exact_digest_bound_prompt(
+    tmp_path: Path,
+) -> None:
+    prompt = "EXACT FRONTIER-AUTHORED WORKER PROMPT"
+    digest = hashlib.sha256(prompt.encode()).hexdigest()
+    attempt = tmp_path / "source-attempt.json"
+    attempt.write_text(json.dumps({
+        "taskId": "repair",
+        "prompt": prompt,
+        "promptSha256": digest,
+    }), encoding="utf-8")
+    plan = Plan(
+        source=tmp_path / "plan.json",
+        plan_id="prompt-replay",
+        objective="Replay one prompt",
+        context=None,
+        tasks=(TaskDef(
+            id="repair",
+            role="implementation",
+            prompt="unused",
+        ),),
+        raw={},
+    )
+    session = Session(tmp_path / "session", plan)
+
+    install_frozen_prompt_replay(session, [{
+        "taskId": "repair",
+        "promptSha256": digest,
+        "path": str(attempt),
+    }])
+
+    assert session.replay_prompt("repair") == prompt
+    copied = session.dir / "prompt-replay" / "repair.txt"
+    assert copied.read_text(encoding="utf-8") == prompt
 
 
 def test_evaluation_write_roots_exclude_tests_docs_dependencies_and_hidden(

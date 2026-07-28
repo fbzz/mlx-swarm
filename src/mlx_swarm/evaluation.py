@@ -6790,6 +6790,16 @@ def _exclusive_json(path: Path, value: Any) -> None:
         handle.write("\n")
 
 
+def _exclusive_text(path: Path, value: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError as exc:
+        raise EvaluationError(f"Evidence already exists: {path}") from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(value)
+
+
 def _object(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise EvaluationError(f"{name} must be an object.")
