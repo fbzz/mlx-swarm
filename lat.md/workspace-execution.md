@@ -19,8 +19,10 @@ A schema-v2 config declares:
 
 MLX Swarm discovers the nearest Git top-level above the config directory.
 Workspace readiness fails if no repository exists, the artifacts/worktree root
-is tracked and unignored, or Git config declares external clean/smudge/process
-filters, diff commands, or text conversion commands.
+is tracked and unignored, or repository-local Git config declares external
+clean/smudge/process filters, diff commands, or text conversion commands.
+Internal Git subprocesses ignore global/system Git configuration and inherited
+`GIT_*` overrides.
 
 The execution digest covers the canonical plan SHA-256, resolved Git root, base
 HEAD SHA, configured write-root snapshot, referenced profile definitions, and

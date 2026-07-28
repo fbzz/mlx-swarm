@@ -321,7 +321,8 @@ worktree, and the branch remains.
 ### Diff boundary
 
 Traversal, binary metadata, unapproved paths, symlink traversal, submodule
-modes, stale lineage, and external Git drivers are rejected. Fixed
+modes, stale lineage, and repository-local external Git drivers are rejected.
+Global/system Git drivers and inherited `GIT_*` overrides are disabled. Fixed
 `git apply --check` failures enter the bounded local repair loop.
 
 ### Human decisions and recovery

@@ -657,6 +657,33 @@ def test_workspace_readiness_rejects_external_diff_driver(
         execution_preview(config, load_plan(_plan_file(repo), config))
 
 
+def test_workspace_disables_global_external_git_drivers(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    global_config = tmp_path / "global.gitconfig"
+    global_config.write_text(
+        "[filter \"lfs\"]\n"
+        "\tclean = git-lfs clean -- %f\n"
+        "\tsmudge = git-lfs smudge -- %f\n"
+        "\tprocess = git-lfs filter-process\n"
+        "[diff \"global-unsafe\"]\n"
+        "\tcommand = /bin/false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", str(global_config))
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "1")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "diff.injected.command")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "/bin/false")
+    repo, config_path = _repo(tmp_path)
+    config = load_config(config_path)
+
+    readiness = workspace_readiness(config)
+    assert readiness["ready"] is True
+    preview = execution_preview(config, load_plan(_plan_file(repo), config))
+    assert preview["workspaceRoot"] == str(repo.resolve())
+
+
 def test_patch_rejects_symlink_and_submodule_modes(tmp_path: Path) -> None:
     repo, config_path = _repo(tmp_path)
     (repo / "src" / "linked").symlink_to("../tests")

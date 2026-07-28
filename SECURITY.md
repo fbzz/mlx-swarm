@@ -32,9 +32,11 @@ Verification commands come only from operator-authored config profiles. The
 approved snapshot fixes argv, cwd, timeout, inherited environment names, and
 explicit environment values for the session. Verification uses `shell=False`,
 closed stdin, a sanitized environment, a confined cwd, process-group timeout
-handling, and bounded output. Git external filters, external diff commands,
-text conversion commands, and unignored in-repository worktree roots make
-workspace readiness fail.
+handling, and bounded output. Internal Git subprocesses ignore global and
+system Git configuration and inherited `GIT_*` overrides. External filters,
+diff commands, or text conversion commands remaining in repository-local
+config—and unignored in-repository worktree roots—make workspace readiness
+fail.
 
 Do not expose the cockpit through a reverse proxy or bind it to a public
 interface. Do not place secrets in plan context or worker prompts: session

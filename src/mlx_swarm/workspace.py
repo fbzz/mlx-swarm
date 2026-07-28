@@ -1024,6 +1024,16 @@ def _run(
         "shell": False,
         "check": False,
     }
+    if argv and argv[0] == "git":
+        git_env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+        git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+        git_env["GIT_CONFIG_GLOBAL"] = os.devnull
+        git_env["GIT_TERMINAL_PROMPT"] = "0"
+        kwargs["env"] = git_env
     if input_bytes is not None:
         kwargs["input"] = input_bytes
     else:
