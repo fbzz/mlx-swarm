@@ -2,48 +2,80 @@
 
 # MLX Swarm
 
-**Turn one frontier-authored plan into a bounded DAG of local MLX workers — then
-return one compact, auditable packet for final review.**
+**Make a small 4B LLM do the heavy lifting — locally.**
+
+Plan once with frontier intelligence. Run the repeated implementation, test,
+and review work on your Mac. Return one compact result for final judgment.
 
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Apple silicon](https://img.shields.io/badge/Apple%20silicon-MLX-111111?logo=apple)](https://github.com/ml-explore/mlx)
+[![Local model: 4B](https://img.shields.io/badge/local%20model-4B-7C3AED)](https://huggingface.co/mlx-community/Qwen3-4B-4bit)
 [![CI](https://github.com/fbzz/mlx-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/fbzz/mlx-swarm/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 </div>
 
+MLX Swarm is a local-first coding-agent runtime for Apple silicon. It turns one
+high-quality plan into a bounded DAG of small, specialized jobs and runs them
+with one resident MLX model. The local 4B model powers the agent swarm through
+the token-heavy middle: writing artifacts, producing tests, checking
+dependencies, reviewing outputs, and repairing deterministic failures. A
+frontier model, when used, is reserved for the two decisions where it has the
+most leverage: planning the work and judging the final packet.
+
+| Plan once | Do the work locally | Review once |
+| --- | --- | --- |
+| A frontier model defines the DAG, constraints, and acceptance rules | A cached 4B MLX model powers bounded agents on your Mac | One compact `frontier-result.json` carries the evidence for final judgment |
+
+**Local inference is the engine, not a fallback.** During execution there is no
+frontier coordinator between waves. Agent prompts, dependency outputs, repair
+loops, and generated artifacts stay on the machine. The MLX backend resolves
+models cache-only, keeps the model loaded across the run, and batches compatible
+jobs. Use the included
+[`mlx-community/Qwen3-4B-4bit`](https://huggingface.co/mlx-community/Qwen3-4B-4bit)
+configuration or point MLX Swarm at another compatible cached MLX model.
+
 ![MLX Swarm Cockpit showing a completed implementation, test, and review DAG](docs/swarm-work-cockpit.jpg)
 
-MLX Swarm is a local execution layer for work that can be decomposed once and
-verified mechanically. One frontier planning response creates a strict JSON
-DAG, the operator previews and approves its digest, and local MLX workers run
-the dependency graph in bounded batches. Deterministic gates reject malformed
-artifacts and feed precise failures into limited repair loops. A completed run
-becomes one self-contained `frontier-result.json` for one final judgment.
+## How MLX Swarm makes a 4B model useful
 
-The framework does **not** call a frontier model between waves and never runs
-worker-supplied commands. Schema-v2 workspace plans may execute only
-operator-defined verification profiles, and only inside an isolated Git
-worktree after the operator has approved the exact diff. It keeps
-orchestration, mutation, validation, persistence, and review boundaries
-explicit.
+A small model should not have to behave like an entire autonomous engineering
+team in one prompt. MLX Swarm gives it a tighter job:
+
+- **Decompose before inference.** The complete DAG, authoritative context,
+  dependencies, output protocol, and acceptance rules exist before the local
+  model starts.
+- **Specialize every call.** Each agent produces one bounded artifact such as
+  a patch, test suite, JSON review, or Markdown report.
+- **Share one resident model.** Independent jobs are batched by compatible
+  sampling settings instead of repeatedly loading the model.
+- **Reject bad shape deterministically.** Regex, JSON, enum, size, and Python
+  syntax gates catch malformed output without spending a frontier call.
+- **Repair with exact feedback.** A failed agent sees the specific gate
+  violations and gets only the plan's limited retry budget.
+- **Escalate a result, not a transcript.** The final reviewer receives a compact
+  evidence packet instead of coordinating every local step.
+
+That division of labor is the product thesis: spend local tokens on execution
+and scarce frontier attention on decisions.
 
 ## Operating contract
 
 | Phase | Frontier boundary | Local activity | Human control |
 | --- | --- | --- | --- |
 | Plan | One accepted, validated DAG artifact | Canonical validation and digest generation | Preview the whole DAG; approve the plan and execution digests |
-| Execute | **No frontier coordination between waves** | MLX workers, deterministic gates, bounded repairs, and allowlisted verification | Apply or reject every mutating artifact by its displayed digest |
+| Execute | **No frontier coordination between waves** | MLX agents, deterministic gates, bounded repairs, and allowlisted verification | Apply or reject every mutating artifact by its displayed digest |
 | Review | One accepted structured verdict for a completed run | Assemble the self-contained `frontier-result.json` | Decide whether a requested revision becomes a new linked plan |
 
-Local worker usage and frontier planning/review usage are recorded separately.
+Local agent usage and frontier planning/review usage are recorded separately.
 “One accepted artifact” describes MLX Swarm's auditable phase boundary; it does
 not claim visibility into provider-internal or Codex-internal model calls.
 
-## Why this exists
+## Built for controlled local work
 
 Multi-agent demos often hide the expensive part in repeated coordinator calls
-or treat every model response as trusted. MLX Swarm takes a narrower path:
+or treat every model response as trusted. MLX Swarm keeps the execution
+boundary explicit:
 
 - **Plan once.** The complete task DAG and its acceptance rules are explicit
   before local inference starts.
@@ -58,13 +90,17 @@ or treat every model response as trusted. MLX Swarm takes a narrower path:
 - **Keep source changes isolated.** Typed diffs pause for digest-bound human
   approval, commit only to a retained session worktree, and never modify the
   original checkout.
-- **Run only configured checks.** Plans reference profile IDs; workers cannot
+- **Run only configured checks.** Plans reference profile IDs; agents cannot
   provide an executable command.
 - **Review once at the boundary.** Only completed artifacts enter the compact
   final-review packet.
 - **Count honestly.** Local generation and frontier receipts are stored
   separately; adapters that cannot report tokens remain explicitly
   `unavailable`.
+
+The framework never runs agent-supplied commands. Schema-v2 workspace plans
+may execute only operator-defined verification profiles, and only inside an
+isolated Git worktree after the operator approves the exact diff.
 
 ## Quick start
 
@@ -153,7 +189,7 @@ are stored as unavailable rather than estimated.
    detected Git root, base commit, plan digest, and execution digest. Choose
    **Approve and run** only if that displayed authority is correct.
 
-5. **Supervise local execution.** Local MLX workers execute the DAG without
+5. **Supervise local execution.** Local MLX agents execute the DAG without
    frontier coordination between waves. Non-mutating reports and reviews can
    complete automatically. Every `patch` or `test-suite` artifact pauses with
    its full escaped diff and SHA-256.
@@ -179,7 +215,7 @@ For the current product stage, start with the preliminary decision gate:
 two calibration cases followed by six measured cases, one per project and
 balanced across two small, two medium, and two large reference patches. This
 is 16 arm executions. Only move to the full six-calibration / 30-measured
-profile after local-worker acceptance is competitive.
+profile after local-agent acceptance is competitive.
 
 Both modes use GPT-5.6 Sol with high reasoning for the paired frontier work,
 the configured local MLX model with at most two repairs, a 45-minute ceiling
@@ -472,7 +508,7 @@ Approval creates `mlx-swarm/<plan-id>/<session-id>` and a worktree below
 are reported but excluded because the worktree starts from the displayed
 committed HEAD.
 
-A mutating worker result passes through this lifecycle:
+A mutating agent result passes through this lifecycle:
 
 1. validate paths, metadata, file modes, symlinks, and a fixed
    `git apply --check`;
@@ -625,7 +661,7 @@ Current release baseline is maintained by the test suite; live socket tests may
 skip in restricted sandboxes.
 
 The screenshot above is a real completed local run on an Apple M4 Pro: three
-workers across two DAG waves, one model load, three generation calls, 1,848
+agents across two DAG waves, one model load, three generation calls, 1,848
 local tokens, and a persisted final-review packet. It is an example, not a
 cross-machine benchmark.
 
@@ -636,7 +672,7 @@ cross-machine benchmark.
 
 **Preliminary 6-pair study.** This is a directional decision gate, not the planned 30-pair claim study. The strong “saves frontier tokens without reducing acceptance” claim is disabled regardless of the observed deltas.
 
-**Decision gate:** `stop_and_improve_workers` — Acceptance is materially behind (0/6 vs 6/6). Improve local worker patch quality before running the 30-pair study.
+**Decision gate:** `stop_and_improve_workers` — Acceptance is materially behind (0/6 vs 6/6). Improve local agent patch quality before running the 30-pair study.
 
 Pinned protocol: `BugsInPy@11c5f1eea954a42132cfd06bf257766a7963e0fd` · `gpt-5.6-sol` (high) · local `local/qwen35-4b-opus-uncensored-6bit@e017ecf449428c52171387b7dee317e4803708940b8f50ea1c1ef0d25529cd3d` · seed `20260728`.
 
@@ -671,7 +707,7 @@ Study: `bugsinpy-v1-20260728t162359z-preliminary-6` · paired cases: 6/6 · 95% 
 ## Scope and limitations
 
 - Apple silicon and MLX only.
-- Local workers are text generators and never supply commands. Workspace mode
+- Local agents are text generators and never supply commands. Workspace mode
   can run trusted operator-defined verification profiles against an approved
   diff inside the isolated worktree.
 - Local deterministic gates cannot prove semantic correctness.
