@@ -1,0 +1,118 @@
+{
+  "caseId": "luigi-20",
+  "project": "luigi",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "luigi-20",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 186.5304484579974,
+    "phaseSeconds": {
+      "frontier": 182.0039508750051,
+      "oracle": 3.516724458007957
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 422710,
+      "cachedInputTokens": 358400,
+      "completionTokens": 7700,
+      "reasoningTokens": 3377,
+      "totalTokens": 430410,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 422710,
+          "cachedInputTokens": 358400,
+          "completionTokens": 7700,
+          "reasoningTokens": 3377,
+          "totalTokens": 430410,
+          "malformedLines": 0
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "6e615bf1621f662e086f4c1f0f3ca3d7c7b798a41867741e72994b3d705194dd",
+      "changedFiles": 2
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/luigi-57f807b433cde34a/bin/python -m pytest test/task_test.py::TaskTest::test_task_to_str_to_task\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/luigi-20/arms/frontier-alone/oracle\ncollected 1 item\n\ntest/task_test.py .                                                      [100%]\n\n=============================== warnings summary ===============================\nluigi/parameter.py:580\n  /evaluation/cases/luigi-20/arms/frontier-alone/oracle/luigi/parameter.py:580: DeprecationWarning: invalid escape sequence \\d\n    return \"(?P<%s>\\d+)%s\" % (key, key[0].upper())\n\nluigi/parameter.py:592\n  /evaluation/cases/luigi-20/arms/frontier-alone/oracle/luigi/parameter.py:592: DeprecationWarning: invalid escape sequence \\d\n    regex = \"\".join([\"((?P<%s>\\d+) ?%s(%s)?(%s)? ?)?\" % (k, k[0], k[1:-1], k[-1]) for k in keys])\n\n-- Docs: https://docs.pytest.org/en/latest/warnings.html\n======================== 1 passed, 2 warnings in 1.06s =========================\n"
+    },
+    "recordedAt": "2026-07-28T18:03:59.354939+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "luigi-20",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "failed",
+    "completed": false,
+    "score": 0,
+    "elapsedSeconds": 181.4050392079953,
+    "phaseSeconds": {
+      "planning": 86.2360112919996,
+      "local": 94.16056854100316,
+      "review": 0.0,
+      "oracle": 0.0
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 122034,
+      "cachedInputTokens": 73728,
+      "completionTokens": 3233,
+      "reasoningTokens": 1167,
+      "totalTokens": 125267,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 122034,
+          "cachedInputTokens": 73728,
+          "completionTokens": 3233,
+          "reasoningTokens": 1167,
+          "totalTokens": 125267,
+          "malformedLines": 0
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 6790,
+      "generationTokens": 3600,
+      "generationCalls": 3,
+      "modelLoads": 1
+    },
+    "repairs": 2,
+    "modelLoads": 1,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": null,
+      "changedFiles": 0
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": null,
+      "evidence": "Candidate patch is empty."
+    },
+    "recordedAt": "2026-07-28T18:07:29.112248+00:00"
+  },
+  "frontierTokenDelta": 305143,
+  "timeDeltaSeconds": 5.1254092500021216
+}

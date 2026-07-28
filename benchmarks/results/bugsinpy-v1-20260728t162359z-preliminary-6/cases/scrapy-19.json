@@ -1,0 +1,118 @@
+{
+  "caseId": "scrapy-19",
+  "project": "scrapy",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "scrapy-19",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 78.05334683301044,
+    "phaseSeconds": {
+      "frontier": 63.507981291011674,
+      "oracle": 13.129259749999619
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 135748,
+      "cachedInputTokens": 88832,
+      "completionTokens": 2526,
+      "reasoningTokens": 956,
+      "totalTokens": 138274,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 135748,
+          "cachedInputTokens": 88832,
+          "completionTokens": 2526,
+          "reasoningTokens": 956,
+          "totalTokens": 138274,
+          "malformedLines": 0
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "dbd0f622cf245677b22f2af4288ca5431f884fcefbb864e62364e21b4968dd2f",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_http_cookies.WrappedRequestTest.test_get_full_url\n----------------------------------------------------------------------\nRan 1 test in 0.016s\n\nOK\n\n$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_http_cookies.WrappedRequestTest.test_get_host\n----------------------------------------------------------------------\nRan 1 test in 0.016s\n\nOK\n\n$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_http_cookies.WrappedRequestTest.test_get_type\n----------------------------------------------------------------------\nRan 1 test in 0.017s\n\nOK\n\n$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_http_cookies.WrappedRequestTest.test_get_origin_req_host\n----------------------------------------------------------------------\nRan 1 test in 0.017s\n\nOK\n"
+    },
+    "recordedAt": "2026-07-28T18:11:35.760238+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "scrapy-19",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "failed",
+    "completed": false,
+    "score": 0,
+    "elapsedSeconds": 91.89830875000916,
+    "phaseSeconds": {
+      "planning": 48.15927891699539,
+      "local": 42.487379792000866,
+      "review": 0.0,
+      "oracle": 0.0
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 53479,
+      "cachedInputTokens": 33280,
+      "completionTokens": 2226,
+      "reasoningTokens": 643,
+      "totalTokens": 55705,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 53479,
+          "cachedInputTokens": 33280,
+          "completionTokens": 2226,
+          "reasoningTokens": 643,
+          "totalTokens": 55705,
+          "malformedLines": 0
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 4871,
+      "generationTokens": 1155,
+      "generationCalls": 3,
+      "modelLoads": 1
+    },
+    "repairs": 2,
+    "modelLoads": 1,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": null,
+      "changedFiles": 0
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": null,
+      "evidence": "Candidate patch is empty."
+    },
+    "recordedAt": "2026-07-28T18:09:54.121471+00:00"
+  },
+  "frontierTokenDelta": 82569,
+  "timeDeltaSeconds": -13.844961916998727
+}

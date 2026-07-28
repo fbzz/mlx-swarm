@@ -1,0 +1,118 @@
+{
+  "caseId": "black-7",
+  "project": "black",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "black-7",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 259.3032766670076,
+    "phaseSeconds": {
+      "frontier": 256.445915874996,
+      "oracle": 2.2638739590038313
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 476660,
+      "cachedInputTokens": 417792,
+      "completionTokens": 8594,
+      "reasoningTokens": 5021,
+      "totalTokens": 485254,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 476660,
+          "cachedInputTokens": 417792,
+          "completionTokens": 8594,
+          "reasoningTokens": 5021,
+          "totalTokens": 485254,
+          "malformedLines": 0
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "deb589a92c38c658cda3f1f8dd61dfc04150bddc77fa72962168505d41296200",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/black-2b40cba5f7d166fe/bin/python -m unittest -q tests.test_black.BlackTestCase.test_tuple_assign\n----------------------------------------------------------------------\nRan 1 test in 0.027s\n\nOK\n"
+    },
+    "recordedAt": "2026-07-28T17:51:31.624829+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "black-7",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "failed",
+    "completed": false,
+    "score": 0,
+    "elapsedSeconds": 510.5828512500011,
+    "phaseSeconds": {
+      "planning": 147.73585908400128,
+      "local": 362.21481370901165,
+      "review": 0.0,
+      "oracle": 0.0
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 258524,
+      "cachedInputTokens": 222976,
+      "completionTokens": 6022,
+      "reasoningTokens": 2449,
+      "totalTokens": 264546,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 258524,
+          "cachedInputTokens": 222976,
+          "completionTokens": 6022,
+          "reasoningTokens": 2449,
+          "totalTokens": 264546,
+          "malformedLines": 0
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 10362,
+      "generationTokens": 15000,
+      "generationCalls": 3,
+      "modelLoads": 1
+    },
+    "repairs": 2,
+    "modelLoads": 1,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": null,
+      "changedFiles": 0
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": null,
+      "evidence": "Candidate patch is empty."
+    },
+    "recordedAt": "2026-07-28T17:46:49.806088+00:00"
+  },
+  "frontierTokenDelta": 220708,
+  "timeDeltaSeconds": -251.27957458299352
+}

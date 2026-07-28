@@ -14,6 +14,14 @@ least six represented projects, no more than five measured cases per project,
 and balanced reference patch-size strata. It selects six calibration cases
 and thirty measured cases.
 
+`eval prepare PROFILE --preliminary` derives the current-stage decision-gate
+profile without duplicating pins: two calibration cases and six measured
+cases, one per project, balanced 2/2/2 across patch strata. A partial full-study
+ledger with enough existing evidence can be exported with
+`eval report EVALUATION_ID --preliminary`; the subset is selected by frozen
+suite order, project, stratum, usage validity, and executable-oracle validity,
+never by score.
+
 The frozen suite contains only metadata needed to reproduce the study. Fixed
 patch text is never copied into an arm workspace or model prompt. Every arm
 starts from a history-free repository containing only the buggy tree and the
@@ -58,3 +66,5 @@ it is never converted to zero.
 tables. The token-saving claim is emitted only when all thirty usage pairs are
 valid, swarm completion and executable score are not lower, and the seeded 95%
 bootstrap lower bound for paired frontier-token savings is positive.
+Preliminary reports are explicitly labeled, always disable that claim, and
+emit a decision gate that stops expansion when swarm acceptance is lower.

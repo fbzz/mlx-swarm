@@ -20,8 +20,9 @@ import sys
 import tempfile
 import time
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from itertools import combinations
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -541,6 +542,27 @@ def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
         },
         "local": {"maxRepair": profile.max_repair},
     }
+
+
+def preliminary_evaluation_profile(
+    profile: EvaluationProfile,
+) -> EvaluationProfile:
+    """Derive the fixed 2-calibration / 6-measured decision-gate profile."""
+    if len(profile.selection.projects) < 6:
+        raise EvaluationError(
+            "Preliminary evaluation requires at least six allowed projects."
+        )
+    return replace(
+        profile,
+        profile_id=f"{profile.profile_id}-preliminary",
+        selection=replace(
+            profile.selection,
+            pilot_size=2,
+            measured_size=6,
+            min_projects=6,
+            max_per_project=1,
+        ),
+    )
 
 
 def read_text_portable(path: Path) -> str:
@@ -1238,7 +1260,8 @@ def aggregate_results(
         if row["frontierTokenDelta"] is not None
     ]
     claim_established = bool(
-        all_usage_valid
+        len(measured_ids) == 30
+        and all_usage_valid
         and frontier_metrics["completed"] <= swarm_metrics["completed"]
         and frontier_metrics["score"] <= swarm_metrics["score"]
         and lower is not None
@@ -1297,6 +1320,43 @@ def aggregate_results(
     return summary
 
 
+def mark_preliminary_summary(
+    summary: dict[str, Any],
+    *,
+    source_evaluation_id: str,
+) -> dict[str, Any]:
+    """Disable the product claim and add the six-pair decision gate."""
+    summary["studyType"] = "preliminary_6_pair"
+    summary["sourceEvaluationId"] = source_evaluation_id
+    summary["claim"] = {
+        "status": "preliminary",
+        "text": (
+            "Measured scores, time, and tokens are directional. "
+            "The 30-pair product claim gate was not evaluated."
+        ),
+    }
+    frontier_score = summary["frontierAlone"]["score"]
+    swarm_score = summary["mlxSwarm"]["score"]
+    measured_cases = int(summary["measuredCases"])
+    summary["decisionGate"] = {
+        "status": (
+            "continue_to_full_study"
+            if swarm_score >= frontier_score
+            else "stop_and_improve_workers"
+        ),
+        "text": (
+            "Acceptance is materially behind "
+            f"({swarm_score}/{measured_cases} vs "
+            f"{frontier_score}/{measured_cases}). Improve local worker patch "
+            "quality before running the 30-pair study."
+            if swarm_score < frontier_score
+            else "Acceptance is not behind in this preliminary set; "
+            "a full 30-pair study may be considered."
+        ),
+    }
+    return summary
+
+
 def bootstrap_mean_interval(
     values: Sequence[int | float],
     *,
@@ -1323,13 +1383,37 @@ def render_readme_economics(summary: dict[str, Any]) -> str:
     frontier = summary["frontierAlone"]
     swarm = summary["mlxSwarm"]
     paired = summary["paired"]
+    preliminary = summary.get("studyType") == "preliminary_6_pair"
     lines = [
-        "## Measured economics",
+        (
+            "## Preliminary measured economics"
+            if preliminary
+            else "## Measured economics"
+        ),
         "",
         f"**Study status:** `{summary['claim']['status']}` — "
         f"{summary['claim']['text']}",
         "",
     ]
+    if preliminary:
+        lines.extend([
+            (
+                "**Preliminary 6-pair study.** This is a directional decision "
+                "gate, not the planned 30-pair claim study. The strong "
+                "“saves frontier tokens without reducing acceptance” claim "
+                "is disabled regardless of the observed deltas."
+            ),
+            "",
+        ])
+        decision = summary.get("decisionGate")
+        if isinstance(decision, dict):
+            lines.extend([
+                (
+                    f"**Decision gate:** `{decision.get('status', 'unknown')}` "
+                    f"— {decision.get('text', '')}"
+                ),
+                "",
+            ])
     study = summary.get("study")
     if isinstance(study, dict):
         local_model = study.get("localModel") or {}
@@ -1398,7 +1482,8 @@ def render_readme_economics(summary: dict[str, Any]) -> str:
             f"{format_integer(frontier['medianFrontierTokens'])} "
             f"| {format_integer(swarm['frontierTokens'])} / "
             f"{format_integer(swarm['medianFrontierTokens'])} "
-            f"| {format_integer(paired['frontierTokensSaved'])} saved "
+            f"| {format_integer(paired['frontierTokensSaved'])} "
+            f"{'fewer' if preliminary else 'saved'} "
             f"({format_percentage(paired['frontierTokensSavedPercent'])}) |"
         ),
         (
@@ -1449,6 +1534,94 @@ def render_readme_economics(summary: dict[str, Any]) -> str:
         f"{paired['acceptedByBothCases']} cases.",
     ])
     return "\n".join(lines).rstrip() + "\n"
+
+
+def preliminary_study_subset(
+    suite: dict[str, Any],
+    results: Sequence[dict[str, Any]],
+) -> tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Select a non-cherry-picked 2-calibration / 6-measured subset."""
+    indexed: dict[tuple[str, str], dict[str, Any]] = {}
+    for raw_result in results:
+        result = validate_arm_result(raw_result)
+        key = (result["caseId"], result["arm"])
+        if key in indexed:
+            raise EvaluationError(
+                f"Duplicate arm result for {result['caseId']} {result['arm']}."
+            )
+        indexed[key] = result
+
+    def eligible(case: dict[str, Any]) -> bool:
+        paired = [
+            indexed.get((case["caseId"], arm))
+            for arm in ("frontier-alone", "mlx-swarm")
+        ]
+        if any(result is None for result in paired):
+            return False
+        assert all(result is not None for result in paired)
+        return all(
+            result["status"] != "invalid"
+            and result["frontierUsage"]["usageStatus"] == "reported"
+            and oracle_infrastructure_failure(result["oracle"]) is None
+            for result in paired
+        )
+
+    pilots = [
+        case
+        for case in suite["cases"]
+        if case["phase"] == "pilot" and eligible(case)
+    ][:2]
+    if len(pilots) != 2:
+        raise EvaluationError(
+            "Preliminary report requires two valid calibration pairs."
+        )
+    measured_candidates = [
+        case
+        for case in suite["cases"]
+        if case["phase"] == "measured" and eligible(case)
+    ]
+    measured: list[dict[str, Any]] | None = None
+    for candidate_group in combinations(measured_candidates, 6):
+        projects = {case["project"] for case in candidate_group}
+        strata = {
+            name: sum(
+                case["reference"]["stratum"] == name
+                for case in candidate_group
+            )
+            for name in ("small", "medium", "large")
+        }
+        if len(projects) == 6 and strata == {
+            "small": 2,
+            "medium": 2,
+            "large": 2,
+        }:
+            measured = list(candidate_group)
+            break
+    if measured is None:
+        raise EvaluationError(
+            "Preliminary report requires six valid projects with 2/2/2 strata."
+        )
+    selected = [*pilots, *measured]
+    selected_ids = {case["caseId"] for case in selected}
+    selected_results = [
+        indexed[(case["caseId"], arm)]
+        for case in selected
+        for arm in ("frontier-alone", "mlx-swarm")
+    ]
+    calibration_results = [
+        result
+        for result in selected_results
+        if result["caseId"] in {case["caseId"] for case in pilots}
+    ]
+    report_id = f"{suite['suiteId']}-preliminary-6"
+    subset = {
+        **suite,
+        "suiteId": report_id,
+        "cases": [
+            case for case in suite["cases"] if case["caseId"] in selected_ids
+        ],
+    }
+    return subset, selected_results, calibration_results
 
 
 def render_calibration_results(results: Sequence[dict[str, Any]]) -> str:
@@ -1798,6 +1971,11 @@ class EvaluationStore:
                 suite,
                 self.load_results(evaluation_id),
             )
+            if str(suite.get("profileId", "")).endswith("-preliminary"):
+                mark_preliminary_summary(
+                    summary,
+                    source_evaluation_id=evaluation_id,
+                )
             summary["preparation"] = preparation_summary(
                 evaluation_dir,
                 suite,
@@ -1815,13 +1993,43 @@ class EvaluationStore:
         export_dir: Path,
         *,
         check: bool = False,
+        preliminary: bool = False,
     ) -> dict[str, Any]:
         detail = self.detail(evaluation_id)
-        summary = detail["summary"]
-        if summary is None:
-            raise EvaluationError(
-                "Measured phase must be complete before exporting a report."
+        report_suite = detail["suite"]
+        report_results = detail["results"]
+        calibration_source: Sequence[dict[str, Any]] = report_results
+        if preliminary:
+            (
+                report_suite,
+                report_results,
+                calibration_source,
+            ) = preliminary_study_subset(
+                detail["suite"],
+                detail["results"],
             )
+            summary = aggregate_results(report_suite, report_results)
+            summary["generatedAt"] = max(
+                result["recordedAt"] for result in report_results
+            )
+            mark_preliminary_summary(
+                summary,
+                source_evaluation_id=evaluation_id,
+            )
+            summary["preparation"] = preparation_summary(
+                self._dir(evaluation_id),
+                report_suite,
+            )
+            summary["study"] = study_context(
+                report_suite,
+                detail["environment"],
+            )
+        else:
+            summary = detail["summary"]
+            if summary is None:
+                raise EvaluationError(
+                    "Measured phase must be complete before exporting a report."
+                )
         export_dir = export_dir.resolve()
         if not check and export_dir.exists() and any(export_dir.iterdir()):
             raise EvaluationError("Report export directory must be empty.")
@@ -1835,12 +2043,12 @@ class EvaluationStore:
         }
         public_study = {
             "schemaVersion": RESULT_SCHEMA_VERSION,
-            "suite": sanitize_suite(detail["suite"]),
+            "suite": sanitize_suite(report_suite),
             "environment": sanitize_environment(detail["environment"]),
         }
         calibration = [
             _sanitize_arm(result)
-            for result in detail["results"]
+            for result in calibration_source
             if result["phase"] == "pilot"
         ]
         calibration.sort(key=lambda value: (value["caseId"], value["arm"]))
@@ -1912,6 +2120,7 @@ class EvaluationStore:
             )
         return {
             "evaluationId": evaluation_id,
+            "reportId": public_summary["suiteId"],
             "exportDir": str(export_dir),
             "summary": public_summary,
             "readmeMarkdown": readme_report,

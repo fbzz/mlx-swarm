@@ -1,0 +1,818 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "bugsinpy-v1-20260728t162359z-preliminary-6",
+  "measuredCases": 6,
+  "completePairs": 6,
+  "frontierAlone": {
+    "cases": 6,
+    "completed": 6,
+    "score": 6,
+    "completionRate": 100.0,
+    "scoreRate": 100.0,
+    "medianElapsedSeconds": 188.54547549950075,
+    "frontierTokens": 2017393,
+    "medianFrontierTokens": 406294.0,
+    "localTokens": 0,
+    "medianLocalTokens": 0,
+    "repairs": 0,
+    "medianRepairs": 0.0,
+    "modelLoads": 0
+  },
+  "mlxSwarm": {
+    "cases": 6,
+    "completed": 0,
+    "score": 0,
+    "completionRate": 0.0,
+    "scoreRate": 0.0,
+    "medianElapsedSeconds": 158.64945187449484,
+    "frontierTokens": 886183,
+    "medianFrontierTokens": 138726.5,
+    "localTokens": 70304,
+    "medianLocalTokens": 8730.0,
+    "repairs": 12,
+    "medianRepairs": 2.0,
+    "modelLoads": 6
+  },
+  "paired": {
+    "frontierTokensSaved": 1131210,
+    "frontierTokensSavedMedian": 225783.5,
+    "frontierTokensSavedPercent": 56.07286235255104,
+    "bootstrap95": {
+      "lower": 117341.33333333333,
+      "upper": 256145.83333333334,
+      "samples": 10000
+    },
+    "acceptedByBothCases": 0,
+    "acceptedByBothTokensSaved": null,
+    "allUsageValid": true
+  },
+  "claim": {
+    "status": "preliminary",
+    "text": "Measured scores, time, and tokens are directional. The 30-pair product claim gate was not evaluated."
+  },
+  "rows": [
+    {
+      "caseId": "black-7",
+      "project": "black",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "black-7",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 259.3032766670076,
+        "phaseSeconds": {
+          "frontier": 256.445915874996,
+          "oracle": 2.2638739590038313
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 476660,
+          "cachedInputTokens": 417792,
+          "completionTokens": 8594,
+          "reasoningTokens": 5021,
+          "totalTokens": 485254,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 476660,
+              "cachedInputTokens": 417792,
+              "completionTokens": 8594,
+              "reasoningTokens": 5021,
+              "totalTokens": 485254,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "deb589a92c38c658cda3f1f8dd61dfc04150bddc77fa72962168505d41296200",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/black-2b40cba5f7d166fe/bin/python -m unittest -q tests.test_black.BlackTestCase.test_tuple_assign\n----------------------------------------------------------------------\nRan 1 test in 0.027s\n\nOK\n"
+        },
+        "recordedAt": "2026-07-28T17:51:31.624829+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "black-7",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 510.5828512500011,
+        "phaseSeconds": {
+          "planning": 147.73585908400128,
+          "local": 362.21481370901165,
+          "review": 0.0,
+          "oracle": 0.0
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 258524,
+          "cachedInputTokens": 222976,
+          "completionTokens": 6022,
+          "reasoningTokens": 2449,
+          "totalTokens": 264546,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 258524,
+              "cachedInputTokens": 222976,
+              "completionTokens": 6022,
+              "reasoningTokens": 2449,
+              "totalTokens": 264546,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 10362,
+          "generationTokens": 15000,
+          "generationCalls": 3,
+          "modelLoads": 1
+        },
+        "repairs": 2,
+        "modelLoads": 1,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": null,
+          "changedFiles": 0
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": null,
+          "evidence": "Candidate patch is empty."
+        },
+        "recordedAt": "2026-07-28T17:46:49.806088+00:00"
+      },
+      "frontierTokenDelta": 220708,
+      "timeDeltaSeconds": -251.27957458299352
+    },
+    {
+      "caseId": "fastapi-14",
+      "project": "fastapi",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "fastapi-14",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 190.5605025410041,
+        "phaseSeconds": {
+          "frontier": 185.02333862498926,
+          "oracle": 4.2852707089914475
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 423838,
+          "cachedInputTokens": 370432,
+          "completionTokens": 5705,
+          "reasoningTokens": 3530,
+          "totalTokens": 429543,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 423838,
+              "cachedInputTokens": 370432,
+              "completionTokens": 5705,
+              "reasoningTokens": 3530,
+              "totalTokens": 429543,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "be40566b8987ec8faf859a64eafb1e4a2730a023e8f07adb1f2696e6bd4efab0",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/fastapi-306e586fa8cd0cab/bin/python -m pytest tests/test_additional_properties.py::test_additional_properties_schema\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-14/arms/frontier-alone/oracle\ncollected 1 item\n\ntests/test_additional_properties.py .                                    [100%]\n\n============================== 1 passed in 2.02s ===============================\n"
+        },
+        "recordedAt": "2026-07-28T17:55:25.816109+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "fastapi-14",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 259.30670149999787,
+        "phaseSeconds": {
+          "planning": 136.56807016700623,
+          "local": 122.00851779199729,
+          "review": 0.0,
+          "oracle": 0.0
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 186410,
+          "cachedInputTokens": 145920,
+          "completionTokens": 5622,
+          "reasoningTokens": 2238,
+          "totalTokens": 192032,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 186410,
+              "cachedInputTokens": 145920,
+              "completionTokens": 5622,
+              "reasoningTokens": 2238,
+              "totalTokens": 192032,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 9845,
+          "generationTokens": 4800,
+          "generationCalls": 3,
+          "modelLoads": 1
+        },
+        "repairs": 2,
+        "modelLoads": 1,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": null,
+          "changedFiles": 0
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": null,
+          "evidence": "Candidate patch is empty."
+        },
+        "recordedAt": "2026-07-28T18:00:08.024174+00:00"
+      },
+      "frontierTokenDelta": 237511,
+      "timeDeltaSeconds": -68.74619895899377
+    },
+    {
+      "caseId": "luigi-20",
+      "project": "luigi",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "luigi-20",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 186.5304484579974,
+        "phaseSeconds": {
+          "frontier": 182.0039508750051,
+          "oracle": 3.516724458007957
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 422710,
+          "cachedInputTokens": 358400,
+          "completionTokens": 7700,
+          "reasoningTokens": 3377,
+          "totalTokens": 430410,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 422710,
+              "cachedInputTokens": 358400,
+              "completionTokens": 7700,
+              "reasoningTokens": 3377,
+              "totalTokens": 430410,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "6e615bf1621f662e086f4c1f0f3ca3d7c7b798a41867741e72994b3d705194dd",
+          "changedFiles": 2
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/luigi-57f807b433cde34a/bin/python -m pytest test/task_test.py::TaskTest::test_task_to_str_to_task\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/luigi-20/arms/frontier-alone/oracle\ncollected 1 item\n\ntest/task_test.py .                                                      [100%]\n\n=============================== warnings summary ===============================\nluigi/parameter.py:580\n  /evaluation/cases/luigi-20/arms/frontier-alone/oracle/luigi/parameter.py:580: DeprecationWarning: invalid escape sequence \\d\n    return \"(?P<%s>\\d+)%s\" % (key, key[0].upper())\n\nluigi/parameter.py:592\n  /evaluation/cases/luigi-20/arms/frontier-alone/oracle/luigi/parameter.py:592: DeprecationWarning: invalid escape sequence \\d\n    regex = \"\".join([\"((?P<%s>\\d+) ?%s(%s)?(%s)? ?)?\" % (k, k[0], k[1:-1], k[-1]) for k in keys])\n\n-- Docs: https://docs.pytest.org/en/latest/warnings.html\n======================== 1 passed, 2 warnings in 1.06s =========================\n"
+        },
+        "recordedAt": "2026-07-28T18:03:59.354939+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "luigi-20",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 181.4050392079953,
+        "phaseSeconds": {
+          "planning": 86.2360112919996,
+          "local": 94.16056854100316,
+          "review": 0.0,
+          "oracle": 0.0
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 122034,
+          "cachedInputTokens": 73728,
+          "completionTokens": 3233,
+          "reasoningTokens": 1167,
+          "totalTokens": 125267,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 122034,
+              "cachedInputTokens": 73728,
+              "completionTokens": 3233,
+              "reasoningTokens": 1167,
+              "totalTokens": 125267,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 6790,
+          "generationTokens": 3600,
+          "generationCalls": 3,
+          "modelLoads": 1
+        },
+        "repairs": 2,
+        "modelLoads": 1,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": null,
+          "changedFiles": 0
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": null,
+          "evidence": "Candidate patch is empty."
+        },
+        "recordedAt": "2026-07-28T18:07:29.112248+00:00"
+      },
+      "frontierTokenDelta": 305143,
+      "timeDeltaSeconds": 5.1254092500021216
+    },
+    {
+      "caseId": "scrapy-19",
+      "project": "scrapy",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "scrapy-19",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 78.05334683301044,
+        "phaseSeconds": {
+          "frontier": 63.507981291011674,
+          "oracle": 13.129259749999619
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 135748,
+          "cachedInputTokens": 88832,
+          "completionTokens": 2526,
+          "reasoningTokens": 956,
+          "totalTokens": 138274,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 135748,
+              "cachedInputTokens": 88832,
+              "completionTokens": 2526,
+              "reasoningTokens": 956,
+              "totalTokens": 138274,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "dbd0f622cf245677b22f2af4288ca5431f884fcefbb864e62364e21b4968dd2f",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_http_cookies.WrappedRequestTest.test_get_full_url\n----------------------------------------------------------------------\nRan 1 test in 0.016s\n\nOK\n\n$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_http_cookies.WrappedRequestTest.test_get_host\n----------------------------------------------------------------------\nRan 1 test in 0.016s\n\nOK\n\n$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_http_cookies.WrappedRequestTest.test_get_type\n----------------------------------------------------------------------\nRan 1 test in 0.017s\n\nOK\n\n$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_http_cookies.WrappedRequestTest.test_get_origin_req_host\n----------------------------------------------------------------------\nRan 1 test in 0.017s\n\nOK\n"
+        },
+        "recordedAt": "2026-07-28T18:11:35.760238+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "scrapy-19",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 91.89830875000916,
+        "phaseSeconds": {
+          "planning": 48.15927891699539,
+          "local": 42.487379792000866,
+          "review": 0.0,
+          "oracle": 0.0
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 53479,
+          "cachedInputTokens": 33280,
+          "completionTokens": 2226,
+          "reasoningTokens": 643,
+          "totalTokens": 55705,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 53479,
+              "cachedInputTokens": 33280,
+              "completionTokens": 2226,
+              "reasoningTokens": 643,
+              "totalTokens": 55705,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 4871,
+          "generationTokens": 1155,
+          "generationCalls": 3,
+          "modelLoads": 1
+        },
+        "repairs": 2,
+        "modelLoads": 1,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": null,
+          "changedFiles": 0
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": null,
+          "evidence": "Candidate patch is empty."
+        },
+        "recordedAt": "2026-07-28T18:09:54.121471+00:00"
+      },
+      "frontierTokenDelta": 82569,
+      "timeDeltaSeconds": -13.844961916998727
+    },
+    {
+      "caseId": "sanic-5",
+      "project": "sanic",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "sanic-5",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 83.56027016699954,
+        "phaseSeconds": {
+          "frontier": 78.55028695800866,
+          "oracle": 4.307463167002425
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 148668,
+          "cachedInputTokens": 123136,
+          "completionTokens": 2199,
+          "reasoningTokens": 1112,
+          "totalTokens": 150867,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 148668,
+              "cachedInputTokens": 123136,
+              "completionTokens": 2199,
+              "reasoningTokens": 1112,
+              "totalTokens": 150867,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "ad733159d21a10c63d6819b0f1b8700e385f2c869c422e9d666cf0df6049ac62",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/sanic-772461c9ea528e76/bin/python -m pytest tests/test_logging.py::test_logging_modified_root_logger_config\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/sanic-5/arms/frontier-alone/oracle\nplugins: sanic-1.6.1\ncollected 1 item\n\ntests/test_logging.py .                                                  [100%]\n\n============================== 1 passed in 0.19s ===============================\n/evaluation/cases/sanic-5/arms/frontier-alone/oracle/sanic/response.py:115: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n/evaluation/cases/sanic-5/arms/frontier-alone/oracle/sanic/response.py:174: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n"
+        },
+        "recordedAt": "2026-07-28T18:16:05.976226+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "sanic-5",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 122.32266258400341,
+        "phaseSeconds": {
+          "planning": 88.77409066600376,
+          "local": 32.92588424999849,
+          "review": 0.0,
+          "oracle": 0.0
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 92541,
+          "cachedInputTokens": 69632,
+          "completionTokens": 3906,
+          "reasoningTokens": 1657,
+          "totalTokens": 96447,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 92541,
+              "cachedInputTokens": 69632,
+              "completionTokens": 3906,
+              "reasoningTokens": 1657,
+              "totalTokens": 96447,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 6275,
+          "generationTokens": 795,
+          "generationCalls": 3,
+          "modelLoads": 1
+        },
+        "repairs": 2,
+        "modelLoads": 1,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": null,
+          "changedFiles": 0
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": null,
+          "evidence": "Candidate patch is empty."
+        },
+        "recordedAt": "2026-07-28T18:14:20.571772+00:00"
+      },
+      "frontierTokenDelta": 54420,
+      "timeDeltaSeconds": -38.762392417003866
+    },
+    {
+      "caseId": "tornado-8",
+      "project": "tornado",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "tornado-8",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 445.50905500000226,
+        "phaseSeconds": {
+          "frontier": 442.6316943330021,
+          "oracle": 1.834787250001682
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 378138,
+          "cachedInputTokens": 330240,
+          "completionTokens": 4907,
+          "reasoningTokens": 2392,
+          "totalTokens": 383045,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 378138,
+              "cachedInputTokens": 330240,
+              "completionTokens": 4907,
+              "reasoningTokens": 2392,
+              "totalTokens": 383045,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "69bf08c7227789b22cfd6fd6a33b365a38794520568ecc1e5ac0a8500482ce4d",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/tornado-e001cbbd451e78a2/bin/python -m unittest -q tornado.test.websocket_test.WebSocketTest.test_missing_websocket_key\nWARNING:tornado.access:400 GET /echo (127.0.0.1) 1.60ms\n----------------------------------------------------------------------\nRan 1 test in 0.027s\n\nOK\n"
+        },
+        "recordedAt": "2026-07-28T18:26:53.646259+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "tornado-8",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 135.8938645409944,
+        "phaseSeconds": {
+          "planning": 103.17024545799359,
+          "local": 31.706046916006017,
+          "review": 0.0,
+          "oracle": 0.0
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 147865,
+          "cachedInputTokens": 120320,
+          "completionTokens": 4321,
+          "reasoningTokens": 1326,
+          "totalTokens": 152186,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 147865,
+              "cachedInputTokens": 120320,
+              "completionTokens": 4321,
+              "reasoningTokens": 1326,
+              "totalTokens": 152186,
+              "malformedLines": 0
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 6022,
+          "generationTokens": 789,
+          "generationCalls": 3,
+          "modelLoads": 1
+        },
+        "repairs": 2,
+        "modelLoads": 1,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": null,
+          "changedFiles": 0
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": null,
+          "evidence": "Candidate patch is empty."
+        },
+        "recordedAt": "2026-07-28T18:19:06.026370+00:00"
+      },
+      "frontierTokenDelta": 230859,
+      "timeDeltaSeconds": 309.61519045900786
+    }
+  ],
+  "generatedAt": "2026-07-28T18:26:53.646259+00:00",
+  "studyType": "preliminary_6_pair",
+  "sourceEvaluationId": "bugsinpy-v1-20260728t162359z",
+  "decisionGate": {
+    "status": "stop_and_improve_workers",
+    "text": "Acceptance is materially behind (0/6 vs 6/6). Improve local worker patch quality before running the 30-pair study."
+  },
+  "preparation": {
+    "caseCount": 8,
+    "totalSeconds": 253.91272416598804,
+    "medianSeconds": 28.29326862500602,
+    "pilotSeconds": 129.73584308299178,
+    "measuredSeconds": 124.17688108299626
+  },
+  "study": {
+    "benchmark": "BugsInPy",
+    "benchmarkRevision": "11c5f1eea954a42132cfd06bf257766a7963e0fd",
+    "seed": 20260728,
+    "recordedAt": "2026-07-28T16:55:42.669391+00:00",
+    "frontierModel": "gpt-5.6-sol",
+    "reasoningEffort": "high",
+    "codexVersion": "codex-cli 0.145.0",
+    "mlxSwarmCommit": "2f741c0f4f195272c65feef12939db1096c36717",
+    "localModel": {
+      "repository": "local/qwen35-4b-opus-uncensored-6bit",
+      "revision": "local",
+      "path": "/Users/fzuin/models/qwen35-4b-opus-uncensored-6bit",
+      "fingerprint": "e017ecf449428c52171387b7dee317e4803708940b8f50ea1c1ef0d25529cd3d"
+    },
+    "hardware": {
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "processor": "arm",
+      "memoryBytes": 51539607552
+    },
+    "runtime": {
+      "python": "3.13.9",
+      "git": "git version 2.52.0",
+      "uv": "uv 0.10.0 (0ba432459 2026-02-05)",
+      "benchmarkBuildJobs": 4,
+      "packages": {
+        "mlx": "0.32.0",
+        "mlx-lm": "0.31.3",
+        "huggingface-hub": "1.25.1"
+      },
+      "container": {
+        "image": "mlx-swarm-bugsinpy-amd64:11c5f1eea954-py37",
+        "digest": "sha256:f577bdd087333bbc04de8641a2523cd47860dea704aee62339283a40030ee1cb",
+        "architecture": "amd64",
+        "os": "linux",
+        "sizeBytes": 223560071,
+        "platform": "linux/amd64"
+      }
+    }
+  }
+}

@@ -36,6 +36,8 @@ from mlx_swarm.evaluation import (
     parse_benchmark_commands,
     parse_codex_usage_jsonl,
     patch_metadata,
+    preliminary_study_subset,
+    preliminary_evaluation_profile,
     profile_payload,
     remove_sensitive_preparation_sources,
     render_readme_economics,
@@ -192,8 +194,9 @@ def _result(
     total_tokens: int,
     score: int = 1,
     elapsed: float = 60,
+    phase: str = "measured",
 ) -> dict[str, Any]:
-    case = {"caseId": case_id, "phase": "measured"}
+    case = {"caseId": case_id, "phase": phase}
     return make_arm_result(
         case=case,
         arm=arm,
@@ -241,6 +244,17 @@ def test_profile_is_strict_pinned_and_round_trips(tmp_path: Path) -> None:
     invalid["surprise"] = True
     with pytest.raises(EvaluationError, match="unknown fields"):
         load_evaluation_profile(_write_profile(tmp_path, invalid))
+
+
+def test_preliminary_profile_is_fixed_two_plus_six() -> None:
+    profile = preliminary_evaluation_profile(
+        load_evaluation_profile(Path("benchmarks/bugsinpy-v1/profile.json"))
+    )
+    assert profile.profile_id.endswith("-preliminary")
+    assert profile.selection.pilot_size == 2
+    assert profile.selection.measured_size == 6
+    assert profile.selection.min_projects == 6
+    assert profile.selection.max_per_project == 1
 
 
 def test_profile_rejects_unpinned_revision_and_timeout_drift(
@@ -655,12 +669,12 @@ def test_bootstrap_and_claim_gate_are_deterministic() -> None:
         "seed": 20260728,
         "cases": [
             {"caseId": f"alpha-{index}", "project": "alpha", "phase": "measured"}
-            for index in range(1, 4)
+            for index in range(1, 31)
         ],
     }
     results = [
         result
-        for index in range(1, 4)
+        for index in range(1, 31)
         for result in (
             _result(f"alpha-{index}", "frontier-alone", total_tokens=1_000),
             _result(f"alpha-{index}", "mlx-swarm", total_tokens=400),
@@ -668,8 +682,73 @@ def test_bootstrap_and_claim_gate_are_deterministic() -> None:
     ]
     summary = aggregate_results(suite, results, bootstrap_samples=500)
     assert summary["claim"]["status"] == "established"
-    assert summary["paired"]["frontierTokensSaved"] == 1_800
-    assert summary["mlxSwarm"]["localTokens"] == 450
+    assert summary["paired"]["frontierTokensSaved"] == 18_000
+    assert summary["mlxSwarm"]["localTokens"] == 4_500
+
+
+def test_preliminary_subset_is_balanced_and_never_enables_claim() -> None:
+    pilot_cases = [
+        {
+            **_case(f"pilot-{index}", f"pilot-{index}", "small"),
+            "phase": "pilot",
+        }
+        for index in range(1, 3)
+    ]
+    strata = ("small", "small", "medium", "medium", "large", "large")
+    measured_cases = [
+        {
+            **_case(f"case-{index}", f"project-{index}", stratum),
+            "phase": "measured",
+        }
+        for index, stratum in enumerate(strata, 1)
+    ]
+    suite = {
+        "schemaVersion": 1,
+        "suiteId": "source-study",
+        "profileId": "profile",
+        "benchmark": {
+            "name": "BugsInPy",
+            "repository": "https://example.invalid/benchmark.git",
+            "revision": "a" * 40,
+        },
+        "seed": 20260728,
+        "createdAt": "now",
+        "cases": [*pilot_cases, *measured_cases],
+    }
+    results = [
+        result
+        for case in suite["cases"]
+        for result in (
+            _result(
+                case["caseId"],
+                "frontier-alone",
+                total_tokens=1_000,
+                phase=case["phase"],
+            ),
+            _result(
+                case["caseId"],
+                "mlx-swarm",
+                total_tokens=400,
+                phase=case["phase"],
+            ),
+        )
+    ]
+    subset, selected, calibration = preliminary_study_subset(
+        suite,
+        results,
+    )
+    assert subset["suiteId"] == "source-study-preliminary-6"
+    assert len(calibration) == 4
+    assert len(selected) == 16
+    measured = [
+        case for case in subset["cases"] if case["phase"] == "measured"
+    ]
+    assert len({case["project"] for case in measured}) == 6
+    assert [
+        case["reference"]["stratum"] for case in measured
+    ].count("small") == 2
+    summary = aggregate_results(subset, selected, bootstrap_samples=100)
+    assert summary["claim"]["status"] == "tradeoff_measured"
 
 
 def test_claim_gate_fails_on_score_regression_or_missing_usage() -> None:

@@ -1,0 +1,118 @@
+{
+  "caseId": "fastapi-14",
+  "project": "fastapi",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "fastapi-14",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 190.5605025410041,
+    "phaseSeconds": {
+      "frontier": 185.02333862498926,
+      "oracle": 4.2852707089914475
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 423838,
+      "cachedInputTokens": 370432,
+      "completionTokens": 5705,
+      "reasoningTokens": 3530,
+      "totalTokens": 429543,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 423838,
+          "cachedInputTokens": 370432,
+          "completionTokens": 5705,
+          "reasoningTokens": 3530,
+          "totalTokens": 429543,
+          "malformedLines": 0
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "be40566b8987ec8faf859a64eafb1e4a2730a023e8f07adb1f2696e6bd4efab0",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/fastapi-306e586fa8cd0cab/bin/python -m pytest tests/test_additional_properties.py::test_additional_properties_schema\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-14/arms/frontier-alone/oracle\ncollected 1 item\n\ntests/test_additional_properties.py .                                    [100%]\n\n============================== 1 passed in 2.02s ===============================\n"
+    },
+    "recordedAt": "2026-07-28T17:55:25.816109+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "fastapi-14",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "failed",
+    "completed": false,
+    "score": 0,
+    "elapsedSeconds": 259.30670149999787,
+    "phaseSeconds": {
+      "planning": 136.56807016700623,
+      "local": 122.00851779199729,
+      "review": 0.0,
+      "oracle": 0.0
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 186410,
+      "cachedInputTokens": 145920,
+      "completionTokens": 5622,
+      "reasoningTokens": 2238,
+      "totalTokens": 192032,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 186410,
+          "cachedInputTokens": 145920,
+          "completionTokens": 5622,
+          "reasoningTokens": 2238,
+          "totalTokens": 192032,
+          "malformedLines": 0
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 9845,
+      "generationTokens": 4800,
+      "generationCalls": 3,
+      "modelLoads": 1
+    },
+    "repairs": 2,
+    "modelLoads": 1,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": null,
+      "changedFiles": 0
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": null,
+      "evidence": "Candidate patch is empty."
+    },
+    "recordedAt": "2026-07-28T18:00:08.024174+00:00"
+  },
+  "frontierTokenDelta": 237511,
+  "timeDeltaSeconds": -68.74619895899377
+}

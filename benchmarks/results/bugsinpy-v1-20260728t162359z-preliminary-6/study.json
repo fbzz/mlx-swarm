@@ -1,0 +1,239 @@
+{
+  "schemaVersion": 1,
+  "suite": {
+    "schemaVersion": 1,
+    "suiteId": "bugsinpy-v1-20260728t162359z-preliminary-6",
+    "profileId": "bugsinpy-v1",
+    "benchmark": {
+      "name": "BugsInPy",
+      "repository": "https://github.com/soarsmu/BugsInPy.git",
+      "revision": "11c5f1eea954a42132cfd06bf257766a7963e0fd"
+    },
+    "seed": 20260728,
+    "createdAt": "2026-07-28T16:55:41.269193+00:00",
+    "cases": [
+      {
+        "caseId": "black-11",
+        "project": "black",
+        "bugId": 11,
+        "repository": "https://github.com/psf/black",
+        "buggyCommit": "283a5d53a8d57e8e186a08c9fbf249e1fbe7bc94",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/data/comments6.py",
+          "tests/test_black.py"
+        ],
+        "reference": {
+          "paths": [
+            "black.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 26,
+          "sha256": "8e436570bcd903a4d22a14a1f809e1d25e96ff623152a004759a3eb14e7a67ee",
+          "stratum": "large"
+        },
+        "phase": "pilot",
+        "objective": "Repair BugsInPy case black-11 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "fastapi-6",
+        "project": "fastapi",
+        "bugId": 6,
+        "repository": "https://github.com/tiangolo/fastapi",
+        "buggyCommit": "5db99a27cf640864b4793807811848698c5ff4a2",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/test_forms_from_non_typing_sequences.py"
+        ],
+        "reference": {
+          "paths": [
+            "fastapi/dependencies/utils.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 6,
+          "sha256": "b9a1d34ba803751762f2728a2d7a8d3b5917431bd92eff944272c527ea177123",
+          "stratum": "medium"
+        },
+        "phase": "pilot",
+        "objective": "Repair BugsInPy case fastapi-6 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "black-7",
+        "project": "black",
+        "bugId": 7,
+        "repository": "https://github.com/psf/black",
+        "buggyCommit": "18119d38466652ae818436cb497f601294ed4558",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/data/tupleassign.py",
+          "tests/test_black.py"
+        ],
+        "reference": {
+          "paths": [
+            "black.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 14,
+          "sha256": "d38d70d4ee808a09cb19097d06e58bb87eec9c87dd366d0315928701f2260f25",
+          "stratum": "large"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case black-7 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "fastapi-14",
+        "project": "fastapi",
+        "bugId": 14,
+        "repository": "https://github.com/tiangolo/fastapi",
+        "buggyCommit": "2ddb804940bbcad4ed730b2a910c8fd3c1167127",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/test_additional_properties.py"
+        ],
+        "reference": {
+          "paths": [
+            "fastapi/openapi/models.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 6,
+          "sha256": "75c5ff2305dee72d8ee18117c92d15a20d8e2e0f263044b5d8fd16a89b491eeb",
+          "stratum": "medium"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case fastapi-14 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "luigi-20",
+        "project": "luigi",
+        "bugId": 20,
+        "repository": "https://github.com/spotify/luigi",
+        "buggyCommit": "b958140c2ec838e590a5be02dbac7414d5d0bf17",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "test/task_test.py"
+        ],
+        "reference": {
+          "paths": [
+            "luigi/task.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 3,
+          "sha256": "941ba0b6a189ee07162251f964673157d40eeb7a9477f4a4e21165761efcb501",
+          "stratum": "small"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case luigi-20 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "scrapy-19",
+        "project": "scrapy",
+        "bugId": 19,
+        "repository": "https://github.com/scrapy/scrapy",
+        "buggyCommit": "e328a9b9dfa4fbc79c59ed4f45f757e998301c31",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/test_http_cookies.py"
+        ],
+        "reference": {
+          "paths": [
+            "scrapy/http/cookies.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 22,
+          "sha256": "4f3b7346ebaf5343c9e10756558a470976c055fe0d73b338578133c938df58ca",
+          "stratum": "large"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case scrapy-19 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "sanic-5",
+        "project": "sanic",
+        "bugId": 5,
+        "repository": "https://github.com/huge-success/sanic",
+        "buggyCommit": "e3a27c2cc485d57aa1ff87d9f69098e4ab12727e",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/test_logging.py"
+        ],
+        "reference": {
+          "paths": [
+            "sanic/log.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 2,
+          "sha256": "ad733159d21a10c63d6819b0f1b8700e385f2c869c422e9d666cf0df6049ac62",
+          "stratum": "small"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case sanic-5 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "tornado-8",
+        "project": "tornado",
+        "bugId": 8,
+        "repository": "https://github.com/tornadoweb/tornado",
+        "buggyCommit": "34c43f4775971ab9b2b8ed43356f218add6387b2",
+        "pythonVersion": "3.7",
+        "testFiles": [
+          "tornado/test/websocket_test.py"
+        ],
+        "reference": {
+          "paths": [
+            "tornado/websocket.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 8,
+          "sha256": "aa1f22b22c06cc8bc2f150dc67adcd55dce846bcecbdaceb15626a776ee96b3e",
+          "stratum": "medium"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case tornado-8 so every frozen verification command passes without modifying tests or benchmark evidence."
+      }
+    ]
+  },
+  "environment": {
+    "schemaVersion": 1,
+    "recordedAt": "2026-07-28T16:55:42.669391+00:00",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.9",
+    "codexVersion": "codex-cli 0.145.0",
+    "frontierModel": "gpt-5.6-sol",
+    "reasoningEffort": "high",
+    "mlxSwarmCommit": "2f741c0f4f195272c65feef12939db1096c36717",
+    "mlxSwarmSourceDirty": false,
+    "hardware": {
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "processor": "arm",
+      "memoryBytes": 51539607552
+    },
+    "runtime": {
+      "python": "3.13.9",
+      "git": "git version 2.52.0",
+      "uv": "uv 0.10.0 (0ba432459 2026-02-05)",
+      "benchmarkBuildJobs": 4,
+      "packages": {
+        "mlx": "0.32.0",
+        "mlx-lm": "0.31.3",
+        "huggingface-hub": "1.25.1"
+      },
+      "container": {
+        "image": "mlx-swarm-bugsinpy-amd64:11c5f1eea954-py37",
+        "digest": "sha256:f577bdd087333bbc04de8641a2523cd47860dea704aee62339283a40030ee1cb",
+        "architecture": "amd64",
+        "os": "linux",
+        "sizeBytes": 223560071,
+        "platform": "linux/amd64"
+      }
+    },
+    "localModel": {
+      "repository": "local/qwen35-4b-opus-uncensored-6bit",
+      "revision": "local",
+      "path": null,
+      "fingerprint": "e017ecf449428c52171387b7dee317e4803708940b8f50ea1c1ef0d25529cd3d"
+    },
+    "profileSha256": "3839de867860d9d9f94d56c66b8330a3afa7533a3d237b94c8fa1e1319625986"
+  }
+}

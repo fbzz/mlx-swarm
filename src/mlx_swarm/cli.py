@@ -21,6 +21,7 @@ from .evaluation import (
     EvaluationRunner,
     EvaluationStore,
     load_evaluation_profile,
+    preliminary_evaluation_profile,
     profile_payload,
     update_readme_economics,
 )
@@ -254,6 +255,11 @@ def _parser() -> argparse.ArgumentParser:
         help="Freeze a pinned BugsInPy pilot and measured suite.",
     )
     evaluation_prepare.add_argument("profile", type=Path)
+    evaluation_prepare.add_argument(
+        "--preliminary",
+        action="store_true",
+        help="Prepare 2 calibration and 6 measured cases (one per project).",
+    )
     evaluation_run = evaluation_sub.add_parser(
         "run",
         help="Run or resume one paired evaluation phase.",
@@ -269,6 +275,11 @@ def _parser() -> argparse.ArgumentParser:
         type=Path,
         required=True,
         help="Original profile; its digest is checked against the snapshot.",
+    )
+    evaluation_run.add_argument(
+        "--preliminary",
+        action="store_true",
+        help="Use the derived 2+6 profile frozen by prepare --preliminary.",
     )
     evaluation_status = evaluation_sub.add_parser(
         "status",
@@ -296,6 +307,14 @@ def _parser() -> argparse.ArgumentParser:
         "--check",
         action="store_true",
         help="Verify the generated README block without changing it.",
+    )
+    evaluation_report.add_argument(
+        "--preliminary",
+        action="store_true",
+        help=(
+            "Export a deterministic 2-calibration / 6-measured partial study "
+            "without enabling the 30-pair claim gate."
+        ),
     )
 
     skill_parser = sub.add_parser(
@@ -390,6 +409,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             evaluation_store = EvaluationStore(config)
             if args.evaluation_command == "prepare":
                 profile = load_evaluation_profile(args.profile)
+                if args.preliminary:
+                    profile = preliminary_evaluation_profile(profile)
                 _print(evaluation_store.prepare(profile))
                 return 0
             if args.evaluation_command == "status":
@@ -397,6 +418,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             if args.evaluation_command == "run":
                 profile = load_evaluation_profile(args.profile)
+                if args.preliminary:
+                    profile = preliminary_evaluation_profile(profile)
                 detail = evaluation_store.detail(args.evaluation_id)
                 expected = detail["environment"].get("profileSha256")
                 actual = canonical_json_sha256(profile_payload(profile))
@@ -422,13 +445,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else (
                     evaluation_store.workspace_root
                     / DEFAULT_PUBLIC_RESULTS_DIR
-                    / args.evaluation_id
+                    / (
+                        f"{args.evaluation_id}-preliminary-6"
+                        if args.preliminary
+                        else args.evaluation_id
+                    )
                 )
             )
             report = evaluation_store.report(
                 args.evaluation_id,
                 export_dir,
                 check=args.check,
+                preliminary=args.preliminary,
             )
             readme = (
                 args.readme
@@ -442,6 +470,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             _print({
                 "evaluationId": args.evaluation_id,
+                "reportId": report["reportId"],
                 "exportDir": str(export_dir.resolve()),
                 "readme": str(readme.resolve()),
                 "checked": args.check,
