@@ -3386,7 +3386,7 @@ def docker_runtime_argv(
         "--env",
         "NO_COLOR=1",
         "--env",
-        "UV_CACHE_DIR=/evaluation/cache/uv",
+        "UV_CACHE_DIR=/tmp/uv-cache",
         "--env",
         "UV_PYTHON_INSTALL_DIR=/evaluation/cache/python",
         "--env",

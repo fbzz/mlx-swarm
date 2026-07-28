@@ -781,6 +781,7 @@ def test_container_runtime_is_confined_and_network_is_explicit(
     assert "no-new-privileges" in argv
     assert "CC=ccache gcc" in argv
     assert "CXX=ccache g++" in argv
+    assert "UV_CACHE_DIR=/tmp/uv-cache" in argv
     assert argv[argv.index("CCACHE_DISABLE=true") - 1] == "--env"
     assert argv[-3:] == ["python", "-m", "pytest"]
     assert container_path(workspace, evaluation_root) == (
