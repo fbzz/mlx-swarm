@@ -37,6 +37,7 @@
   },
   "frontier": {
     "command": "codex",
+    "codexVersion": "codex-cli 0.145.0",
     "model": "gpt-5.6-sol",
     "reasoningEffort": "high",
     "armTimeoutSeconds": 2700,

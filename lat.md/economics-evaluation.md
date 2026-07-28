@@ -20,6 +20,9 @@ starts from a history-free repository containing only the buggy tree and the
 fixed revision's designated tests.
 
 Preparation requires a clean MLX Swarm checkout and records its source commit.
+The profile also pins the exact Codex CLI version. Preparation and every run
+phase fail before an arm starts if the resolved CLI version or canonical
+profile digest differs from the frozen environment.
 Every selected case must prove buggy-fails and fixed-passes before freezing;
 failed candidates are recorded, excluded, and deterministically replaced.
 After selection, the BugsInPy metadata clone and project mirrors are deleted.

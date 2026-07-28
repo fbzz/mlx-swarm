@@ -181,6 +181,20 @@ arms, the configured local MLX model with at most two repairs, a 45-minute
 ceiling per arm, seed `20260728`, a 20 GiB storage ceiling, and a 15 GiB
 free-space reserve.
 
+The profile pins `codex-cli 0.145.0`. Install that exact official CLI in the
+ignored benchmark tooling directory and put it first on `PATH` for every
+prepare, run, status, and report command:
+
+```bash
+npm install --prefix .swarm/tooling/codex-0.145.0 \
+  @openai/codex@0.145.0
+export PATH="$PWD/.swarm/tooling/codex-0.145.0/node_modules/.bin:$PATH"
+codex --version  # codex-cli 0.145.0
+```
+
+Preparation and execution fail closed if the CLI version or profile digest
+differs from the frozen environment.
+
 Prepare the immutable suite, pass the calibration gate, then run the measured
 pairs:
 

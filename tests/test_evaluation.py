@@ -24,6 +24,7 @@ from mlx_swarm.evaluation import (
     evaluation_write_roots,
     evaluation_case,
     exclusive_case_lock,
+    inspect_codex_version,
     inspect_container,
     is_dependency_or_project_install,
     load_evaluation_profile,
@@ -39,6 +40,7 @@ from mlx_swarm.evaluation import (
     run_swarm_with_synthetic_operator,
     sanitize_suite,
     select_cases,
+    split_constraint_text,
     update_readme_economics,
     usage_with_phases,
     validate_arm_result,
@@ -105,6 +107,7 @@ def _profile_payload(
         },
         "frontier": {
             "command": "codex",
+            "codexVersion": "codex-cli 0.145.0",
             "model": "gpt-5.6-sol",
             "reasoningEffort": "high",
             "armTimeoutSeconds": 2700,
@@ -225,6 +228,7 @@ def _result(
 def test_profile_is_strict_pinned_and_round_trips(tmp_path: Path) -> None:
     profile = load_evaluation_profile(_write_profile(tmp_path))
     assert profile.seed == 20260728
+    assert profile.frontier.codex_version == "codex-cli 0.145.0"
     assert profile.frontier.model == "gpt-5.6-sol"
     assert profile.frontier.reasoning_effort == "high"
     assert profile.storage.max_bytes == 20 * 1024**3
@@ -260,6 +264,29 @@ def test_profile_rejects_unpinned_revision_and_timeout_drift(
     floating_bootstrap["pythonBootstrap"][0] = "pip>=23"
     with pytest.raises(EvaluationError, match="exact"):
         load_evaluation_profile(_write_profile(tmp_path, floating_bootstrap))
+
+
+def test_codex_version_pin_and_constraint_chunking(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation._best_effort_version",
+        lambda _argv: "codex-cli 0.145.0",
+    )
+    assert inspect_codex_version(profile) == "codex-cli 0.145.0"
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation._best_effort_version",
+        lambda _argv: "codex-cli 0.139.0",
+    )
+    with pytest.raises(EvaluationError, match="version mismatch"):
+        inspect_codex_version(profile)
+
+    packet = "failure evidence\n" * 1_000
+    chunks = split_constraint_text(packet)
+    assert "".join(chunks) == packet
+    assert all(0 < len(chunk) <= 4_000 for chunk in chunks)
 
 
 def test_source_revision_uses_package_checkout_and_reports_dirty(
@@ -475,6 +502,10 @@ def test_prepare_replaces_failed_oracle_candidates_before_freeze(
     monkeypatch.setattr(
         "mlx_swarm.evaluation.inspect_container",
         lambda _profile: {"digest": _profile.container.digest},
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.inspect_codex_version",
+        lambda _profile: _profile.frontier.codex_version,
     )
     monkeypatch.setattr(
         "mlx_swarm.evaluation.enumerate_bugsinpy_candidates",

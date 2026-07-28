@@ -102,6 +102,7 @@ class EvaluationError(RuntimeError):
 @dataclass(frozen=True)
 class FrontierSettings:
     command: str
+    codex_version: str
     model: str
     reasoning_effort: str
     arm_timeout_seconds: int
@@ -346,6 +347,7 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         "profile.frontier",
         {
             "command",
+            "codexVersion",
             "model",
             "reasoningEffort",
             "armTimeoutSeconds",
@@ -356,6 +358,10 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
     )
     frontier = FrontierSettings(
         command=_text(frontier_raw["command"], "profile.frontier.command"),
+        codex_version=_text(
+            frontier_raw["codexVersion"],
+            "profile.frontier.codexVersion",
+        ),
         model=_text(frontier_raw["model"], "profile.frontier.model"),
         reasoning_effort=_enum(
             frontier_raw["reasoningEffort"],
@@ -513,6 +519,7 @@ def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
         },
         "frontier": {
             "command": profile.frontier.command,
+            "codexVersion": profile.frontier.codex_version,
             "model": profile.frontier.model,
             "reasoningEffort": profile.frontier.reasoning_effort,
             "armTimeoutSeconds": profile.frontier.arm_timeout_seconds,
@@ -1525,6 +1532,7 @@ class EvaluationStore:
                 "MLX Swarm source is dirty; commit the benchmark harness "
                 "before freezing an evaluation."
             )
+        inspect_codex_version(profile)
         container = inspect_container(profile)
         self._check_storage(profile)
         evaluation_id = (
@@ -1959,6 +1967,16 @@ class EvaluationRunner:
         ):
             raise EvaluationError(
                 "MLX Swarm source differs from the prepared evaluation."
+            )
+        profile_digest = canonical_json_sha256(profile_payload(self.profile))
+        if profile_digest != detail["environment"].get("profileSha256"):
+            raise EvaluationError(
+                "Evaluation profile differs from the prepared evaluation."
+            )
+        current_codex = inspect_codex_version(self.profile)
+        if current_codex != detail["environment"].get("codexVersion"):
+            raise EvaluationError(
+                "Codex CLI differs from the prepared evaluation."
             )
         current_container = inspect_container(self.profile)
         frozen_container = (
@@ -2595,7 +2613,7 @@ class EvaluationRunner:
                 "Modify production code only; never modify tests or benchmark evidence.",
                 "Use the bugsinpy-acceptance verification profile for every mutating artifact.",
                 "Return a schema-v2 typed workspace plan.",
-                task_packet,
+                *split_constraint_text(task_packet),
             ],
             request_id=f"eval-{case['caseId']}",
         )
@@ -3576,6 +3594,20 @@ def frontier_alone_prompt(task_packet: str) -> str:
     )
 
 
+def split_constraint_text(
+    text: str,
+    *,
+    maximum: int = 4_000,
+) -> list[str]:
+    """Preserve a task packet in commander-sized deterministic chunks."""
+    if maximum < 1:
+        raise EvaluationError("Constraint chunk size must be positive.")
+    return [
+        text[index:index + maximum]
+        for index in range(0, len(text), maximum)
+    ]
+
+
 def codex_command(
     profile: EvaluationProfile,
     *,
@@ -4440,7 +4472,7 @@ def environment_fingerprint(
     *,
     container: dict[str, Any],
 ) -> dict[str, Any]:
-    codex_version = _best_effort_version([profile.frontier.command, "--version"])
+    codex_version = inspect_codex_version(profile)
     source = mlx_swarm_source_revision()
     model_path = None
     model_fingerprint = None
@@ -4496,6 +4528,18 @@ def environment_fingerprint(
         },
         "profileSha256": canonical_json_sha256(profile_payload(profile)),
     }
+
+
+def inspect_codex_version(profile: EvaluationProfile) -> str:
+    """Fail closed unless the configured Codex CLI matches the profile pin."""
+    actual = _best_effort_version([profile.frontier.command, "--version"])
+    if actual != profile.frontier.codex_version:
+        raise EvaluationError(
+            "Codex CLI version mismatch: "
+            f"expected {profile.frontier.codex_version}, got "
+            f"{actual or 'unavailable'}."
+        )
+    return actual
 
 
 def mlx_swarm_source_revision() -> dict[str, Any]:
