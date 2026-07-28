@@ -11,7 +11,12 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from .backend import BatchBackend, MLXBatchBackend
-from .contracts import Plan, SwarmConfig, TaskDef
+from .contracts import (
+    Plan,
+    SwarmConfig,
+    TaskDef,
+    worker_capabilities_payload,
+)
 from .gates import evaluate_gate, gate_feedback_for_repair, normalize_output
 from .prompting import (
     compose_editing_prompt,
@@ -32,6 +37,20 @@ from .workspace import (
     revert_applied_artifact,
     run_verifications,
 )
+
+
+def _worker_strategy_compatible(
+    existing: dict[str, Any],
+    current: dict[str, Any],
+) -> bool:
+    """Accept the pre-capability snapshot shape for one compatibility cycle."""
+    if existing == current:
+        return True
+    legacy = {
+        "mode": current["mode"],
+        "reasoningMaxTokens": current["reasoningMaxTokens"],
+    }
+    return existing == legacy
 
 
 def execute_plan(
@@ -91,11 +110,17 @@ def _execute_plan_unlocked(
     worker_strategy = {
         "mode": config.worker.mode,
         "reasoningMaxTokens": config.worker.reasoning_max_tokens,
+        "capabilities": worker_capabilities_payload(
+            config.worker.capabilities
+        ),
     }
     existing_strategy = session.state.get("workerStrategy")
     if (
         isinstance(existing_strategy, dict)
-        and existing_strategy != worker_strategy
+        and not _worker_strategy_compatible(
+            existing_strategy,
+            worker_strategy,
+        )
     ):
         raise RuntimeError(
             "Resume worker strategy differs from the snapshotted session."

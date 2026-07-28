@@ -37,6 +37,7 @@ from .contracts import (
     WorkerConfig,
     load_config,
     load_plan,
+    worker_capabilities_payload,
 )
 from .session import Session, _run_id
 from .workspace import (
@@ -3457,8 +3458,13 @@ def run_local_replay_calibration(
     *,
     worker_mode: str,
     reasoning_max_tokens: int,
+    adapted_plan_dir: Path | None = None,
 ) -> dict[str, Any]:
-    """Replay frozen pilot plans locally without invoking a frontier adapter."""
+    """Replay pilot plans locally without invoking a frontier adapter.
+
+    Frozen-prompt replays remain the promotion authority. Capability-adapted
+    plans are explicitly diagnostic and never mutate the measured-work gate.
+    """
     if worker_mode not in {"direct", "reasoning-edit"}:
         raise EvaluationError("Unsupported local replay worker mode.")
     if not 64 <= reasoning_max_tokens <= 8192:
@@ -3472,6 +3478,18 @@ def run_local_replay_calibration(
             "Local replay requires a completed frozen calibration phase."
         )
     evaluation_dir = store._dir(evaluation_id)
+    diagnostic_only = adapted_plan_dir is not None
+    if adapted_plan_dir is not None:
+        approved_root = config.source.parent.resolve()
+        adapted_plan_dir = adapted_plan_dir.resolve()
+        try:
+            adapted_plan_dir.relative_to(approved_root)
+        except ValueError as exc:
+            raise EvaluationError(
+                "Adapted plan directory must stay below the config directory."
+            ) from exc
+        if not adapted_plan_dir.is_dir():
+            raise EvaluationError("Adapted plan directory does not exist.")
     profile = load_evaluation_profile(
         evaluation_dir / "profile.snapshot.json"
     )
@@ -3495,6 +3513,7 @@ def run_local_replay_calibration(
         worker=WorkerConfig(
             mode=worker_mode,
             reasoning_max_tokens=reasoning_max_tokens,
+            capabilities=config.worker.capabilities,
         ),
     )
     runner = EvaluationRunner(replay_config_source, store, profile)
@@ -3505,18 +3524,23 @@ def run_local_replay_calibration(
         case_root = evaluation_dir / "cases" / case_id
         runtime = _read_json(case_root / "runtime.json")
         source_plan = (
-            case_root
-            / "arms"
-            / "mlx-swarm"
-            / "artifacts"
-            / "_commander"
-            / "requests"
-            / f"eval-{case_id}"
-            / "plan.validated.json"
+            adapted_plan_dir / f"{case_id}.json"
+            if adapted_plan_dir is not None
+            else (
+                case_root
+                / "arms"
+                / "mlx-swarm"
+                / "artifacts"
+                / "_commander"
+                / "requests"
+                / f"eval-{case_id}"
+                / "plan.validated.json"
+            )
         )
         if not source_plan.is_file():
             raise EvaluationError(
-                f"Frozen commander plan is missing for {case_id}."
+                f"{'Adapted' if diagnostic_only else 'Frozen commander'} "
+                f"plan is missing for {case_id}."
             )
         case_replay_root = replay_root / case_id
         repository = fresh_arm_repository(
@@ -3543,14 +3567,20 @@ def run_local_replay_calibration(
         )
         _atomic_json(case_replay_root / "plan.snapshot.json", plan.raw)
 
-        source_prompts = frozen_prompt_evidence(case_root)
-        required_prompt_tasks = sorted(task.id for task in plan.tasks)
-        if sorted(item["taskId"] for item in source_prompts) != (
-            required_prompt_tasks
-        ):
-            raise EvaluationError(
-                f"Frozen initial prompt evidence is incomplete for {case_id}."
-            )
+        source_prompts = (
+            []
+            if diagnostic_only
+            else frozen_prompt_evidence(case_root)
+        )
+        if not diagnostic_only:
+            required_prompt_tasks = sorted(task.id for task in plan.tasks)
+            if sorted(item["taskId"] for item in source_prompts) != (
+                required_prompt_tasks
+            ):
+                raise EvaluationError(
+                    "Frozen initial prompt evidence is incomplete for "
+                    f"{case_id}."
+                )
         preview = execution_preview(replay_config, plan)
         run_id = _run_id()
         session_dir = artifacts_root / plan.plan_id / run_id
@@ -3575,10 +3605,17 @@ def run_local_replay_calibration(
             "replayId": replay_id,
             "sourceEvaluationId": evaluation_id,
             "sourcePlan": str(source_plan),
+            "planSourceType": (
+                "capability-adapted"
+                if diagnostic_only
+                else "frozen-frontier"
+            ),
+            "diagnosticOnly": diagnostic_only,
             "sourcePromptEvidence": source_prompts,
             "frontierCalls": 0,
         }
-        install_frozen_prompt_replay(session, source_prompts)
+        if not diagnostic_only:
+            install_frozen_prompt_replay(session, source_prompts)
         session.attach_workspace(
             snapshot,
             execution_approval={
@@ -3660,6 +3697,12 @@ def run_local_replay_calibration(
             "workerMode": worker_mode,
             "reasoningMaxTokens": reasoning_max_tokens,
             "frontierCalls": 0,
+            "planSourceType": (
+                "capability-adapted"
+                if diagnostic_only
+                else "frozen-frontier"
+            ),
+            "diagnosticOnly": diagnostic_only,
             "sourcePlan": str(source_plan),
             "sourcePlanSha256": canonical_json_sha256(plan.raw),
             "sourcePromptEvidence": source_prompts,
@@ -3705,6 +3748,8 @@ def run_local_replay_calibration(
         required_cases,
         results,
     )
+    if diagnostic_only:
+        promotion_gate = capability_diagnostic_gate(promotion_gate)
     passed_cases = promotion_gate["passedCases"]
     gate_passed = promotion_gate["status"] == "passed"
     replay = {
@@ -3714,6 +3759,12 @@ def run_local_replay_calibration(
         "workerMode": worker_mode,
         "reasoningMaxTokens": reasoning_max_tokens,
         "frontierCalls": 0,
+        "planSourceType": (
+            "capability-adapted"
+            if diagnostic_only
+            else "frozen-frontier"
+        ),
+        "diagnosticOnly": diagnostic_only,
         "mlxSwarmCommit": source_revision["commit"],
         "model": {
             "repository": replay_config_source.model.repository,
@@ -3728,26 +3779,27 @@ def run_local_replay_calibration(
     }
     _exclusive_json(replay_root / "replay.json", replay)
 
-    state_path = evaluation_dir / "evaluation.json"
-    current_state = _read_json(state_path)
-    current_state["localReplayGate"] = {
-        "status": "passed" if gate_passed else "failed",
-        "replayId": replay_id,
-        "workerMode": worker_mode,
-        "requiredCases": required_cases,
-        "passedCases": passed_cases,
-        "recordedAt": replay["recordedAt"],
-    }
-    current_state["measuredStatus"] = (
-        "pending" if gate_passed else "locked_local_replay"
-    )
-    current_state["status"] = (
-        "pilot_completed"
-        if gate_passed
-        else "pilot_completed_local_replay_failed"
-    )
-    current_state["updatedAt"] = utc_now()
-    _atomic_json(state_path, current_state)
+    if not diagnostic_only:
+        state_path = evaluation_dir / "evaluation.json"
+        current_state = _read_json(state_path)
+        current_state["localReplayGate"] = {
+            "status": "passed" if gate_passed else "failed",
+            "replayId": replay_id,
+            "workerMode": worker_mode,
+            "requiredCases": required_cases,
+            "passedCases": passed_cases,
+            "recordedAt": replay["recordedAt"],
+        }
+        current_state["measuredStatus"] = (
+            "pending" if gate_passed else "locked_local_replay"
+        )
+        current_state["status"] = (
+            "pilot_completed"
+            if gate_passed
+            else "pilot_completed_local_replay_failed"
+        )
+        current_state["updatedAt"] = utc_now()
+        _atomic_json(state_path, current_state)
     return replay
 
 
@@ -3777,6 +3829,27 @@ def local_replay_promotion_gate(
             if gate_passed
             else "Measured work remains locked until every frozen "
             "calibration replay passes the independent oracle."
+        ),
+    }
+
+
+def capability_diagnostic_gate(
+    replay_gate: dict[str, Any],
+) -> dict[str, Any]:
+    """Prevent capability-adapted evidence from unlocking measured work."""
+    capability_passed = replay_gate.get("status") == "passed"
+    return {
+        **replay_gate,
+        "capabilityResult": "passed" if capability_passed else "failed",
+        "diagnosticOnly": True,
+        "measuredEligible": False,
+        "reason": (
+            "Every capability-adapted calibration passed, but diagnostic "
+            "plans cannot unlock measured work. Freeze a new evaluation to "
+            "create a promotion-authoritative replay."
+            if capability_passed
+            else "The capability-adapted calibration failed; measured work "
+            "remains locked."
         ),
     }
 
@@ -5150,6 +5223,9 @@ def write_evaluation_config(
         "worker": {
             "mode": source.worker.mode,
             "reasoningMaxTokens": source.worker.reasoning_max_tokens,
+            "capabilities": worker_capabilities_payload(
+                source.worker.capabilities
+            ),
         },
         "workspace": {
             "writeRoots": list(
@@ -5961,6 +6037,9 @@ def environment_fingerprint(
         "localWorker": {
             "mode": config.worker.mode,
             "reasoningMaxTokens": config.worker.reasoning_max_tokens,
+            "capabilities": worker_capabilities_payload(
+                config.worker.capabilities
+            ),
         },
         "profileSha256": canonical_json_sha256(profile_payload(profile)),
     }

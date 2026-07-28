@@ -607,6 +607,8 @@ def test_cli_evaluation_local_replay_selects_local_worker_strategy(
             "reasoning-edit",
             "--reasoning-max-tokens",
             "768",
+            "--adapted-plan-dir",
+            str(tmp_path / "adapted"),
         ]) == 0
 
     payload = json.loads(capsys.readouterr().out)
@@ -615,4 +617,5 @@ def test_cli_evaluation_local_replay_selects_local_worker_strategy(
     assert run_replay.call_args.kwargs == {
         "worker_mode": "reasoning-edit",
         "reasoning_max_tokens": 768,
+        "adapted_plan_dir": tmp_path / "adapted",
     }

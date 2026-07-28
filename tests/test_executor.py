@@ -20,7 +20,11 @@ from mlx_swarm.contracts import (
     load_config,
     load_plan,
 )
-from mlx_swarm.executor import _generate_with_worker_strategy, execute_plan
+from mlx_swarm.executor import (
+    _generate_with_worker_strategy,
+    _worker_strategy_compatible,
+    execute_plan,
+)
 from mlx_swarm.session import Session
 
 
@@ -43,6 +47,22 @@ class FakeBackend:
 
     def close(self) -> None:
         self.closed = True
+
+
+def test_legacy_worker_strategy_snapshot_remains_compatible() -> None:
+    current = {
+        "mode": "direct",
+        "reasoningMaxTokens": 1200,
+        "capabilities": {"parameterScale": "4B"},
+    }
+    assert _worker_strategy_compatible({
+        "mode": "direct",
+        "reasoningMaxTokens": 1200,
+    }, current)
+    assert not _worker_strategy_compatible({
+        "mode": "reasoning-edit",
+        "reasoningMaxTokens": 1200,
+    }, current)
 
 
 def _config(tmp_path: Path, *, max_workers: int = 8) -> SwarmConfig:

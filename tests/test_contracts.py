@@ -116,6 +116,76 @@ def test_load_config_reasoning_edit_worker_is_strict(tmp_path: Path) -> None:
         load_config(invalid)
 
 
+def test_load_config_worker_capability_contract_is_strict(
+    tmp_path: Path,
+) -> None:
+    evidence = "a" * 64
+    config = load_config(_write_config(tmp_path, {
+        "worker": {
+            "mode": "direct",
+            "reasoningMaxTokens": 512,
+            "capabilities": {
+                "parameterScale": "4B",
+                "contextWindowTokens": 262144,
+                "maxGenerationTokens": 800,
+                "specialization": "general",
+                "delegationLevel": "exact-edit",
+                "strengths": ["Exact bounded replacements."],
+                "limitations": ["Unreliable independent diagnosis."],
+                "calibration": {
+                    "status": "failed",
+                    "passedCases": 0,
+                    "totalCases": 2,
+                    "evidenceSha256": evidence,
+                },
+            },
+        },
+    }))
+    capability = config.worker.capabilities
+    assert capability.parameter_scale == "4B"
+    assert capability.context_window_tokens == 262144
+    assert capability.max_generation_tokens == 800
+    assert capability.delegation_level == "exact-edit"
+    assert capability.calibration.evidence_sha256 == evidence
+
+    invalid = _write_config(tmp_path, {
+        "worker": {
+            "capabilities": {
+                "calibration": {
+                    "status": "passed",
+                    "passedCases": 1,
+                    "totalCases": 2,
+                    "evidenceSha256": evidence,
+                },
+            },
+        },
+    })
+    with pytest.raises(ContractError, match="every case"):
+        load_config(invalid)
+
+
+def test_plan_generation_cannot_exceed_worker_capability(
+    tmp_path: Path,
+) -> None:
+    config = load_config(_write_config(tmp_path, {
+        "worker": {
+            "capabilities": {
+                "maxGenerationTokens": 700,
+            },
+        },
+    }))
+    plan_path = _write_plan(tmp_path, {
+        "tasks": [{
+            "id": "task-a",
+            "role": "implementation",
+            "prompt": "Do something",
+            "generationOverride": {"max_tokens": 701},
+        }],
+    })
+    with pytest.raises(ContractError, match="maxGenerationTokens"):
+        load_plan(plan_path, config)
+
+
 # ---------------------------------------------------------------------------
 # Plan
 # ---------------------------------------------------------------------------

@@ -22,6 +22,7 @@ from .contracts import (
     Plan,
     SwarmConfig,
     load_plan,
+    worker_capabilities_payload,
 )
 
 COMMANDER_SCHEMA_VERSION = 1
@@ -344,6 +345,7 @@ def build_plan_prompt(
     constraints = "\n".join(
         f"- {constraint}" for constraint in request["constraints"]
     ) or "- None supplied."
+    worker_capability_contract = _worker_capability_contract(config)
     workspace_contract = ""
     task_workspace_fields = ""
     schema_version = 1
@@ -397,6 +399,7 @@ When a source comes from a workspace file, include its repository-relative
 path in the label and copy one exact contiguous excerpt. Never summarize,
 rewrite, or silently remove lines inside a source excerpt.
 Do not ask local workers to call tools, execute code, or read arbitrary paths.
+{worker_capability_contract}
 
 CAUSAL DIAGNOSIS GATE
 - Before emitting the plan, inspect the supplied failure evidence and trace the
@@ -423,6 +426,8 @@ PLAN LIMITS
 - maximum local batch workers: {min(config.batch.max_workers, MAX_WORKERS)}.
 - worker prompt budget: {min(config.batch.max_prompt_characters, MAX_PROMPT_CHARS)} characters.
 - use deterministic gates wherever artifact shape can be checked.
+- no task generationOverride.max_tokens may exceed \
+{config.worker.capabilities.max_generation_tokens}.
 {workspace_contract}
 
 TOP-LEVEL SHAPE
@@ -457,7 +462,7 @@ TOP-LEVEL SHAPE
       "generationOverride": {{
         "temperature": 0.0,
         "top_p": 1.0,
-        "max_tokens": 1200
+        "max_tokens": {min(1200, config.worker.capabilities.max_generation_tokens)}
       }},
       "gate": {{
         "requiredPatterns": [{{"id": "rule-id", "pattern": "regex"}}],
@@ -473,6 +478,69 @@ TOP-LEVEL SHAPE
     }}
   ]
 }}
+"""
+
+
+def _worker_capability_contract(config: SwarmConfig) -> str:
+    capability = worker_capabilities_payload(config.worker.capabilities)
+    calibration = capability["calibration"]
+    strengths = "\n".join(
+        f"- {item}" for item in capability["strengths"]
+    ) or "- No strengths have been measured."
+    limitations = "\n".join(
+        f"- {item}" for item in capability["limitations"]
+    ) or "- Capability is unmeasured; assume limited independent diagnosis."
+    delegation_rules = {
+        "exact-edit": (
+            "- You own the causal diagnosis and edit design.\n"
+            "- Delegate one mechanical, bounded source transformation per "
+            "mutating task.\n"
+            "- Name exact files and symbols, include exact source anchors, "
+            "and state the precise old-to-new transformation. Do not "
+            "delegate discovery, architecture, API inference, or choosing "
+            "among fixes to the local worker."
+        ),
+        "bounded-implementation": (
+            "- You own and validate the causal diagnosis.\n"
+            "- Delegate only a bounded implementation with named files, "
+            "interfaces, invariants, and falsifiable acceptance conditions.\n"
+            "- Split broad changes so each worker has one locally checkable "
+            "responsibility."
+        ),
+        "autonomous": (
+            "- Workers may investigate within the exact supplied "
+            "authoritative sources, but still cannot inspect arbitrary files "
+            "or run commands.\n"
+            "- Preserve bounded tasks and deterministic gates."
+        ),
+    }[capability["delegationLevel"]]
+    return f"""
+WORKER CAPABILITY CONTRACT
+- This describes local generation capability, not worker concurrency.
+- model repository: {config.model.repository}
+- model revision: {config.model.revision or "(unreported)"}
+- parameter scale: {capability["parameterScale"]}
+- model context window: \
+{capability["contextWindowTokens"] or "(unreported)"} tokens
+- maximum generation per worker: {capability["maxGenerationTokens"]} tokens
+- specialization: {capability["specialization"]}
+- delegation level: {capability["delegationLevel"]}
+- generation mode: {config.worker.mode}
+- reasoning-stage token ceiling: {config.worker.reasoning_max_tokens}
+- prompt ceiling: {min(config.batch.max_prompt_characters, MAX_PROMPT_CHARS)} characters
+- local workers cannot inspect the workspace, call tools, run verification,
+  invent commands, or recover missing source context.
+- calibration: {calibration["status"]} \
+({calibration["passedCases"]}/{calibration["totalCases"]} passed; \
+evidence SHA-256: {calibration["evidenceSha256"] or "(none)"})
+Observed strengths:
+{strengths}
+Observed limitations:
+{limitations}
+Delegation policy:
+{delegation_rules}
+- The plan is authoritative. Do not ask the local model to validate or replace
+  your diagnosis; give it the minimum exact edit it must render.
 """
 
 

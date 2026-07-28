@@ -33,6 +33,14 @@ ARTIFACT_TYPES = {"patch", "test-suite", "review", "report"}
 MUTATING_ARTIFACT_TYPES = {"patch", "test-suite"}
 WORKER_OUTPUT_PROTOCOLS = {"artifact", "edit-manifest-v1"}
 WORKER_MODES = {"direct", "reasoning-edit"}
+WORKER_SPECIALIZATIONS = {"unknown", "general", "code", "mixed"}
+WORKER_DELEGATION_LEVELS = {
+    "exact-edit",
+    "bounded-implementation",
+    "autonomous",
+}
+WORKER_CALIBRATION_STATUSES = {"unmeasured", "passed", "failed"}
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
     "implementation": {"temperature": 0.15, "top_p": 0.9, "max_tokens": 1800},
@@ -66,9 +74,34 @@ class BatchConfig:
 
 
 @dataclass(frozen=True)
+class WorkerCalibration:
+    status: str = "unmeasured"
+    passed_cases: int = 0
+    total_cases: int = 0
+    evidence_sha256: str = ""
+
+
+@dataclass(frozen=True)
+class WorkerCapabilityProfile:
+    parameter_scale: str = "unknown"
+    context_window_tokens: int = 0
+    max_generation_tokens: int = 8192
+    specialization: str = "unknown"
+    delegation_level: str = "exact-edit"
+    strengths: tuple[str, ...] = ()
+    limitations: tuple[str, ...] = ()
+    calibration: WorkerCalibration = field(
+        default_factory=WorkerCalibration
+    )
+
+
+@dataclass(frozen=True)
 class WorkerConfig:
     mode: str = "direct"
     reasoning_max_tokens: int = 1200
+    capabilities: WorkerCapabilityProfile = field(
+        default_factory=WorkerCapabilityProfile
+    )
 
 
 @dataclass(frozen=True)
@@ -154,7 +187,7 @@ def load_config(path: Path) -> SwarmConfig:
         worker_raw,
         "config.worker",
         set(),
-        {"mode", "reasoningMaxTokens"},
+        {"mode", "reasoningMaxTokens", "capabilities"},
     )
     worker_mode = _text(
         worker_raw.get("mode", "direct"),
@@ -165,14 +198,27 @@ def load_config(path: Path) -> SwarmConfig:
             "config.worker.mode must be one of: "
             + ", ".join(sorted(WORKER_MODES))
         )
+    reasoning_max_tokens = _integer(
+        worker_raw.get("reasoningMaxTokens", 1200),
+        "config.worker.reasoningMaxTokens",
+        64,
+        8192,
+    )
+    capabilities = _parse_worker_capabilities(
+        worker_raw.get("capabilities", {})
+    )
+    if (
+        worker_mode == "reasoning-edit"
+        and reasoning_max_tokens > capabilities.max_generation_tokens
+    ):
+        raise ContractError(
+            "config.worker.reasoningMaxTokens exceeds the worker capability "
+            "maxGenerationTokens."
+        )
     worker = WorkerConfig(
         mode=worker_mode,
-        reasoning_max_tokens=_integer(
-            worker_raw.get("reasoningMaxTokens", 1200),
-            "config.worker.reasoningMaxTokens",
-            64,
-            8192,
-        ),
+        reasoning_max_tokens=reasoning_max_tokens,
+        capabilities=capabilities,
     )
     return SwarmConfig(
         schema_version=schema_version,
@@ -185,6 +231,167 @@ def load_config(path: Path) -> SwarmConfig:
         workspace=workspace,
         worker=worker,
     )
+
+
+def _parse_worker_capabilities(raw: Any) -> WorkerCapabilityProfile:
+    value = _object(raw, "config.worker.capabilities")
+    _exact_keys(
+        value,
+        "config.worker.capabilities",
+        set(),
+        {
+            "parameterScale",
+            "contextWindowTokens",
+            "maxGenerationTokens",
+            "specialization",
+            "delegationLevel",
+            "strengths",
+            "limitations",
+            "calibration",
+        },
+    )
+    parameter_scale = _bounded_text(
+        value.get("parameterScale", "unknown"),
+        "config.worker.capabilities.parameterScale",
+        32,
+    )
+    specialization = _text(
+        value.get("specialization", "unknown"),
+        "config.worker.capabilities.specialization",
+    )
+    if specialization not in WORKER_SPECIALIZATIONS:
+        raise ContractError(
+            "config.worker.capabilities.specialization must be one of: "
+            + ", ".join(sorted(WORKER_SPECIALIZATIONS))
+        )
+    delegation_level = _text(
+        value.get("delegationLevel", "exact-edit"),
+        "config.worker.capabilities.delegationLevel",
+    )
+    if delegation_level not in WORKER_DELEGATION_LEVELS:
+        raise ContractError(
+            "config.worker.capabilities.delegationLevel must be one of: "
+            + ", ".join(sorted(WORKER_DELEGATION_LEVELS))
+        )
+    calibration_raw = _object(
+        value.get("calibration", {}),
+        "config.worker.capabilities.calibration",
+    )
+    _exact_keys(
+        calibration_raw,
+        "config.worker.capabilities.calibration",
+        set(),
+        {"status", "passedCases", "totalCases", "evidenceSha256"},
+    )
+    calibration_status = _text(
+        calibration_raw.get("status", "unmeasured"),
+        "config.worker.capabilities.calibration.status",
+    )
+    if calibration_status not in WORKER_CALIBRATION_STATUSES:
+        raise ContractError(
+            "config.worker.capabilities.calibration.status must be one of: "
+            + ", ".join(sorted(WORKER_CALIBRATION_STATUSES))
+        )
+    passed_cases = _integer(
+        calibration_raw.get("passedCases", 0),
+        "config.worker.capabilities.calibration.passedCases",
+        0,
+        10_000,
+    )
+    total_cases = _integer(
+        calibration_raw.get("totalCases", 0),
+        "config.worker.capabilities.calibration.totalCases",
+        0,
+        10_000,
+    )
+    evidence_sha256 = _text(
+        calibration_raw.get("evidenceSha256", ""),
+        "config.worker.capabilities.calibration.evidenceSha256",
+        allow_empty=True,
+    )
+    if passed_cases > total_cases:
+        raise ContractError(
+            "config.worker.capabilities.calibration.passedCases cannot "
+            "exceed totalCases."
+        )
+    if calibration_status == "unmeasured":
+        if passed_cases or total_cases or evidence_sha256:
+            raise ContractError(
+                "Unmeasured worker calibration must use zero cases and an "
+                "empty evidenceSha256."
+            )
+    else:
+        if total_cases == 0 or _SHA256.fullmatch(evidence_sha256) is None:
+            raise ContractError(
+                "Measured worker calibration requires cases and a lowercase "
+                "SHA-256 evidence digest."
+            )
+        if (
+            calibration_status == "passed"
+            and passed_cases != total_cases
+        ):
+            raise ContractError(
+                "Passed worker calibration requires every case to pass."
+            )
+        if (
+            calibration_status == "failed"
+            and passed_cases == total_cases
+        ):
+            raise ContractError(
+                "Failed worker calibration requires at least one failed case."
+            )
+    return WorkerCapabilityProfile(
+        parameter_scale=parameter_scale,
+        context_window_tokens=_integer(
+            value.get("contextWindowTokens", 0),
+            "config.worker.capabilities.contextWindowTokens",
+            0,
+            10_000_000,
+        ),
+        max_generation_tokens=_integer(
+            value.get("maxGenerationTokens", 8192),
+            "config.worker.capabilities.maxGenerationTokens",
+            1,
+            8192,
+        ),
+        specialization=specialization,
+        delegation_level=delegation_level,
+        strengths=_bounded_unique_text_array(
+            value.get("strengths", []),
+            "config.worker.capabilities.strengths",
+        ),
+        limitations=_bounded_unique_text_array(
+            value.get("limitations", []),
+            "config.worker.capabilities.limitations",
+        ),
+        calibration=WorkerCalibration(
+            status=calibration_status,
+            passed_cases=passed_cases,
+            total_cases=total_cases,
+            evidence_sha256=evidence_sha256,
+        ),
+    )
+
+
+def worker_capabilities_payload(
+    profile: WorkerCapabilityProfile,
+) -> dict[str, Any]:
+    """Serialize the strict worker capability statement."""
+    return {
+        "parameterScale": profile.parameter_scale,
+        "contextWindowTokens": profile.context_window_tokens,
+        "maxGenerationTokens": profile.max_generation_tokens,
+        "specialization": profile.specialization,
+        "delegationLevel": profile.delegation_level,
+        "strengths": list(profile.strengths),
+        "limitations": list(profile.limitations),
+        "calibration": {
+            "status": profile.calibration.status,
+            "passedCases": profile.calibration.passed_cases,
+            "totalCases": profile.calibration.total_cases,
+            "evidenceSha256": profile.calibration.evidence_sha256,
+        },
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +567,20 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
             t.get("generationOverride", {}),
             f"{name}.generationOverride",
         )
+        generation_tokens = int(
+            gen_override.get(
+                "max_tokens",
+                ROLE_DEFAULTS[role]["max_tokens"],
+            )
+        )
+        if (
+            generation_tokens
+            > config.worker.capabilities.max_generation_tokens
+        ):
+            raise ContractError(
+                f"{name}.generationOverride.max_tokens exceeds the worker "
+                "capability maxGenerationTokens."
+            )
         artifact_type = "report"
         allowed_paths: tuple[str, ...] = ()
         verification: tuple[str, ...] = ()
@@ -916,6 +1137,19 @@ def _text(value: Any, name: str, *, allow_empty: bool = False) -> str:
     return result
 
 
+def _bounded_text(
+    value: Any,
+    name: str,
+    maximum: int,
+    *,
+    allow_empty: bool = False,
+) -> str:
+    result = _text(value, name, allow_empty=allow_empty)
+    if len(result) > maximum:
+        raise ContractError(f"{name} exceeds {maximum} characters.")
+    return result
+
+
 def _identifier(value: Any, name: str) -> str:
     result = _text(value, name)
     if _IDENTIFIER.fullmatch(result) is None:
@@ -1003,3 +1237,25 @@ def _unique_text_array(
     if len(set(items)) != len(items):
         raise ContractError(f"{name} must not contain duplicates.")
     return items
+
+
+def _bounded_unique_text_array(
+    value: Any,
+    name: str,
+    *,
+    maximum_entries: int = 32,
+    maximum_characters: int = 500,
+) -> tuple[str, ...]:
+    items = _list(
+        value,
+        name,
+        minimum=0,
+        maximum=maximum_entries,
+    )
+    result = tuple(
+        _bounded_text(item, f"{name}[{index}]", maximum_characters)
+        for index, item in enumerate(items)
+    )
+    if len(set(result)) != len(result):
+        raise ContractError(f"{name} must not contain duplicates.")
+    return result

@@ -28,6 +28,7 @@ from mlx_swarm.evaluation import (
     apply_protocol_audit,
     bootstrap_mean_interval,
     build_task_packet,
+    capability_diagnostic_gate,
     container_path,
     copy_fixed_test_support,
     docker_connection_environment,
@@ -1676,6 +1677,18 @@ def test_local_replay_gate_requires_every_calibration_case() -> None:
     gate = local_replay_promotion_gate(required, both_pass)
     assert gate["status"] == "passed"
     assert gate["passedCases"] == required
+
+
+def test_capability_adapted_replay_never_unlocks_measured_work() -> None:
+    gate = capability_diagnostic_gate({
+        "status": "passed",
+        "measuredEligible": True,
+        "requiredCases": ["black-11", "fastapi-6"],
+        "passedCases": ["black-11", "fastapi-6"],
+    })
+    assert gate["capabilityResult"] == "passed"
+    assert gate["diagnosticOnly"] is True
+    assert gate["measuredEligible"] is False
 
 
 def test_frozen_prompt_replay_copies_exact_digest_bound_prompt(

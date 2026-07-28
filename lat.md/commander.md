@@ -13,7 +13,16 @@ For schema v1, the config directory is the approved inspection root. For
 schema v2, MLX Swarm resolves and displays the nearest Git top-level above the
 config directory. A deterministic prompt describes the objective, constraints,
 Plan schema, typed artifact fields, configured write roots/profile IDs, and
-local runtime limits.
+local runtime limits. It also contains a strict worker capability contract:
+model parameter scale, context window, prompt and generation ceilings,
+specialization, execution mode, observed strengths/limitations, calibration
+receipt, and maximum safe delegation level. This is explicitly distinct from
+the batch worker count.
+
+At `exact-edit`, the frontier retains causal diagnosis and edit design. Each
+mutating task names an exact file and symbol, supplies exact source anchors,
+and specifies one mechanical old-to-new transformation. The local model is
+not asked to discover APIs, select a repair, or recover missing context.
 
 The planning response must include `context.diagnosis`. During that same
 frontier call, the commander traces the observed failure through exact

@@ -271,6 +271,19 @@ new local candidate with the independent oracle. The measured phase unlocks
 only when every frozen calibration case scores `1`. A failed or invalid replay
 keeps it locked, so a weak 4B worker cannot trigger six new frontier pairs.
 
+To test a newly constrained delegation strategy without changing that frozen
+gate, supply capability-adapted plans:
+
+```bash
+mlx-swarm --config LOCAL_MODEL_CONFIG eval replay-local EVALUATION_ID \
+  --worker-mode direct --adapted-plan-dir .swarm/capability-test-plans
+```
+
+This mode still records `frontierCalls: 0`, but marks the evidence
+`diagnosticOnly: true` and always leaves `measuredEligible: false`. Passing it
+shows that the local model can execute the adapted task shape; a new frozen
+evaluation is still required before measured work can unlock.
+
 The default `direct` worker makes one local generation per attempt. For small
 models that identify a repair but struggle to emit an exact artifact, enable a
 fully local reasoning-to-editing pipeline:
@@ -279,10 +292,34 @@ fully local reasoning-to-editing pipeline:
 {
   "worker": {
     "mode": "reasoning-edit",
-    "reasoningMaxTokens": 1200
+    "reasoningMaxTokens": 1200,
+    "capabilities": {
+      "parameterScale": "4B",
+      "contextWindowTokens": 262144,
+      "maxGenerationTokens": 1200,
+      "specialization": "general",
+      "delegationLevel": "exact-edit",
+      "strengths": ["Renders bounded exact replacements."],
+      "limitations": ["Unreliable independent diagnosis."],
+      "calibration": {
+        "status": "failed",
+        "passedCases": 0,
+        "totalCases": 2,
+        "evidenceSha256": "lowercase-sha256-of-replay-evidence"
+      }
+    }
   }
 }
 ```
+
+The deterministic Frontier Commander prompt always includes this worker
+capability contract. It separates model scale from worker concurrency and
+states the context window, prompt-character ceiling, generation ceiling,
+specialization, execution mode, calibration, and safe delegation level. With
+`exact-edit`, the frontier must retain diagnosis and design responsibility and
+delegate only mechanical transformations with exact files, symbols, source
+anchors, and old-to-new instructions. Plans cannot request more generation
+tokens than `maxGenerationTokens`.
 
 Only mutating `patch` and `test-suite` tasks use two stages. The first pass
 reasons over the frozen artifact prompt; the second receives that reasoning as
@@ -518,7 +555,14 @@ adds operator authority for paths and fixed verification commands:
   "artifacts": ".swarm/runs",
   "worker": {
     "mode": "reasoning-edit",
-    "reasoningMaxTokens": 1200
+    "reasoningMaxTokens": 1200,
+    "capabilities": {
+      "parameterScale": "4B",
+      "contextWindowTokens": 262144,
+      "maxGenerationTokens": 1200,
+      "specialization": "code",
+      "delegationLevel": "bounded-implementation"
+    }
   },
   "workspace": {
     "writeRoots": ["src", "tests"],
@@ -643,7 +687,8 @@ mlx-swarm --config CONFIG commander import-plan REQUEST_ID RESPONSE --claim-id I
 mlx-swarm --config CONFIG commander claim-review SESSION_DIR
 mlx-swarm --config CONFIG commander import-review SESSION_DIR RESPONSE --claim-id ID
 mlx-swarm --config CONFIG eval replay-local EVALUATION_ID \
-  [--worker-mode direct|reasoning-edit] [--reasoning-max-tokens N]
+  [--worker-mode direct|reasoning-edit] [--reasoning-max-tokens N] \
+  [--adapted-plan-dir DIR]
 mlx-swarm skill install [--skills-dir DIR] [--force]
 ```
 
@@ -658,7 +703,7 @@ mlx-swarm skill install [--skills-dir DIR] [--force]
 | `workspace` | Preview execution authority, inspect lineage, or remove a terminal worktree |
 | `ui` | Launch the localhost-only operator cockpit |
 | `commander` | Create, inspect, claim, and import frontier planning/review handoffs |
-| `eval replay-local` | Reuse frozen calibration plans/prompts with zero frontier calls and enforce the measured-work gate |
+| `eval replay-local` | Reuse frozen calibration plans/prompts with zero frontier calls, or run explicitly diagnostic capability-adapted plans |
 | `skill install` | Install the bundled `mlx-swarm-commander` Codex skill |
 
 `swarm` remains a deprecated CLI alias for the 0.2 release. The former

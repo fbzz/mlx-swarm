@@ -314,6 +314,15 @@ def _parser() -> argparse.ArgumentParser:
         type=_positive_int,
         default=1200,
     )
+    evaluation_replay.add_argument(
+        "--adapted-plan-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Run diagnostic capability-adapted plans from this approved "
+            "directory without changing the measured-work gate."
+        ),
+    )
     evaluation_report = evaluation_sub.add_parser(
         "report",
         help="Export sanitized evidence and update the README tables.",
@@ -466,6 +475,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         args.evaluation_id,
                         worker_mode=args.worker_mode,
                         reasoning_max_tokens=args.reasoning_max_tokens,
+                        adapted_plan_dir=args.adapted_plan_dir,
                     )
                 )
                 return 0

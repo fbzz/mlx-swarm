@@ -14,6 +14,7 @@ from mlx_swarm import commander as commander_module
 from mlx_swarm.commander import (
     CommanderError,
     CommanderStore,
+    build_plan_prompt,
     canonical_json_sha256,
     frontier_usage,
 )
@@ -86,6 +87,56 @@ def _plan(plan_id: str = "commander-plan") -> dict:
             }
         ],
     }
+
+
+def test_plan_prompt_exposes_worker_capability_and_delegation_boundary(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "mlx-swarm.json"
+    config_path.write_text(json.dumps({
+        "schemaVersion": 1,
+        "model": {
+            "repository": "local/four-billion",
+            "revision": "quantized-6bit",
+        },
+        "batch": {
+            "maxWorkers": 4,
+            "maxPromptCharacters": 120000,
+        },
+        "artifacts": ".swarm/runs",
+        "worker": {
+            "mode": "direct",
+            "reasoningMaxTokens": 512,
+            "capabilities": {
+                "parameterScale": "4B",
+                "contextWindowTokens": 262144,
+                "maxGenerationTokens": 800,
+                "specialization": "general",
+                "delegationLevel": "exact-edit",
+                "strengths": ["Renders small exact edits."],
+                "limitations": ["Does not reliably diagnose unfamiliar code."],
+                "calibration": {
+                    "status": "failed",
+                    "passedCases": 0,
+                    "totalCases": 2,
+                    "evidenceSha256": "b" * 64,
+                },
+            },
+        },
+    }), encoding="utf-8")
+    prompt = build_plan_prompt({
+        "objective": "Repair the demonstrated defect.",
+        "constraints": [],
+        "workspaceRoot": str(tmp_path),
+    }, load_config(config_path))
+
+    assert "WORKER CAPABILITY CONTRACT" in prompt
+    assert "parameter scale: 4B" in prompt
+    assert "model context window: 262144 tokens" in prompt
+    assert "maximum generation per worker: 800 tokens" in prompt
+    assert "calibration: failed (0/2 passed" in prompt
+    assert "Do not delegate discovery" in prompt
+    assert "This describes local generation capability, not worker concurrency" in prompt
 
 
 def _git(repo: Path, *args: str) -> str:

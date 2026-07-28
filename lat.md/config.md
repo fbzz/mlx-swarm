@@ -27,7 +27,22 @@ JSON structure for the config file.
   "seed": 20260727,
   "worker": {
     "mode": "reasoning-edit",
-    "reasoningMaxTokens": 1200
+    "reasoningMaxTokens": 1200,
+    "capabilities": {
+      "parameterScale": "4B",
+      "contextWindowTokens": 262144,
+      "maxGenerationTokens": 1200,
+      "specialization": "general",
+      "delegationLevel": "exact-edit",
+      "strengths": [],
+      "limitations": ["Unreliable independent diagnosis."],
+      "calibration": {
+        "status": "failed",
+        "passedCases": 0,
+        "totalCases": 2,
+        "evidenceSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    }
   },
   "workspace": {
     "writeRoots": ["src", "tests"],
@@ -64,6 +79,25 @@ All config fields with types, defaults, and constraints.
   separate strict editing pass for mutating tasks only.
 - **worker.reasoningMaxTokens** (optional, int, default 1200): Local reasoning
   pass limit, 64–8192. These tokens remain in `localUsage`.
+- **worker.capabilities** (optional, strict object): Auditable local-model
+  envelope copied into commander prompts, evaluation configs, environment
+  fingerprints, and session worker strategy.
+- **worker.capabilities.parameterScale** (default `unknown`): Operator-reported
+  model scale such as `4B`.
+- **worker.capabilities.contextWindowTokens** (default 0/unreported): Declared
+  model context window.
+- **worker.capabilities.maxGenerationTokens** (default 8192): Hard per-task
+  generation ceiling. A plan exceeding it is rejected.
+- **worker.capabilities.specialization**: `unknown`, `general`, `code`, or
+  `mixed`.
+- **worker.capabilities.delegationLevel**: `exact-edit`,
+  `bounded-implementation`, or `autonomous`. The default is the conservative
+  `exact-edit`.
+- **worker.capabilities.strengths / limitations**: Unique bounded statements
+  supplied to the frontier.
+- **worker.capabilities.calibration**: `unmeasured`, `passed`, or `failed`,
+  passed/total case counts, and the immutable replay SHA-256 for measured
+  status. Unmeasured profiles use zero counts and no digest.
 - **workspace.writeRoots** (schema v2, required, non-empty array): Unique POSIX
   relative path ceilings. Absolute paths, traversal, backslashes, NUL, and
   `.git` are rejected.

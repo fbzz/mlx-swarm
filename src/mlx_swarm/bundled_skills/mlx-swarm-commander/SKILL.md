@@ -32,6 +32,12 @@ validation, approval, execution, or claim logic in ad hoc scripts.
    the exact authoritative-source labels supporting it, and a falsification
    condition. Use only `source-trace` or an already approved verification
    receipt; never run an unapproved command or promote a speculative diagnosis.
+   Obey the prompt's `WORKER CAPABILITY CONTRACT` as an authority boundary.
+   It describes local model scale, specialization, measured calibration, and
+   the maximum safe delegation level. Never infer stronger capability from the
+   model name. For `exact-edit`, retain diagnosis and edit design in this
+   frontier call, then give each mutating worker one mechanical transformation
+   with exact file, symbol, source anchors, and old-to-new instructions.
 5. Save the response beside the prompt as
    `frontier-plan.response.json`.
 6. Import it once using the returned claim:

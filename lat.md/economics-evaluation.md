@@ -93,6 +93,13 @@ calibration case must pass the independent oracle before the measured phase
 can start. Invalid verifier infrastructure, a failed patch, or any missing case
 keeps the measured phase locked.
 
+`eval replay-local --adapted-plan-dir DIR` is a separate diagnostic path for
+testing a capability-aware delegation strategy with the same local model and
+zero frontier calls. It composes fresh prompts from the supplied validated
+plans rather than replaying the frozen prompt. Its ledger is marked
+`diagnosticOnly`; even a two-case pass always reports
+`measuredEligible: false` and never mutates the frozen evaluation gate.
+
 Verification profiles freeze the active Docker endpoint into `DOCKER_HOST`
 before the executor switches to its isolated runtime `HOME`. Docker context,
 daemon, pinned-container, or verifier-root failures classify the arm as
