@@ -4,12 +4,16 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from swarm_agents.cli import main
+from mlx_swarm.cli import main
+from mlx_swarm.contracts import load_config, load_plan
+from mlx_swarm.session import Session
+from mlx_swarm.workspace import execution_preview, persist_artifact
 
 
 def _write_config(tmp_path: Path) -> Path:
@@ -36,6 +40,85 @@ def _write_plan(tmp_path: Path) -> Path:
     return p
 
 
+def _write_workspace_v2(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    subprocess.run(
+        ["git", "-C", str(repo), "config", "user.name", "Test"],
+        check=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "config",
+            "user.email",
+            "test@example.invalid",
+        ],
+        check=True,
+    )
+    (repo / ".gitignore").write_text("config/.swarm/\n", encoding="utf-8")
+    (repo / "src").mkdir()
+    (repo / "src" / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
+    config_dir = repo / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "swarm.json"
+    config_path.write_text(
+        json.dumps({
+            "schemaVersion": 2,
+            "model": {"repository": "local/test"},
+            "batch": {"maxWorkers": 2},
+            "artifacts": ".swarm/runs",
+            "workspace": {
+                "writeRoots": ["src"],
+                "verificationProfiles": {},
+            },
+        }),
+        encoding="utf-8",
+    )
+    plan_path = config_dir / "plan.json"
+    plan_path.write_text(
+        json.dumps({
+            "schemaVersion": 2,
+            "planId": "cli-workspace",
+            "objective": "Change one file",
+            "tasks": [{
+                "id": "change",
+                "role": "implementation",
+                "prompt": "Return a diff.",
+                "artifactType": "patch",
+                "allowedPaths": ["src/value.py"],
+                "verification": [],
+            }],
+        }),
+        encoding="utf-8",
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "add", "."],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(repo), "commit", "-qm", "base"],
+        check=True,
+    )
+    return repo, config_path, plan_path
+
+
+def _workspace_diff() -> str:
+    return (
+        "diff --git a/src/value.py b/src/value.py\n"
+        "--- a/src/value.py\n"
+        "+++ b/src/value.py\n"
+        "@@ -1 +1 @@\n"
+        "-VALUE = 1\n"
+        "+VALUE = 2\n"
+    )
+
+
 def test_cli_doctor_ready(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
     model_dir = tmp_path / "model"
@@ -45,14 +128,14 @@ def test_cli_doctor_ready(tmp_path: Path) -> None:
     (model_dir / "tokenizer.json").write_text("{}")
 
     # Patch _resolve_model_path to return our fake dir
-    with patch("swarm_agents.backend._resolve_model_path", return_value=model_dir):
+    with patch("mlx_swarm.backend._resolve_model_path", return_value=model_dir):
         result = main(["--config", str(config_path), "doctor"])
     assert result == 0
 
 
 def test_cli_doctor_not_ready(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
-    with patch("swarm_agents.backend._resolve_model_path", side_effect=RuntimeError("not found")):
+    with patch("mlx_swarm.backend._resolve_model_path", side_effect=RuntimeError("not found")):
         result = main(["--config", str(config_path), "doctor"])
     assert result == 1
 
@@ -65,7 +148,7 @@ def test_cli_run_success(tmp_path: Path) -> None:
     mock_session.summary.return_value = {"status": "completed", "total": 1, "completed": 1}
     mock_session.export_results.return_value = {"tasks": {}}
 
-    with patch("swarm_agents.cli.execute_plan", return_value=mock_session):
+    with patch("mlx_swarm.cli.execute_plan", return_value=mock_session):
         result = main(["--config", str(config_path), "run", str(plan_path)])
     assert result == 0
 
@@ -77,9 +160,138 @@ def test_cli_run_partial(tmp_path: Path) -> None:
     mock_session = MagicMock()
     mock_session.summary.return_value = {"status": "partial", "total": 1, "completed": 0}
 
-    with patch("swarm_agents.cli.execute_plan", return_value=mock_session):
+    with patch("mlx_swarm.cli.execute_plan", return_value=mock_session):
         result = main(["--config", str(config_path), "run", str(plan_path)])
     assert result == 1
+
+
+def test_cli_workspace_preview_run_artifact_and_cleanup(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, config_path, plan_path = _write_workspace_v2(tmp_path)
+    assert main([
+        "--config",
+        str(config_path),
+        "workspace",
+        "preview",
+        str(plan_path),
+    ]) == 0
+    preview_payload = json.loads(capsys.readouterr().out)
+    preview = preview_payload["execution"]
+    assert preview["planSha256"] == preview_payload["planDigest"]
+    assert preview["workspaceRoot"] == str(repo.resolve())
+
+    assert main([
+        "--config",
+        str(config_path),
+        "run",
+        str(plan_path),
+    ]) == 1
+    assert "requires the displayed canonical plan digest" in (
+        capsys.readouterr().err
+    )
+
+    mock_session = MagicMock()
+    mock_session.summary.return_value = {
+        "status": "completed",
+        "total": 1,
+        "completed": 1,
+    }
+    with patch("mlx_swarm.cli.execute_plan", return_value=mock_session):
+        assert main([
+            "--config",
+            str(config_path),
+            "run",
+            str(plan_path),
+            "--approve-plan-digest",
+            preview_payload["planDigest"],
+            "--approve-execution-digest",
+            preview["executionDigest"],
+        ]) == 0
+    capsys.readouterr()
+
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    run_dirs = [
+        value
+        for value in (config.artifacts_dir / plan.plan_id).iterdir()
+        if (value / "session.json").is_file()
+    ]
+    assert len(run_dirs) == 1
+    run_dir = run_dirs[0]
+    session = Session.load(run_dir, config)
+    snapshot = session.workspace_snapshot()
+    assert snapshot is not None
+    manifest = persist_artifact(
+        run_dir,
+        plan.tasks[0],
+        _workspace_diff(),
+        snapshot,
+    )
+    session.update_task(
+        "change",
+        status="awaiting_approval",
+        artifact=manifest,
+        output=_workspace_diff(),
+        normalizedOutput=_workspace_diff(),
+    )
+    session.set_status("awaiting_approval")
+    assert main([
+        "--config",
+        str(config_path),
+        "artifact",
+        "apply",
+        str(run_dir),
+        "change",
+        "--digest",
+        manifest["sha256"],
+    ]) == 0
+    decision = json.loads(
+        (
+            run_dir
+            / "artifacts"
+            / "change"
+            / "decision.json"
+        ).read_text()
+    )
+    assert decision["action"] == "apply"
+    capsys.readouterr()
+
+    assert main([
+        "--config",
+        str(config_path),
+        "workspace",
+        "status",
+        str(run_dir),
+    ]) == 0
+    status = json.loads(capsys.readouterr().out)
+    assert status["workspace"]["branch"] == snapshot["branch"]
+
+    terminal = Session.load(run_dir, config)
+    terminal.set_status("partial")
+    assert main([
+        "--config",
+        str(config_path),
+        "workspace",
+        "cleanup",
+        str(run_dir),
+    ]) == 0
+    cleaned = json.loads(capsys.readouterr().out)
+    assert cleaned["cleanedUp"] is True
+    assert not Path(snapshot["worktreePath"]).exists()
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "show-ref",
+            "--verify",
+            f"refs/heads/{snapshot['branch']}",
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+    )
 
 
 def test_cli_list_empty(tmp_path: Path) -> None:
@@ -116,7 +328,7 @@ def test_cli_inspect(tmp_path: Path) -> None:
         "tasks": {"t1": {"id": "t1", "status": "completed", "output": "hello"}},
     }))
 
-    with patch("swarm_agents.session.Session.load") as mock_load:
+    with patch("mlx_swarm.session.Session.load") as mock_load:
         mock_session = MagicMock()
         mock_session.summary.return_value = {"status": "completed"}
         mock_session.state = {"tasks": {"t1": {"id": "t1", "status": "completed", "output": "hello"}}}
@@ -128,7 +340,7 @@ def test_cli_inspect(tmp_path: Path) -> None:
 def test_cli_inspect_task_output(tmp_path: Path) -> None:
     config_path = _write_config(tmp_path)
 
-    with patch("swarm_agents.session.Session.load") as mock_load:
+    with patch("mlx_swarm.session.Session.load") as mock_load:
         mock_session = MagicMock()
         mock_session.state = {"tasks": {"t1": {"output": "hello world", "normalizedOutput": "hello world"}}}
         mock_load.return_value = mock_session
@@ -148,7 +360,7 @@ def test_cli_ui_uses_config_directory_and_no_open(
     tmp_path: Path,
 ) -> None:
     config_path = _write_config(tmp_path)
-    with patch("swarm_agents.ui.serve_ui") as serve:
+    with patch("mlx_swarm.ui.serve_ui") as serve:
         result = main([
             "--config",
             str(config_path),
@@ -180,3 +392,62 @@ def test_cli_ui_rejects_invalid_port(tmp_path: Path) -> None:
             "--no-open",
         ])
     assert exc_info.value.code == 2
+
+
+def test_cli_commander_create_claim_and_import(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "create",
+        "--objective",
+        "Prepare one local task",
+        "--constraint",
+        "Stay local.",
+    ]) == 0
+    created = json.loads(capsys.readouterr().out)
+    request_id = created["request"]["requestId"]
+
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "claim-plan",
+        request_id,
+    ]) == 0
+    claim = json.loads(capsys.readouterr().out)
+
+    response = _write_plan(tmp_path)
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "import-plan",
+        request_id,
+        str(response),
+        "--claim-id",
+        claim["claimId"],
+    ]) == 0
+    imported = json.loads(capsys.readouterr().out)
+    assert imported["request"]["status"] == "plan_ready"
+    assert imported["planningReceipt"]["usage"]["usageStatus"] == "unavailable"
+
+
+def test_cli_skill_install_does_not_require_config(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    skills_dir = tmp_path / "skills"
+    assert main([
+        "skill",
+        "install",
+        "--skills-dir",
+        str(skills_dir),
+    ]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["installed"] is True
+    assert Path(payload["path"]).is_dir()

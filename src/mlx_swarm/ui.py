@@ -1,4 +1,4 @@
-"""Localhost-only HTTP API and static dashboard for swarm work."""
+"""Localhost-only HTTP API and static MLX Swarm cockpit."""
 # @lat: [[UI]]
 
 from __future__ import annotations
@@ -21,6 +21,12 @@ from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
 from .backend import _resolve_model_path
+from .commander import (
+    CommanderError,
+    CommanderStore,
+    PlanApproval,
+    canonical_json_sha256,
+)
 from .contracts import (
     ContractError,
     OutputGate,
@@ -30,6 +36,16 @@ from .contracts import (
     load_plan,
 )
 from .session import Session, _run_id, _utc_now
+from .workspace import (
+    WorkspaceError,
+    cleanup_worktree,
+    execution_preview,
+    load_artifact,
+    load_workspace_snapshot,
+    prepare_worktree,
+    submit_artifact_decision,
+    workspace_readiness,
+)
 
 MAX_REQUEST_BYTES = 16_384
 LOCAL_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -56,9 +72,11 @@ class CockpitApp:
         self.config = config
         self.plans_dir = plans_dir.resolve()
         self.artifacts_dir = config.artifacts_dir.resolve()
+        self.commander = CommanderStore(config)
         self.popen_factory = popen_factory
         self._processes: dict[str, subprocess.Popen[Any]] = {}
         self._lock = threading.Lock()
+        self._commander_lock = threading.Lock()
         if not self.plans_dir.is_dir():
             raise RuntimeError(f"Plans directory not found: {self.plans_dir}")
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
@@ -66,12 +84,17 @@ class CockpitApp:
     def status_payload(self) -> dict[str, Any]:
         try:
             model_path = _resolve_model_path(self.config)
-            ready = True
+            model_ready = True
             model_error = None
         except Exception as exc:
             model_path = None
-            ready = False
+            model_ready = False
             model_error = str(exc)
+        workspace = workspace_readiness(self.config)
+        ready = model_ready and (
+            not workspace.get("enabled")
+            or workspace.get("ready") is True
+        )
         return {
             "ready": ready,
             "model": {
@@ -86,14 +109,69 @@ class CockpitApp:
             },
             "plansDir": str(self.plans_dir),
             "artifactsDir": str(self.artifacts_dir),
+            "commanderRoot": str(self.commander.requests_root),
+            "workspaceRoot": (
+                workspace.get("workspaceRoot")
+                or str(self.commander.workspace_root)
+            ),
+            "workspace": workspace,
+            "brand": "MLX Swarm",
             "reviewMode": "frontier-final-only",
         }
+
+    def commander_requests_payload(self) -> dict[str, Any]:
+        return {"requests": self.commander.list_requests()}
+
+    def commander_request_detail(self, request_id: str) -> dict[str, Any]:
+        _validate_identifier(request_id, "requestId")
+        try:
+            return self.commander.request_detail(request_id)
+        except CommanderError as exc:
+            status = (
+                HTTPStatus.NOT_FOUND
+                if "not found" in str(exc).lower()
+                else HTTPStatus.CONFLICT
+            )
+            raise APIError(status, str(exc)) from exc
+
+    def create_commander_request(
+        self,
+        objective: str,
+        constraints: Any,
+        revision_of: str | None,
+    ) -> dict[str, Any]:
+        if constraints is None:
+            constraints = []
+        if not isinstance(constraints, list) or any(
+            not isinstance(value, str) for value in constraints
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "constraints must be an array of strings.",
+            )
+        if revision_of is not None and not isinstance(revision_of, str):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "revisionOf must be a run reference.",
+            )
+        try:
+            return self.commander.create_request(
+                objective,
+                constraints,
+                revision_of=revision_of,
+            )
+        except CommanderError as exc:
+            raise APIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
 
     def plans_payload(self) -> dict[str, Any]:
         valid, invalid = self._plan_catalog()
         return {
             "plans": [
-                _serialize_plan(plan, path)
+                _serialize_plan(
+                    plan,
+                    path,
+                    _safe_execution_preview(self.config, plan),
+                )
                 for plan, path in sorted(
                     valid.values(),
                     key=lambda item: item[0].plan_id,
@@ -130,7 +208,15 @@ class CockpitApp:
         session_dir, state = self._load_run_state(plan_id, session_id)
         plan = self._load_historical_plan(session_dir, state)
         if plan is not None:
-            plan_payload = _serialize_plan(plan, plan.source)
+            plan_payload = _serialize_plan(
+                plan,
+                plan.source,
+                (
+                    state.get("executionApproval")
+                    if plan.workspace_execution
+                    else None
+                ),
+            )
             levels = [
                 [task.id for task in level]
                 for level in plan.topological_order()
@@ -144,6 +230,9 @@ class CockpitApp:
                     {
                         "id": task_id,
                         "role": task.get("role", "general"),
+                        "artifactType": task.get("artifactType", "report"),
+                        "allowedPaths": task.get("allowedPaths", []),
+                        "verification": task.get("verification", []),
                         "prompt": "",
                         "dependsOn": task.get("dependsOn", []),
                         "maxRepairAttempts": None,
@@ -163,13 +252,40 @@ class CockpitApp:
             except (OSError, ValueError):
                 frontier_result = None
 
+        review_detail = self.commander.review_detail(session_dir)
+        planning_receipt = None
+        planning_receipt_path = session_dir / "frontier-plan-receipt.json"
+        if planning_receipt_path.is_file():
+            try:
+                planning_receipt = _read_json_file(planning_receipt_path)
+            except (OSError, ValueError):
+                planning_receipt = None
+
         active = self._runner_active(state)
         summary = _run_summary(state, session_dir, active)
+        workspace_payload = state.get("workspace")
+        if state.get("workspaceExecution"):
+            try:
+                snapshot = load_workspace_snapshot(session_dir)
+                workspace_payload = {
+                    **snapshot,
+                    "executionApproval": state.get("executionApproval"),
+                }
+            except WorkspaceError:
+                pass
+        artifacts = _serialize_artifacts(session_dir, state)
         return {
             "run": summary,
             "plan": plan_payload,
             "levels": levels,
             "tasks": state.get("tasks", {}),
+            "artifacts": artifacts,
+            "workspace": workspace_payload,
+            "retryExecutionPreview": (
+                _safe_execution_preview(self.config, plan)
+                if plan is not None and plan.workspace_execution
+                else None
+            ),
             "batches": state.get("batches", []),
             "localUsage": (
                 frontier_result.get("localUsage", {})
@@ -177,12 +293,43 @@ class CockpitApp:
                 else _local_usage(state.get("batches", []))
             ),
             "frontierResult": frontier_result,
+            "frontierUsage": review_detail["frontierUsage"],
+            "frontierReview": review_detail["review"],
+            "frontierReviewReceipt": review_detail["reviewReceipt"],
+            "frontierPlanReceipt": planning_receipt,
+            "reviewStatus": review_detail["reviewStatus"],
+            "reviewError": review_detail["reviewError"],
+            "commander": {
+                "requestId": state.get("commanderRequestId"),
+                "approval": state.get("planApproval"),
+                "revisionOf": state.get("revisionOf"),
+                **review_detail["handoff"],
+            },
             "actions": {
                 "resume": (
                     not active
-                    and state.get("status") in {"pending", "running"}
+                    and state.get("status") in {
+                        "pending",
+                        "running",
+                        "awaiting_approval",
+                    }
                 ),
                 "retry": state.get("status") in {"partial", "failed"},
+                "review": (
+                    not active
+                    and state.get("status") == "completed"
+                    and review_detail["reviewStatus"] == "awaiting_review"
+                ),
+                "cleanupWorkspace": (
+                    not active
+                    and state.get("workspaceExecution") is True
+                    and state.get("status") in {
+                        "completed",
+                        "partial",
+                        "failed",
+                    }
+                    and not (workspace_payload or {}).get("cleanedUp", False)
+                ),
             },
             "runnerLogAvailable": (session_dir / "runner.log").is_file(),
         }
@@ -194,6 +341,10 @@ class CockpitApp:
         *,
         retry_of: str | None = None,
         plan_override: tuple[Plan, Path] | None = None,
+        commander_evidence: dict[str, Any] | None = None,
+        mark_commander_launched: bool = False,
+        plan_digest: str | None = None,
+        execution_digest: str | None = None,
     ) -> dict[str, Any]:
         if not isinstance(max_repair, int) or isinstance(max_repair, bool):
             raise APIError(HTTPStatus.BAD_REQUEST, "maxRepair must be an integer.")
@@ -216,12 +367,68 @@ class CockpitApp:
 
         run_id = _run_id()
         session_dir = self.artifacts_dir / plan.plan_id / run_id
+        workspace_snapshot = None
+        execution_approval = None
+        if plan.workspace_execution:
+            actual_plan_digest = canonical_json_sha256(plan.raw)
+            approved_plan_digest = (
+                plan_digest
+                or (
+                    commander_evidence["approval"].plan_sha256
+                    if commander_evidence is not None
+                    else None
+                )
+            )
+            if approved_plan_digest != actual_plan_digest:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "Plan digest mismatch; refresh the displayed plan.",
+                )
+            approved_execution_digest = (
+                execution_digest
+                or (
+                    commander_evidence["approval"].execution_digest
+                    if commander_evidence is not None
+                    else None
+                )
+            )
+            if not isinstance(approved_execution_digest, str):
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "Workspace plans require the displayed execution digest.",
+                )
+            try:
+                workspace_snapshot = prepare_worktree(
+                    self.config,
+                    plan,
+                    session_id=run_id,
+                    expected_execution_digest=approved_execution_digest,
+                )
+            except WorkspaceError as exc:
+                raise APIError(HTTPStatus.CONFLICT, str(exc)) from exc
+            execution_approval = {
+                "schemaVersion": 1,
+                "planSha256": actual_plan_digest,
+                "executionDigest": approved_execution_digest,
+                "workspaceRoot": workspace_snapshot["workspaceRoot"],
+                "baseSha": workspace_snapshot["baseSha"],
+                "approvedAt": _utc_now(),
+                "source": (
+                    "commander"
+                    if commander_evidence is not None
+                    else "cockpit"
+                ),
+            }
         session = Session(
             session_dir,
             plan,
             session_id=run_id,
             retry_of=retry_of,
-            launch_source="ui",
+            launch_source=(
+                "commander"
+                if commander_evidence is not None
+                else "ui"
+            ),
         )
         session.set_sources(
             config_source=self.config.source,
@@ -229,12 +436,33 @@ class CockpitApp:
         )
         session.state["maxRepair"] = max_repair
         session._save()
+        if workspace_snapshot is not None:
+            assert execution_approval is not None
+            session.attach_workspace(
+                workspace_snapshot,
+                execution_approval=execution_approval,
+            )
+        if commander_evidence is not None:
+            approval = commander_evidence["approval"]
+            session.attach_commander(
+                request_id=commander_evidence["requestId"],
+                approval=approval.to_json(),
+                planning_receipt=commander_evidence["planningReceipt"],
+                revision_of=commander_evidence.get("revisionOf"),
+            )
+            if mark_commander_launched:
+                self.commander.mark_launched(
+                    commander_evidence["requestId"],
+                    approval,
+                    plan_id=plan.plan_id,
+                    session_id=run_id,
+                )
         self._spawn(
             session,
             [
                 sys.executable,
                 "-m",
-                "swarm_agents.cli",
+                "mlx_swarm.cli",
                 "--config",
                 str(self.config.source),
                 "run",
@@ -247,11 +475,59 @@ class CockpitApp:
         )
         return self.run_detail(plan.plan_id, run_id)
 
+    def approve_commander_run(
+        self,
+        request_id: str,
+        plan_digest: str,
+        max_repair: int,
+        execution_digest: str | None = None,
+    ) -> dict[str, Any]:
+        _validate_identifier(request_id, "requestId")
+        if (
+            not isinstance(max_repair, int)
+            or isinstance(max_repair, bool)
+            or not 0 <= max_repair <= 5
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "maxRepair must be an integer between 0 and 5.",
+            )
+        with self._commander_lock:
+            try:
+                plan, plan_path, approval, receipt, request = (
+                    self.commander.approved_plan(
+                        request_id,
+                        plan_digest,
+                        source="cockpit",
+                        execution_digest=execution_digest,
+                    )
+                )
+            except CommanderError as exc:
+                raise APIError(HTTPStatus.CONFLICT, str(exc)) from exc
+            return self.launch_run(
+                plan.plan_id,
+                max_repair,
+                plan_override=(plan, plan_path),
+                commander_evidence={
+                    "requestId": request_id,
+                    "approval": approval,
+                    "planningReceipt": receipt,
+                    "revisionOf": request.get("revisionOf"),
+                },
+                mark_commander_launched=True,
+                plan_digest=plan_digest,
+                execution_digest=execution_digest,
+            )
+
     def resume_run(self, plan_id: str, session_id: str) -> dict[str, Any]:
         session_dir, state = self._load_run_state(plan_id, session_id)
         if self._runner_active(state):
             raise APIError(HTTPStatus.CONFLICT, "Run is already active.")
-        if state.get("status") not in {"pending", "running"}:
+        if state.get("status") not in {
+            "pending",
+            "running",
+            "awaiting_approval",
+        }:
             raise APIError(
                 HTTPStatus.CONFLICT,
                 "Only interrupted or pending runs can be resumed.",
@@ -265,7 +541,7 @@ class CockpitApp:
             [
                 sys.executable,
                 "-m",
-                "swarm_agents.cli",
+                "mlx_swarm.cli",
                 "--config",
                 str(self.config.source),
                 "resume",
@@ -281,6 +557,8 @@ class CockpitApp:
         plan_id: str,
         session_id: str,
         max_repair: int,
+        *,
+        execution_digest: str | None = None,
     ) -> dict[str, Any]:
         session_dir, state = self._load_run_state(plan_id, session_id)
         if state.get("status") not in {"partial", "failed"}:
@@ -295,12 +573,110 @@ class CockpitApp:
                 "The original plan is unavailable for retry.",
             )
         plan_path = plan.source
+        commander_evidence = None
+        receipt_path = session_dir / "frontier-plan-receipt.json"
+        approval_raw = state.get("planApproval")
+        request_id = state.get("commanderRequestId")
+        if (
+            receipt_path.is_file()
+            and isinstance(approval_raw, dict)
+            and isinstance(request_id, str)
+        ):
+            try:
+                approval = PlanApproval(
+                    request_id=approval_raw["requestId"],
+                    plan_sha256=approval_raw["planSha256"],
+                    approved_at=approval_raw["approvedAt"],
+                    source=approval_raw.get("source", "cockpit"),
+                    execution_digest=approval_raw.get("executionDigest"),
+                    workspace_root=approval_raw.get("workspaceRoot"),
+                    base_sha=approval_raw.get("baseSha"),
+                )
+                commander_evidence = {
+                    "requestId": request_id,
+                    "approval": approval,
+                    "planningReceipt": _read_json_file(receipt_path),
+                    "revisionOf": state.get("revisionOf"),
+                }
+            except (KeyError, OSError, ValueError):
+                commander_evidence = None
         return self.launch_run(
             plan.plan_id,
             max_repair,
             retry_of=f"{plan_id}/{session_id}",
             plan_override=(plan, plan_path),
+            commander_evidence=commander_evidence,
+            plan_digest=canonical_json_sha256(plan.raw),
+            execution_digest=execution_digest,
         )
+
+    def artifact_action(
+        self,
+        plan_id: str,
+        session_id: str,
+        task_id: str,
+        *,
+        action: str,
+        artifact_digest: str,
+        reason: str | None = None,
+    ) -> dict[str, Any]:
+        _validate_identifier(task_id, "taskId")
+        session_dir, state = self._load_run_state(plan_id, session_id)
+        task_state = state.get("tasks", {}).get(task_id)
+        if not isinstance(task_state, dict):
+            raise APIError(HTTPStatus.NOT_FOUND, "Task not found.")
+        status = task_state.get("status")
+        allowed = {
+            "apply": {"awaiting_approval"},
+            "reject": {"awaiting_approval", "verification_failed"},
+            "verify": {"verification_failed"},
+        }
+        if action not in allowed or status not in allowed[action]:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                f"Artifact action {action!r} is not available from {status!r}.",
+            )
+        if not isinstance(reason, (str, type(None))):
+            raise APIError(HTTPStatus.BAD_REQUEST, "reason must be a string.")
+        try:
+            submit_artifact_decision(
+                session_dir,
+                task_id,
+                action=action,
+                artifact_sha256=artifact_digest,
+                source="cockpit",
+                reason=reason,
+            )
+        except WorkspaceError as exc:
+            raise APIError(HTTPStatus.CONFLICT, str(exc)) from exc
+        refreshed = _read_json_file(session_dir / "session.json")
+        if not self._runner_active(refreshed):
+            self.resume_run(plan_id, session_id)
+        return self.run_detail(plan_id, session_id)
+
+    def cleanup_run_workspace(
+        self,
+        plan_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        session_dir, state = self._load_run_state(plan_id, session_id)
+        if self._runner_active(state):
+            raise APIError(HTTPStatus.CONFLICT, "Run is still active.")
+        if state.get("status") not in {"completed", "partial", "failed"}:
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "Only terminal-run worktrees can be cleaned up.",
+            )
+        try:
+            snapshot = load_workspace_snapshot(session_dir)
+            if snapshot.get("cleanedUp"):
+                raise WorkspaceError("Session worktree was already cleaned up.")
+            cleanup_worktree(snapshot)
+            session = Session.load(session_dir, self.config)
+            session.update_workspace(snapshot)
+        except WorkspaceError as exc:
+            raise APIError(HTTPStatus.CONFLICT, str(exc)) from exc
+        return self.run_detail(plan_id, session_id)
 
     def _plan_catalog(
         self,
@@ -472,19 +848,32 @@ class CockpitApp:
         return True
 
 
-def _serialize_plan(plan: Plan, source: Path) -> dict[str, Any]:
-    return {
+def _serialize_plan(
+    plan: Plan,
+    source: Path,
+    execution: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    value = {
+        "schemaVersion": plan.schema_version,
         "planId": plan.plan_id,
         "objective": plan.objective,
+        "context": plan.raw.get("context"),
         "source": str(source),
+        "digest": canonical_json_sha256(plan.raw),
         "tasks": [_serialize_task(task) for task in plan.tasks],
     }
+    if execution is not None:
+        value["execution"] = execution
+    return value
 
 
 def _serialize_task(task: TaskDef) -> dict[str, Any]:
     return {
         "id": task.id,
         "role": task.role,
+        "artifactType": task.artifact_type,
+        "allowedPaths": list(task.allowed_paths),
+        "verification": list(task.verification),
         "prompt": task.prompt,
         "dependsOn": list(task.depends_on),
         "maxRepairAttempts": task.max_repair_attempts,
@@ -492,6 +881,64 @@ def _serialize_task(task: TaskDef) -> dict[str, Any]:
         "generationOverride": task.generation_override,
         "gate": _serialize_gate(task.gate),
     }
+
+
+def _safe_execution_preview(
+    config: SwarmConfig,
+    plan: Plan,
+) -> dict[str, Any] | None:
+    if not plan.workspace_execution:
+        return None
+    try:
+        return execution_preview(config, plan)
+    except WorkspaceError as exc:
+        return {"ready": False, "error": str(exc)}
+
+
+def _serialize_artifacts(
+    session_dir: Path,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    artifacts: dict[str, Any] = {}
+    for task_id, task_state in state.get("tasks", {}).items():
+        manifest = task_state.get("artifact")
+        if not isinstance(manifest, dict):
+            continue
+        try:
+            persisted, payload = load_artifact(session_dir, task_id)
+        except WorkspaceError:
+            persisted, payload = manifest, ""
+        verification = task_state.get("verificationResults", [])
+        enriched_verification: list[dict[str, Any]] = []
+        for result in verification:
+            item = dict(result)
+            output = item.get("output")
+            if isinstance(output, str):
+                log_path = (session_dir / output).resolve()
+                if _is_within(log_path, session_dir) and log_path.is_file():
+                    raw = log_path.read_bytes()[:200_000]
+                    item["log"] = raw.decode("utf-8", "replace")
+                    item["logDisplayTruncated"] = log_path.stat().st_size > len(raw)
+            enriched_verification.append(item)
+        status = task_state.get("status")
+        artifacts[task_id] = {
+            "manifest": persisted,
+            "payload": payload,
+            "status": status,
+            "decision": task_state.get("decision"),
+            "applyReceipt": task_state.get("applyReceipt"),
+            "revertReceipt": task_state.get("revertReceipt"),
+            "verification": enriched_verification,
+            "actions": {
+                "apply": status == "awaiting_approval",
+                "reject": status in {
+                    "awaiting_approval",
+                    "verification_failed",
+                },
+                "verify": status == "verification_failed",
+            },
+        }
+    return artifacts
 
 
 def _serialize_gate(gate: OutputGate | None) -> dict[str, Any] | None:
@@ -546,6 +993,16 @@ def _run_summary(
         "total": len(tasks),
         "completed": counts.get("completed", 0),
         "retryOf": state.get("retryOf"),
+        "revisionOf": state.get("revisionOf"),
+        "commanderRequestId": state.get("commanderRequestId"),
+        "reviewStatus": state.get(
+            "reviewStatus",
+            (
+                "awaiting_review"
+                if state.get("status") == "completed"
+                else "not_eligible"
+            ),
+        ),
         "launchSource": state.get("launchSource", "cli"),
         "maxRepair": state.get("maxRepair"),
         "frontierResult": (
@@ -646,7 +1103,7 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 
 class CockpitHandler(BaseHTTPRequestHandler):
     app: CockpitApp
-    server_version = "SwarmCockpit/0.1"
+    server_version = "MLXSwarmCockpit/0.2"
 
     def do_GET(self) -> None:
         try:
@@ -657,9 +1114,20 @@ class CockpitHandler(BaseHTTPRequestHandler):
             if path == "/api/plans":
                 self._send_json(self.app.plans_payload())
                 return
+            if path == "/api/commander/requests":
+                self._send_json(self.app.commander_requests_payload())
+                return
             if path == "/api/runs":
                 self._send_json(self.app.runs_payload())
                 return
+            commander_parts = _api_commander_request_parts(path)
+            if commander_parts is not None:
+                request_id, action = commander_parts
+                if action is None:
+                    self._send_json(
+                        self.app.commander_request_detail(request_id)
+                    )
+                    return
             parts = _api_run_parts(path)
             if parts is not None:
                 plan_id, session_id, action = parts
@@ -682,15 +1150,91 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._check_origin()
             path = urlparse(self.path).path
             body = self._read_json_body()
+            if path == "/api/commander/requests":
+                _validate_body_keys(
+                    body,
+                    {"objective"},
+                    {"constraints", "revisionOf"},
+                )
+                self._send_json(
+                    self.app.create_commander_request(
+                        _required_text(body, "objective"),
+                        body.get("constraints"),
+                        body.get("revisionOf"),
+                    ),
+                    status=HTTPStatus.CREATED,
+                )
+                return
             if path == "/api/runs":
+                _validate_body_keys(
+                    body,
+                    {"planId"},
+                    {"maxRepair", "planDigest", "executionDigest"},
+                )
                 self._send_json(
                     self.app.launch_run(
                         _required_text(body, "planId"),
                         body.get("maxRepair", 2),
+                        plan_digest=body.get("planDigest"),
+                        execution_digest=body.get("executionDigest"),
                     ),
                     status=HTTPStatus.ACCEPTED,
                 )
                 return
+            commander_parts = _api_commander_request_parts(path)
+            if commander_parts is not None:
+                request_id, action = commander_parts
+                if action == "approve-run":
+                    _validate_body_keys(
+                        body,
+                        {"planDigest"},
+                        {"executionDigest", "maxRepair"},
+                    )
+                    self._send_json(
+                        self.app.approve_commander_run(
+                            request_id,
+                            _required_text(body, "planDigest"),
+                            body.get("maxRepair", 2),
+                            body.get("executionDigest"),
+                        ),
+                        status=HTTPStatus.ACCEPTED,
+                    )
+                    return
+            artifact_parts = _api_artifact_parts(path)
+            if artifact_parts is not None:
+                plan_id, session_id, task_id, action = artifact_parts
+                _validate_body_keys(
+                    body,
+                    {"artifactDigest"},
+                    {"reason"},
+                )
+                self._send_json(
+                    self.app.artifact_action(
+                        plan_id,
+                        session_id,
+                        task_id,
+                        action=action,
+                        artifact_digest=_required_text(
+                            body,
+                            "artifactDigest",
+                        ),
+                        reason=body.get("reason"),
+                    ),
+                    status=HTTPStatus.ACCEPTED,
+                )
+                return
+            workspace_parts = _api_workspace_parts(path)
+            if workspace_parts is not None:
+                plan_id, session_id, action = workspace_parts
+                _validate_body_keys(body, set(), set())
+                if action == "cleanup":
+                    self._send_json(
+                        self.app.cleanup_run_workspace(
+                            plan_id,
+                            session_id,
+                        )
+                    )
+                    return
             parts = _api_run_parts(path)
             if parts is not None:
                 plan_id, session_id, action = parts
@@ -701,11 +1245,17 @@ class CockpitHandler(BaseHTTPRequestHandler):
                     )
                     return
                 if action == "retry":
+                    _validate_body_keys(
+                        body,
+                        set(),
+                        {"maxRepair", "executionDigest"},
+                    )
                     self._send_json(
                         self.app.retry_run(
                             plan_id,
                             session_id,
                             body.get("maxRepair", 2),
+                            execution_digest=body.get("executionDigest"),
                         ),
                         status=HTTPStatus.ACCEPTED,
                     )
@@ -783,7 +1333,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
         }.get(path)
         if asset_name is None:
             raise APIError(HTTPStatus.NOT_FOUND, "Not found.")
-        asset = files("swarm_agents.ui_static").joinpath(asset_name)
+        asset = files("mlx_swarm.ui_static").joinpath(asset_name)
         content = asset.read_bytes()
         content_type = mimetypes.guess_type(asset_name)[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK)
@@ -827,11 +1377,73 @@ def _api_run_parts(path: str) -> tuple[str, str, str | None] | None:
     return parts[2], parts[3], action
 
 
+def _api_commander_request_parts(
+    path: str,
+) -> tuple[str, str | None] | None:
+    parts = [unquote(part) for part in path.strip("/").split("/")]
+    if (
+        len(parts) not in {4, 5}
+        or parts[:3] != ["api", "commander", "requests"]
+    ):
+        return None
+    action = parts[4] if len(parts) == 5 else None
+    if action not in {None, "approve-run"}:
+        return None
+    return parts[3], action
+
+
+def _api_artifact_parts(
+    path: str,
+) -> tuple[str, str, str, str] | None:
+    parts = [unquote(part) for part in path.strip("/").split("/")]
+    if (
+        len(parts) != 7
+        or parts[:2] != ["api", "runs"]
+        or parts[4] != "artifacts"
+        or parts[6] not in {"apply", "reject", "verify"}
+    ):
+        return None
+    return parts[2], parts[3], parts[5], parts[6]
+
+
+def _api_workspace_parts(
+    path: str,
+) -> tuple[str, str, str] | None:
+    parts = [unquote(part) for part in path.strip("/").split("/")]
+    if (
+        len(parts) != 6
+        or parts[:2] != ["api", "runs"]
+        or parts[4] != "workspace"
+        or parts[5] != "cleanup"
+    ):
+        return None
+    return parts[2], parts[3], parts[5]
+
+
 def _required_text(value: dict[str, Any], key: str) -> str:
     result = value.get(key)
     if not isinstance(result, str) or not result.strip():
         raise APIError(HTTPStatus.BAD_REQUEST, f"{key} is required.")
     return result.strip()
+
+
+def _validate_body_keys(
+    value: dict[str, Any],
+    required: set[str],
+    optional: set[str],
+) -> None:
+    missing = required - value.keys()
+    unknown = value.keys() - required - optional
+    if missing:
+        raise APIError(
+            HTTPStatus.BAD_REQUEST,
+            f"Missing fields: {', '.join(sorted(missing))}.",
+        )
+    if unknown:
+        raise APIError(
+            HTTPStatus.BAD_REQUEST,
+            f"Unknown fields: {', '.join(sorted(unknown))}.",
+        )
 
 
 def _content_security_policy() -> str:

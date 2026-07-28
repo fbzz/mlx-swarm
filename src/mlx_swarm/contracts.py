@@ -1,4 +1,4 @@
-"""Strict JSON contracts for swarm manifests, plans, and configuration."""
+"""Strict JSON contracts for MLX Swarm plans and configuration."""
 # @lat: [[Config]], [[Plans]]
 
 from __future__ import annotations
@@ -7,21 +7,30 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass, field, replace
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-CONFIG_SCHEMA_VERSION = 1
-MANIFEST_SCHEMA_VERSION = 1
+CONFIG_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 2
+SUPPORTED_CONFIG_SCHEMA_VERSIONS = {1, 2}
+SUPPORTED_PLAN_SCHEMA_VERSIONS = {1, 2}
 MAX_WORKERS = 32
 MAX_PROMPT_CHARS = 120_000
 MAX_TASKS_PER_PLAN = 128
 MAX_REPAIR_ATTEMPTS = 2
+MAX_VERIFICATION_PROFILES = 64
+MAX_COMMAND_ARGUMENTS = 128
+MAX_COMMAND_OUTPUT_BYTES = 1_000_000
 
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+ARTIFACT_TYPES = {"patch", "test-suite", "review", "report"}
+MUTATING_ARTIFACT_TYPES = {"patch", "test-suite"}
 
 ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
     "implementation": {"temperature": 0.15, "top_p": 0.9, "max_tokens": 1800},
@@ -55,6 +64,22 @@ class BatchConfig:
 
 
 @dataclass(frozen=True)
+class VerificationProfile:
+    identifier: str
+    argv: tuple[str, ...]
+    cwd: str = "."
+    timeout_seconds: int = 300
+    inherit_env: tuple[str, ...] = ("PATH", "TMPDIR", "LANG", "LC_ALL")
+    environment: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class WorkspaceConfig:
+    write_roots: tuple[str, ...]
+    verification_profiles: dict[str, VerificationProfile]
+
+
+@dataclass(frozen=True)
 class SwarmConfig:
     source: Path = field(default_factory=Path)
     model: ModelConfig = field(default_factory=lambda: ModelConfig("", ""))
@@ -62,16 +87,28 @@ class SwarmConfig:
     artifacts_dir: Path = field(default_factory=lambda: Path(".swarm/runs"))
     enable_thinking: bool = False
     seed: int = 20260727
+    workspace: WorkspaceConfig | None = None
+    # Kept last so positional construction remains compatible with schema v1.
+    schema_version: int = 1
 
 
 def load_config(path: Path) -> SwarmConfig:
     """Load and validate a swarm configuration JSON file."""
     raw = _read_json(path)
-    _exact_keys(raw, "config", {"schemaVersion", "model", "batch", "artifacts"}, {"enableThinking", "seed"})
-
     schema_version = _integer(raw.get("schemaVersion", 1), "config.schemaVersion", 1, 100)
-    if schema_version != CONFIG_SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_CONFIG_SCHEMA_VERSIONS:
         raise ContractError(f"Unsupported config schema version: {schema_version}")
+    optional = {"enableThinking", "seed"}
+    if schema_version == 2:
+        optional.add("workspace")
+    _exact_keys(
+        raw,
+        "config",
+        {"schemaVersion", "model", "batch", "artifacts"},
+        optional,
+    )
+    if schema_version == 2 and "workspace" not in raw:
+        raise ContractError("config.workspace is required for schema version 2.")
 
     model_raw = _object(raw["model"], "config.model")
     _exact_keys(model_raw, "config.model", {"repository"}, {"revision", "localPath"})
@@ -98,13 +135,20 @@ def load_config(path: Path) -> SwarmConfig:
     if not artifacts_dir.is_absolute():
         artifacts_dir = (path.parent / artifacts_dir).resolve()
 
+    workspace = (
+        _parse_workspace(raw["workspace"])
+        if schema_version == 2
+        else None
+    )
     return SwarmConfig(
+        schema_version=schema_version,
         source=path.resolve(),
         model=model,
         batch=batch,
         artifacts_dir=artifacts_dir,
         enable_thinking=_boolean(raw.get("enableThinking", False), "config.enableThinking"),
         seed=_integer(raw.get("seed", 20260727), "config.seed", 0, 2**31 - 1),
+        workspace=workspace,
     )
 
 
@@ -123,6 +167,13 @@ class TaskDef:
     max_repair_attempts: int = MAX_REPAIR_ATTEMPTS
     generation_override: dict[str, Any] = field(default_factory=dict)
     output_protocol: str = ""
+    artifact_type: str = "report"
+    allowed_paths: tuple[str, ...] = ()
+    verification: tuple[str, ...] = ()
+
+    @property
+    def mutates_workspace(self) -> bool:
+        return self.artifact_type in MUTATING_ARTIFACT_TYPES
 
 
 @dataclass(frozen=True)
@@ -169,6 +220,11 @@ class Plan:
     context: TaskContext | None
     tasks: tuple[TaskDef, ...]
     raw: dict[str, Any]
+    schema_version: int = 1
+
+    @property
+    def workspace_execution(self) -> bool:
+        return self.schema_version == 2
 
     def topological_order(self) -> list[list[TaskDef]]:
         """Return tasks grouped by dependency level for batch execution."""
@@ -192,8 +248,12 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
     raw = _read_json(path)
     _exact_keys(raw, "plan", {"planId", "objective", "tasks"}, {"context", "schemaVersion"})
     schema_version = _integer(raw.get("schemaVersion", 1), "plan.schemaVersion", 1, 100)
-    if schema_version != MANIFEST_SCHEMA_VERSION:
+    if schema_version not in SUPPORTED_PLAN_SCHEMA_VERSIONS:
         raise ContractError(f"Unsupported plan schema version: {schema_version}")
+    if schema_version == 2 and config.workspace is None:
+        raise ContractError(
+            "Plan schema version 2 requires config schema version 2 workspace settings."
+        )
 
     plan_id = _identifier(raw["planId"], "plan.planId")
     objective = _text(raw["objective"], "plan.objective")
@@ -213,18 +273,19 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
     for i, t_raw in enumerate(task_list):
         name = f"plan.tasks[{i}]"
         t = _object(t_raw, name)
-        _exact_keys(
-            t,
-            name,
-            {"id", "role", "prompt"},
-            {
-                "gate",
-                "dependsOn",
-                "maxRepairAttempts",
-                "generationOverride",
-                "outputProtocol",
-            },
-        )
+        task_required = {"id", "role", "prompt"}
+        task_optional = {
+            "gate",
+            "dependsOn",
+            "maxRepairAttempts",
+            "generationOverride",
+            "outputProtocol",
+        }
+        if schema_version == 2:
+            task_required.update(
+                {"artifactType", "allowedPaths", "verification"}
+            )
+        _exact_keys(t, name, task_required, task_optional)
         tid = _identifier(t["id"], f"{name}.id")
         if tid in task_ids:
             raise ContractError(f"Duplicate task id: {tid}")
@@ -251,6 +312,67 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
             t.get("generationOverride", {}),
             f"{name}.generationOverride",
         )
+        artifact_type = "report"
+        allowed_paths: tuple[str, ...] = ()
+        verification: tuple[str, ...] = ()
+        if schema_version == 2:
+            artifact_type = _text(
+                t["artifactType"],
+                f"{name}.artifactType",
+            )
+            if artifact_type not in ARTIFACT_TYPES:
+                raise ContractError(
+                    f"{name}.artifactType must be one of: "
+                    f"{', '.join(sorted(ARTIFACT_TYPES))}"
+                )
+            allowed_paths = _path_array(
+                t["allowedPaths"],
+                f"{name}.allowedPaths",
+            )
+            verification = tuple(
+                _identifier(value, f"{name}.verification[{index}]")
+                for index, value in enumerate(
+                    _list(
+                        t["verification"],
+                        f"{name}.verification",
+                        maximum=MAX_VERIFICATION_PROFILES,
+                    )
+                )
+            )
+            if len(set(verification)) != len(verification):
+                raise ContractError(
+                    f"{name}.verification must not contain duplicates."
+                )
+            assert config.workspace is not None
+            unknown_profiles = (
+                set(verification)
+                - set(config.workspace.verification_profiles)
+            )
+            if unknown_profiles:
+                raise ContractError(
+                    f"{name}.verification references unknown profiles: "
+                    f"{', '.join(sorted(unknown_profiles))}"
+                )
+            if artifact_type in MUTATING_ARTIFACT_TYPES:
+                if not allowed_paths:
+                    raise ContractError(
+                        f"{name}.allowedPaths must not be empty for "
+                        f"{artifact_type} artifacts."
+                    )
+                for allowed_path in allowed_paths:
+                    if not any(
+                        _relative_path_within(allowed_path, root)
+                        for root in config.workspace.write_roots
+                    ):
+                        raise ContractError(
+                            f"{name}.allowedPaths path is outside configured "
+                            f"workspace.writeRoots: {allowed_path}"
+                        )
+            elif allowed_paths or verification:
+                raise ContractError(
+                    f"{name} review/report artifacts cannot declare "
+                    "allowedPaths or verification profiles."
+                )
         tasks.append(
             TaskDef(
                 id=tid,
@@ -265,6 +387,9 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                     f"{name}.outputProtocol",
                     allow_empty=True,
                 ),
+                artifact_type=artifact_type,
+                allowed_paths=allowed_paths,
+                verification=verification,
             )
         )
 
@@ -275,6 +400,7 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                 raise ContractError(f"Task {t.id} depends on unknown task: {dep}")
 
     plan = Plan(
+        schema_version=schema_version,
         source=path.resolve(),
         plan_id=plan_id,
         objective=objective,
@@ -282,13 +408,112 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
         tasks=tuple(tasks),
         raw=raw,
     )
-    plan.topological_order()
+    levels = plan.topological_order()
+    if schema_version == 2:
+        for level_index, level in enumerate(levels):
+            mutating = [task.id for task in level if task.mutates_workspace]
+            if len(mutating) > 1:
+                raise ContractError(
+                    "Plan schema version 2 permits at most one mutating "
+                    f"artifact per DAG level; level {level_index} has: "
+                    f"{', '.join(mutating)}"
+                )
     return plan
 
 
 # ---------------------------------------------------------------------------
 # Parsing helpers
 # ---------------------------------------------------------------------------
+
+
+def _parse_workspace(raw: Any) -> WorkspaceConfig:
+    workspace = _object(raw, "config.workspace")
+    _exact_keys(
+        workspace,
+        "config.workspace",
+        {"writeRoots", "verificationProfiles"},
+    )
+    write_roots = _path_array(
+        workspace["writeRoots"],
+        "config.workspace.writeRoots",
+        minimum=1,
+    )
+    profiles_raw = _object(
+        workspace["verificationProfiles"],
+        "config.workspace.verificationProfiles",
+    )
+    if len(profiles_raw) > MAX_VERIFICATION_PROFILES:
+        raise ContractError(
+            "config.workspace.verificationProfiles exceeds "
+            f"{MAX_VERIFICATION_PROFILES} entries."
+        )
+    profiles: dict[str, VerificationProfile] = {}
+    for raw_identifier, raw_profile in profiles_raw.items():
+        identifier = _identifier(
+            raw_identifier,
+            "config.workspace.verificationProfiles key",
+        )
+        name = f"config.workspace.verificationProfiles.{identifier}"
+        profile = _object(raw_profile, name)
+        _exact_keys(
+            profile,
+            name,
+            {"argv"},
+            {"cwd", "timeoutSeconds", "inheritEnv", "environment"},
+        )
+        argv_values = _list(
+            profile["argv"],
+            f"{name}.argv",
+            minimum=1,
+            maximum=MAX_COMMAND_ARGUMENTS,
+        )
+        argv = tuple(
+            _command_argument(value, f"{name}.argv[{index}]")
+            for index, value in enumerate(argv_values)
+        )
+        cwd = _relative_path(
+            profile.get("cwd", "."),
+            f"{name}.cwd",
+        )
+        inherit_env = _unique_text_array(
+            profile.get(
+                "inheritEnv",
+                ["PATH", "TMPDIR", "LANG", "LC_ALL"],
+            ),
+            f"{name}.inheritEnv",
+            maximum=64,
+        )
+        for env_name in inherit_env:
+            _environment_name(env_name, f"{name}.inheritEnv")
+        environment_raw = _object(
+            profile.get("environment", {}),
+            f"{name}.environment",
+        )
+        environment: dict[str, str] = {}
+        for env_name, env_value in environment_raw.items():
+            key = _environment_name(env_name, f"{name}.environment key")
+            environment[key] = _text(
+                env_value,
+                f"{name}.environment.{key}",
+                allow_empty=True,
+            )
+        profiles[identifier] = VerificationProfile(
+            identifier=identifier,
+            argv=argv,
+            cwd=cwd,
+            timeout_seconds=_integer(
+                profile.get("timeoutSeconds", 300),
+                f"{name}.timeoutSeconds",
+                1,
+                3600,
+            ),
+            inherit_env=inherit_env,
+            environment=environment,
+        )
+    return WorkspaceConfig(
+        write_roots=write_roots,
+        verification_profiles=profiles,
+    )
 
 
 def _parse_context(raw: Any, config: SwarmConfig) -> TaskContext:
@@ -542,6 +767,62 @@ def _identifier(value: Any, name: str) -> str:
     if _IDENTIFIER.fullmatch(result) is None:
         raise ContractError(f"{name} must match {_IDENTIFIER.pattern}.")
     return result
+
+
+def _environment_name(value: Any, name: str) -> str:
+    result = _text(value, name)
+    if _ENVIRONMENT_NAME.fullmatch(result) is None:
+        raise ContractError(
+            f"{name} must be a valid environment variable name."
+        )
+    return result
+
+
+def _command_argument(value: Any, name: str) -> str:
+    result = _text(value, name)
+    if "\x00" in result:
+        raise ContractError(f"{name} must not contain NUL.")
+    if len(result) > 4096:
+        raise ContractError(f"{name} exceeds 4096 characters.")
+    return result
+
+
+def _relative_path(value: Any, name: str) -> str:
+    result = _text(value, name)
+    if "\x00" in result or "\\" in result:
+        raise ContractError(
+            f"{name} must be a POSIX relative path without NUL or backslashes."
+        )
+    path = PurePosixPath(result)
+    if path.is_absolute() or ".." in path.parts:
+        raise ContractError(f"{name} must stay below the workspace root.")
+    normalized = path.as_posix()
+    if normalized.startswith(".git/") or normalized == ".git":
+        raise ContractError(f"{name} cannot target .git.")
+    return normalized
+
+
+def _path_array(
+    value: Any,
+    name: str,
+    *,
+    minimum: int = 0,
+    maximum: int = 128,
+) -> tuple[str, ...]:
+    items = _list(value, name, minimum=minimum, maximum=maximum)
+    paths = tuple(
+        _relative_path(item, f"{name}[{index}]")
+        for index, item in enumerate(items)
+    )
+    if len(set(paths)) != len(paths):
+        raise ContractError(f"{name} must not contain duplicates.")
+    return paths
+
+
+def _relative_path_within(path: str, root: str) -> bool:
+    if root == ".":
+        return True
+    return path == root or path.startswith(root.rstrip("/") + "/")
 
 
 def _list(value: Any, name: str, *, minimum: int = 0, maximum: int = 128) -> list[Any]:

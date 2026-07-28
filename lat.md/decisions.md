@@ -1,16 +1,54 @@
 # Decisions
 
-Key design decisions in the swarm-agents framework.
+Key design decisions in the mlx-swarm framework.
 
 ## Strict Contract Validation
 
 All config and plan JSON files are validated with exact-key checking. Unknown fields raise ContractError. This catches typos early and prevents silent misconfiguration. Trade-off: no forward compatibility without schema version bump.
 
-## Deterministic Local Gates and One Frontier Review
+## One Frontier Plan, Local Waves, One Frontier Review
 
-Gate evaluation uses regex patterns, Python compilation, structured JSON checks, and character limits. The frontier model is called once for final review, not after each local worker wave.
+One frontier planning artifact defines the validated DAG, followed by local
+waves and one completed-run review artifact.
 
-This preserves frontier tokens, ensures reproducibility, and makes repair feedback actionable. Trade-off: local gates cannot prove arbitrary semantic correctness, so the final frontier packet remains explicitly review-required.
+Gate evaluation uses regex patterns, Python compilation, structured JSON
+checks, and character limits without frontier coordination between waves. Only
+a completed local run is eligible for final frontier review.
+
+This preserves frontier tokens, ensures reproducibility, and makes repair
+feedback actionable. Trade-off: the bundled Codex bridge cannot observe
+host-internal calls or token totals, so it guarantees one accepted artifact per
+phase and records usage as unavailable.
+
+## Operator Approval
+
+Frontier planning does not authorize execution. The cockpit displays the full
+validated DAG and requires approval of its canonical SHA-256 before launch.
+Historical sessions retain the exact plan, receipt, and approval.
+
+Workspace execution adds a second approval surface. The execution digest binds
+the canonical plan, resolved Git root, base HEAD, path authority, and referenced
+verification profiles. Every mutating artifact then requires a separate
+digest-bound Apply or Reject decision.
+
+## Isolated worktree, no promotion
+
+Workspace diffs apply only to a branch and worktree created from the displayed
+committed HEAD. Dirty source state is reported but excluded.
+
+Failed verification keeps the applied commit visible, and rejection creates an
+explicit revert commit. Cleanup removes only the worktree; no MLX Swarm action
+merges, cherry-picks, or mutates the original checkout. See
+[[workspace-execution]].
+
+## Operator-defined verification only
+
+Workers reference profile IDs but never command arrays. Exact argv, cwd,
+timeout, and environment authority come from config.
+
+That authority is sealed into the execution digest/session snapshot. This
+permits trusted project checks while keeping command authority outside
+frontier and local worker output.
 
 ## Batched Generation by Dependency Level
 

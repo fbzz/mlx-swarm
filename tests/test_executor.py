@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
-from swarm_agents.contracts import (
+from mlx_swarm.contracts import (
     BatchConfig,
     GatePattern,
     ModelConfig,
@@ -19,8 +19,8 @@ from swarm_agents.contracts import (
     load_config,
     load_plan,
 )
-from swarm_agents.executor import execute_plan
-from swarm_agents.session import Session
+from mlx_swarm.executor import execute_plan
+from mlx_swarm.session import Session
 
 
 class FakeBackend:
@@ -167,7 +167,7 @@ def test_backend_failure_marks_task_failed_and_child_blocked(
 def test_backend_initialization_failure_is_persisted(tmp_path: Path) -> None:
     task = TaskDef(id="task", role="general", prompt="work")
     with patch(
-        "swarm_agents.executor.MLXBatchBackend",
+        "mlx_swarm.executor.MLXBatchBackend",
         side_effect=RuntimeError("model unavailable"),
     ):
         session = execute_plan(

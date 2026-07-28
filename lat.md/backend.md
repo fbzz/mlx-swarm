@@ -2,7 +2,7 @@
 
 MLX batch backend — loads the model once and decodes all workers in a single batch.
 
-The backend module in [[src/swarm_agents/backend.py]] handles model resolution, persistent loading, chat-template rendering, and grouped batched generation through MLX.
+The backend module in [[src/mlx_swarm/backend.py]] handles model resolution, persistent loading, chat-template rendering, and grouped batched generation through MLX.
 
 ## Model Resolution
 
@@ -11,7 +11,7 @@ The backend module in [[src/swarm_agents/backend.py]] handles model resolution, 
 2. **repository**: Download from HuggingFace (local cache only, no network).
 3. If neither is set, raise RuntimeError.
 
-See [[src/swarm_agents/backend.py#_resolve_model_path]].
+See [[src/mlx_swarm/backend.py#_resolve_model_path]].
 
 ## Batch Generation
 
@@ -26,7 +26,7 @@ See [[src/swarm_agents/backend.py#_resolve_model_path]].
 7. Collect group and aggregate statistics.
 8. Release the model after the full plan finishes.
 
-See [[src/swarm_agents/backend.py#generate_batch]].
+See [[src/mlx_swarm/backend.py#generate_batch]].
 
 ## Generation Config
 

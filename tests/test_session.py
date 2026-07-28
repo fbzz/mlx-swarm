@@ -6,8 +6,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from swarm_agents.contracts import Plan, TaskDef, load_config, load_plan
-from swarm_agents.session import Session
+from mlx_swarm.contracts import Plan, TaskDef, load_config, load_plan
+from mlx_swarm.session import Session
 
 
 def _make_plan() -> Plan:

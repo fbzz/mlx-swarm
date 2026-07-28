@@ -2,7 +2,7 @@
 
 Prompt composition — assembles authoritative context, dependency outputs, and role-specific tasks.
 
-Prompts are composed by `compose_prompt` in [[src/swarm_agents/prompting.py#compose_prompt]]. The composition depends on whether shared context is provided.
+Prompts are composed by `compose_prompt` in [[src/mlx_swarm/prompting.py#compose_prompt]]. The composition depends on whether shared context is provided.
 
 ## With Context
 
@@ -33,7 +33,7 @@ When no context is provided, the prompt is simpler:
 
 How completed task outputs are injected into dependent task prompts.
 
-For each task in `dependsOn`, only a successfully completed normalized output is injected. Dependency outputs are framed as untrusted candidate artifacts; the plan contract remains authoritative. Rejected or failed dependencies are blocked by the [[Executor]] before prompting. See [[src/swarm_agents/prompting.py#_dependency_sections]].
+For each task in `dependsOn`, only a successfully completed normalized output is injected. Dependency outputs are framed as untrusted candidate artifacts; the plan contract remains authoritative. Rejected or failed dependencies are blocked by the [[Executor]] before prompting. See [[src/mlx_swarm/prompting.py#_dependency_sections]].
 
 ## Repair Prompts
 
@@ -43,4 +43,4 @@ When a task fails its gate, `compose_repair_prompt` appends:
 - The previous rejected output (truncated to 4000 chars)
 - Instructions to return only corrected output
 
-See [[src/swarm_agents/prompting.py#compose_repair_prompt]].
+See [[src/mlx_swarm/prompting.py#compose_repair_prompt]].

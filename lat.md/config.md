@@ -1,8 +1,9 @@
 # Config
 
-Swarm configuration JSON schema — validates model, batch, and artifacts settings.
+Swarm configuration JSON schema — validates model, batch, artifacts, and
+optional workspace-execution authority.
 
-The config file (typically `swarm.json`) defines which model to use, how many workers can run in parallel, and where session artifacts are stored. It is validated by `load_config` in [[src/swarm_agents/contracts.py#load_config]].
+The config file (typically `swarm.json`) defines which model to use, how many workers can run in parallel, and where session artifacts are stored. It is validated by `load_config` in [[src/mlx_swarm/contracts.py#load_config]].
 
 ## Schema
 
@@ -10,7 +11,7 @@ JSON structure for the config file.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "model": {
     "repository": "mlx-community/model-name",
     "revision": "",
@@ -23,7 +24,19 @@ JSON structure for the config file.
   },
   "artifacts": ".swarm/runs",
   "enableThinking": false,
-  "seed": 20260727
+  "seed": 20260727,
+  "workspace": {
+    "writeRoots": ["src", "tests"],
+    "verificationProfiles": {
+      "pytest": {
+        "argv": ["python", "-m", "pytest", "-q"],
+        "cwd": ".",
+        "timeoutSeconds": 300,
+        "inheritEnv": ["PATH", "LANG"],
+        "environment": {"PYTHONDONTWRITEBYTECODE": "1"}
+      }
+    }
+  }
 }
 ```
 
@@ -31,7 +44,8 @@ JSON structure for the config file.
 
 All config fields with types, defaults, and constraints.
 
-- **schemaVersion** (required, int): Must be 1.
+- **schemaVersion** (required, int): `1` is generation-only; `2` enables the
+  required workspace contract.
 - **model.repository** (required, string): HuggingFace repo ID for the MLX model.
 - **model.revision** (optional, string): Git revision/tag. Empty string means latest.
 - **model.localPath** (optional, string): Local filesystem path. Takes priority over repository.
@@ -41,11 +55,22 @@ All config fields with types, defaults, and constraints.
 - **artifacts** (required, string): Directory for session artifacts. Relative to config file.
 - **enableThinking** (optional, strict bool, default false): Configure the model chat template's thinking mode. Completed thinking blocks are never propagated as task artifacts.
 - **seed** (optional, int, default 20260727): Random seed for reproducibility. 0–2^31-1.
+- **workspace.writeRoots** (schema v2, required, non-empty array): Unique POSIX
+  relative path ceilings. Absolute paths, traversal, backslashes, NUL, and
+  `.git` are rejected.
+- **workspace.verificationProfiles** (schema v2, required, object): Named,
+  immutable verification authority. A profile has a non-empty fixed `argv`,
+  optional relative `cwd` (default `.`), `timeoutSeconds` (1–3600), unique
+  `inheritEnv` names, and explicit string `environment` values.
 
 ## Validation
 
 Config validation uses strict key checking — unknown fields raise ContractError.
 
 Empty strings are allowed for `revision` and `localPath` (both optional). The `artifacts` path is resolved relative to the config file's parent directory.
+
+Schema-v1 configs reject `workspace` as an unknown field. Schema-v2 workspace
+execution auto-detects the nearest Git top-level above the config directory;
+see [[workspace-execution]].
 
 See [[Architecture]] for how config flows into the executor.

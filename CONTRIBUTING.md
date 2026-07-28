@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve Swarm Agents.
+Thanks for helping improve MLX Swarm.
 
 ## Development setup
 
@@ -29,5 +29,5 @@ For UI changes, launch the cockpit and verify the loaded, empty, running,
 completed, partial, and failed states:
 
 ```bash
-swarm --config examples/swarm.json ui
+mlx-swarm --config examples/swarm.json ui
 ```

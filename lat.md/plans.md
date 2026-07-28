@@ -2,7 +2,7 @@
 
 Plan JSON schema — defines a DAG of tasks with dependencies, gates, and shared context.
 
-A plan is the master LLM's decomposition of work into a dependency-ordered task graph. It is validated by `load_plan` in [[src/swarm_agents/contracts.py#load_plan]].
+A plan is the master LLM's decomposition of work into a dependency-ordered task graph. It is validated by `load_plan` in [[src/mlx_swarm/contracts.py#load_plan]].
 
 ## Schema
 
@@ -69,7 +69,7 @@ Available task roles and their default generation parameters.
 
 ### Dependency Ordering
 
-Tasks are topologically sorted by `dependsOn`. Tasks at the same level are chunked by `maxWorkers` and grouped by compatible sampling settings. Circular dependencies are detected and rejected. See [[src/swarm_agents/contracts.py#Plan#topological_order]].
+Tasks are topologically sorted by `dependsOn`. Tasks at the same level are chunked by `maxWorkers` and grouped by compatible sampling settings. Circular dependencies are detected and rejected. See [[src/mlx_swarm/contracts.py#Plan#topological_order]].
 
 ### Gates
 
@@ -87,3 +87,29 @@ Rules for plan and task field validation.
 - Gate patterns are compiled (regex) at load time to catch syntax errors early
 - Boolean, output-format, generation-override, and JSON-schema fields are type-checked
 - Task-specific `outputProtocol` overrides the shared context protocol
+
+## Schema-v2 workspace tasks
+
+A plan with `"schemaVersion": 2` requires a schema-v2 config and adds three
+required task fields:
+
+```json
+{
+  "id": "implement",
+  "role": "implementation",
+  "prompt": "Return one unified Git diff.",
+  "artifactType": "patch",
+  "allowedPaths": ["src/package"],
+  "verification": ["pytest"]
+}
+```
+
+`artifactType` is `patch`, `test-suite`, `review`, or `report`. Patch and
+test-suite tasks require one or more task path ceilings below configured
+`workspace.writeRoots`; their verification array contains only configured
+profile IDs. Review and report tasks require empty path and verification
+arrays. Plans and workers cannot provide commands.
+
+At most one patch/test-suite task may occur in each topological level. This
+serializes human-controlled mutations while preserving parallel local
+generation for non-mutating artifacts. See [[workspace-execution]].

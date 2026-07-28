@@ -2,7 +2,7 @@
 
 Deterministic output validation for untrusted worker responses.
 
-Gates validate local-worker output using regex patterns, Python compilation, structured JSON rules, and character limits. No frontier call is spent on intermediate gates; one final frontier review consumes the compact result packet. Implemented in [[src/swarm_agents/gates.py]].
+Gates validate local-worker output using regex patterns, Python compilation, structured JSON rules, and character limits. No frontier call is spent on intermediate gates; one final frontier review consumes the compact result packet. Implemented in [[src/mlx_swarm/gates.py]].
 
 ## Gate Structure
 
@@ -28,13 +28,13 @@ OutputGate(
 5. **Required patterns**: Each regex must match (MULTILINE mode).
 6. **Forbidden patterns**: No regex may match (MULTILINE mode).
 
-See [[src/swarm_agents/gates.py#evaluate_gate]].
+See [[src/mlx_swarm/gates.py#evaluate_gate]].
 
 ## Gate Feedback
 
 When a gate fails, `gate_feedback_for_repair` generates a structured feedback string listing all violations. This is injected into a repair prompt that re-runs the task.
 
-The [[Executor]] checks each rejected task's `maxRepairAttempts` budget. If remaining, it composes a repair prompt with gate feedback and the previous failed output, then re-runs through MLX. The loop continues until the task passes or the budget is exhausted. See [[src/swarm_agents/executor.py#execute_plan]].
+The [[Executor]] checks each rejected task's `maxRepairAttempts` budget. If remaining, it composes a repair prompt with gate feedback and the previous failed output, then re-runs through MLX. The loop continues until the task passes or the budget is exhausted. See [[src/mlx_swarm/executor.py#execute_plan]].
 
 ## Normalization
 

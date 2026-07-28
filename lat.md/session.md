@@ -2,12 +2,13 @@
 
 Persistent session state — tracks task status, outputs, gate results, and batch statistics.
 
-The `Session` class in [[src/swarm_agents/session.py#Session]] manages all state for a single plan execution. Every state change is immediately persisted to `session.json` on disk, enabling crash recovery and resume.
+The `Session` class in [[src/mlx_swarm/session.py#Session]] manages all state for a single plan execution. Every state change is immediately persisted to `session.json` on disk, enabling crash recovery and resume.
 
 Every file-backed plan is snapshotted as `plan.snapshot.json` when its session is
 created. Historical inspection and retry therefore remain available even if the
 frontier-authored source plan is later changed or removed. Optional
-`launchSource`, `retryOf`, and `maxRepair` metadata extend the session contract
+`launchSource`, `retryOf`, `revisionOf`, commander approval, `reviewStatus`, and
+`maxRepair` metadata extend the session contract
 without requiring migration of existing `session.json` files.
 
 ## Lifecycle
@@ -15,8 +16,12 @@ without requiring migration of existing `session.json` files.
 Session state transitions from creation to completion.
 
 1. **Created**: When `execute_plan` starts, a new Session is initialized in `artifacts_dir / plan_id / run_id`.
-2. **Running**: Tasks transition through pending → running → completed/rejected/failed.
+2. **Running**: Tasks transition through pending → running →
+   completed/rejected/failed. Workspace tasks may additionally pause at
+   awaiting_approval or verification_failed and pass through applying and
+   verifying.
 3. **Finished**: Final status is set to "completed", "partial", or "failed", then one frontier-result packet is written.
+4. **Reviewed**: Completed sessions may receive one separate [[Commander|frontier review]]; local status never changes.
 
 ## State Structure
 
@@ -29,7 +34,10 @@ JSON shape persisted to session.json on disk.
   "objective": "...",
   "startedAt": "2026-07-27T12:00:00Z",
   "status": "running",
-  "launchSource": "ui",
+  "reviewStatus": "pending_local",
+  "launchSource": "commander",
+  "commanderRequestId": "request-...",
+  "planApproval": { "planSha256": "..." },
   "retryOf": "my-plan/20260727T110000Z-12345678",
   "maxRepair": 2,
   "planSnapshot": "plan.snapshot.json",
@@ -61,8 +69,18 @@ Methods for reading and updating session state.
 - **get_task_status**: Check current status.
 - **add_batch_record**: Record batch execution statistics.
 - **export_results**: Export completed artifacts and compact failure metadata.
-- **write_frontier_result**: Persist the single final-review packet with its plan source; rejected raw generations are omitted and compact local token usage is included.
+- **attach_commander**: Snapshot the planning receipt, digest approval, and optional revision lineage.
+- **attach_workspace**: Persist the immutable execution contract, Git lineage,
+  branch/worktree path, and dual-digest approval.
+- **write_frontier_result**: Persist the self-contained v2 generation packet or
+  v3 completed-workspace packet; rejected raw generations are omitted and
+  compact local usage remains separate from frontier receipts.
 
 ## Resume
 
-Sessions can be resumed via `swarm resume <session_dir>`. The [[Executor]] preserves the session ID and completed artifacts, recovers interrupted tasks, and resumes stored rejections only when repair budget remains. See [[src/swarm_agents/session.py#Session#load]].
+Sessions can be resumed via `mlx-swarm resume <session_dir>`. The [[Executor]] preserves the session ID and completed artifacts, recovers interrupted tasks, and resumes stored rejections only when repair budget remains. See [[src/mlx_swarm/session.py#Session#load]].
+
+Workspace session loading reconstructs path and profile authority from
+`workspace.snapshot.json`, not the live config. Completed v3 packets include
+applied artifact manifests, apply/verification receipts, non-mutating outputs,
+and the final base-to-head branch diff. See [[workspace-execution]].

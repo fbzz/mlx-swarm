@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -13,16 +14,18 @@ from urllib.request import Request, urlopen
 
 import pytest
 
-from swarm_agents.contracts import load_config, load_plan
-from swarm_agents.session import Session
-from swarm_agents.ui import APIError, CockpitApp, make_handler
+from mlx_swarm.contracts import load_config, load_plan
+from mlx_swarm.executor import execute_plan
+from mlx_swarm.session import Session
+from mlx_swarm.ui import APIError, CockpitApp, make_handler
+from mlx_swarm.workspace import execution_preview, persist_artifact
 
 
 def test_packaged_styles_preserve_native_hidden_state() -> None:
     styles = (
         Path(__file__).parents[1]
         / "src"
-        / "swarm_agents"
+        / "mlx_swarm"
         / "ui_static"
         / "styles.css"
     ).read_text(encoding="utf-8")
@@ -102,12 +105,152 @@ class _PopenRecorder:
         return _FakeProcess(41_000 + len(self.calls))
 
 
+class _FakeBackend:
+    def __init__(self, responses: list[list[str]]):
+        self.responses = list(responses)
+
+    def generate(self, tasks, prompts):
+        response = self.responses.pop(0)
+        return response, {
+            "batchSize": len(tasks),
+            "promptTokens": len(prompts) * 10,
+            "generationTokens": len(response) * 5,
+            "groups": [{"size": len(tasks)}],
+        }
+
+    def close(self) -> None:
+        return
+
+
 def _app(tmp_path: Path, recorder: _PopenRecorder | None = None) -> CockpitApp:
     config_path, _ = _write_workspace(tmp_path)
     return CockpitApp(
         load_config(config_path),
         tmp_path,
         popen_factory=recorder or _PopenRecorder(),
+    )
+
+
+def _git_ui(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            str(repo),
+            *args,
+        ],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout.strip()
+
+
+def _write_v2_workspace(
+    tmp_path: Path,
+) -> tuple[Path, Path, Path]:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    _git_ui(repo, "init", "-q")
+    _git_ui(repo, "config", "user.name", "Test")
+    _git_ui(repo, "config", "user.email", "test@example.invalid")
+    (repo / ".gitignore").write_text(
+        "config/.swarm/\n",
+        encoding="utf-8",
+    )
+    (repo / "src").mkdir()
+    (repo / "src" / "value.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    model_dir = repo / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}", encoding="utf-8")
+    (model_dir / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (model_dir / "model.safetensors").write_bytes(b"")
+    config_dir = repo / "config"
+    config_dir.mkdir()
+    config_path = config_dir / "swarm.json"
+    config_path.write_text(
+        json.dumps({
+            "schemaVersion": 2,
+            "model": {
+                "repository": "local/test-model",
+                "localPath": str(model_dir),
+            },
+            "batch": {"maxWorkers": 2},
+            "artifacts": ".swarm/runs",
+            "workspace": {
+                "writeRoots": ["src"],
+                "verificationProfiles": {
+                    "check": {
+                        "argv": [
+                            "python",
+                            "-c",
+                            (
+                                "from pathlib import Path; "
+                                "assert 'VALUE = 2' in "
+                                "Path('src/value.py').read_text()"
+                            ),
+                        ],
+                        "cwd": ".",
+                        "timeoutSeconds": 10,
+                        "inheritEnv": ["PATH"],
+                        "environment": {},
+                    },
+                },
+            },
+        }),
+        encoding="utf-8",
+    )
+    plan_path = config_dir / "workspace-plan.json"
+    plan_path.write_text(
+        json.dumps({
+            "schemaVersion": 2,
+            "planId": "ui-workspace",
+            "objective": "Change one approved file",
+            "tasks": [{
+                "id": "change",
+                "role": "implementation",
+                "prompt": "Return the unified diff.",
+                "artifactType": "patch",
+                "allowedPaths": ["src/value.py"],
+                "verification": ["check"],
+            }],
+        }),
+        encoding="utf-8",
+    )
+    _git_ui(repo, "add", ".")
+    _git_ui(repo, "commit", "-qm", "base")
+    return repo, config_path, plan_path
+
+
+def _v2_app(
+    tmp_path: Path,
+    recorder: _PopenRecorder | None = None,
+) -> tuple[CockpitApp, Path, Path]:
+    repo, config_path, plan_path = _write_v2_workspace(tmp_path)
+    return (
+        CockpitApp(
+            load_config(config_path),
+            config_path.parent,
+            popen_factory=recorder or _PopenRecorder(),
+        ),
+        repo,
+        plan_path,
+    )
+
+
+def _ui_diff() -> str:
+    return (
+        "diff --git a/src/value.py b/src/value.py\n"
+        "--- a/src/value.py\n"
+        "+++ b/src/value.py\n"
+        "@@ -1 +1 @@\n"
+        "-VALUE = 1\n"
+        "+VALUE = 2\n"
     )
 
 
@@ -178,6 +321,305 @@ def test_launch_rejects_bad_repair_limits(tmp_path: Path) -> None:
     for value in (-1, 6, True, "2"):
         with pytest.raises(APIError):
             app.launch_run("cockpit-plan", value)  # type: ignore[arg-type]
+
+
+def test_workspace_plan_requires_both_displayed_digests(
+    tmp_path: Path,
+) -> None:
+    recorder = _PopenRecorder()
+    app, repo, _plan_path = _v2_app(tmp_path, recorder)
+    catalog = app.plans_payload()["plans"]
+    assert len(catalog) == 1
+    displayed = catalog[0]
+    execution = displayed["execution"]
+    assert execution["workspaceRoot"] == str(repo.resolve())
+    assert execution["planSha256"] == displayed["digest"]
+
+    with pytest.raises(APIError, match="Plan digest mismatch"):
+        app.launch_run(
+            "ui-workspace",
+            2,
+            plan_digest="0" * 64,
+            execution_digest=execution["executionDigest"],
+        )
+    with pytest.raises(APIError, match="Execution digest mismatch"):
+        app.launch_run(
+            "ui-workspace",
+            2,
+            plan_digest=displayed["digest"],
+            execution_digest="0" * 64,
+        )
+
+    launched = app.launch_run(
+        "ui-workspace",
+        2,
+        plan_digest=displayed["digest"],
+        execution_digest=execution["executionDigest"],
+    )
+    run_dir = (
+        app.artifacts_dir
+        / "ui-workspace"
+        / launched["run"]["sessionId"]
+    )
+    state = json.loads((run_dir / "session.json").read_text())
+    snapshot = json.loads(
+        (run_dir / "workspace.snapshot.json").read_text()
+    )
+    assert state["workspaceExecution"] is True
+    assert state["executionApproval"]["planSha256"] == displayed["digest"]
+    assert snapshot["branch"].startswith("mlx-swarm/ui-workspace/")
+    assert Path(snapshot["worktreePath"]).is_dir()
+    argv, kwargs = recorder.calls[-1]
+    assert argv[2] == "mlx_swarm.cli"
+    assert kwargs["shell"] is False
+
+
+def test_workspace_artifact_api_is_digest_bound_and_cleanup_retains_branch(
+    tmp_path: Path,
+) -> None:
+    recorder = _PopenRecorder()
+    app, repo, plan_path = _v2_app(tmp_path, recorder)
+    plan = load_plan(plan_path, app.config)
+    preview = execution_preview(app.config, plan)
+    launched = app.launch_run(
+        plan.plan_id,
+        2,
+        plan_digest=preview["planSha256"],
+        execution_digest=preview["executionDigest"],
+    )
+    session_id = launched["run"]["sessionId"]
+    session_dir = app.artifacts_dir / plan.plan_id / session_id
+    session = Session.load(session_dir, app.config)
+    snapshot = session.workspace_snapshot()
+    assert snapshot is not None
+    manifest = persist_artifact(
+        session_dir,
+        plan.tasks[0],
+        _ui_diff(),
+        snapshot,
+    )
+    session.update_task(
+        "change",
+        status="awaiting_approval",
+        artifact=manifest,
+        output=_ui_diff(),
+        normalizedOutput=_ui_diff(),
+        gateResult={"passed": True, "violations": []},
+    )
+    session.set_status("awaiting_approval")
+
+    try:
+        server = ThreadingHTTPServer(
+            ("127.0.0.1", 0),
+            make_handler(app),
+        )
+    except PermissionError:
+        pytest.skip("The active sandbox does not allow localhost sockets.")
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}"
+    try:
+        status, payload = _post(
+            (
+                f"{base}/api/runs/{plan.plan_id}/{session_id}"
+                "/artifacts/change/apply"
+            ),
+            json.dumps({"artifactDigest": "0" * 64}).encode(),
+            origin=base,
+        )
+        assert status == 409
+        assert "digest mismatch" in payload["error"].lower()
+
+        status, detail = _post(
+            (
+                f"{base}/api/runs/{plan.plan_id}/{session_id}"
+                "/artifacts/change/apply"
+            ),
+            json.dumps({
+                "artifactDigest": manifest["sha256"],
+            }).encode(),
+            origin=base,
+        )
+        assert status == 202
+        assert detail["artifacts"]["change"]["payload"].startswith(
+            "diff --git"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    decision = json.loads(
+        (
+            session_dir
+            / "artifacts"
+            / "change"
+            / "decision.json"
+        ).read_text()
+    )
+    assert decision["action"] == "apply"
+    # Mark the fake launched run terminal; cleanup removes only its worktree.
+    terminal = Session.load(session_dir, app.config)
+    terminal.set_status("partial")
+    branch = snapshot["branch"]
+    worktree = Path(snapshot["worktreePath"])
+    cleaned = app.cleanup_run_workspace(plan.plan_id, session_id)
+    assert cleaned["workspace"]["cleanedUp"] is True
+    assert not worktree.exists()
+    assert _git_ui(
+        repo,
+        "show-ref",
+        "--verify",
+        f"refs/heads/{branch}",
+    )
+    assert (repo / "src" / "value.py").read_text() == "VALUE = 1\n"
+
+
+def test_commander_request_preview_and_digest_approval(
+    tmp_path: Path,
+) -> None:
+    recorder = _PopenRecorder()
+    app = _app(tmp_path, recorder)
+    created = app.create_commander_request(
+        "Build and verify a local result",
+        ["Stay local."],
+        None,
+    )
+    request_id = created["request"]["requestId"]
+    claim = app.commander.claim_plan(request_id)
+    response = tmp_path / "commander-response.json"
+    response.write_text(
+        (tmp_path / "plan.json").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    imported = app.commander.import_plan(
+        request_id,
+        response,
+        claim_id=claim["claimId"],
+    )
+    digest = imported["request"]["planDigest"]
+
+    assert imported["plan"]["levels"] == [
+        ["implement"],
+        ["test", "review"],
+    ]
+    with pytest.raises(APIError, match="digest mismatch"):
+        app.approve_commander_run(request_id, "0" * 64, 2)
+
+    detail = app.approve_commander_run(request_id, digest, 3)
+    session_dir = (
+        app.artifacts_dir
+        / detail["run"]["planId"]
+        / detail["run"]["sessionId"]
+    )
+    state = json.loads((session_dir / "session.json").read_text())
+    assert state["launchSource"] == "commander"
+    assert state["commanderRequestId"] == request_id
+    assert state["planApproval"]["planSha256"] == digest
+    assert state["reviewStatus"] == "pending_local"
+    assert (session_dir / "frontier-plan-receipt.json").is_file()
+    usage = json.loads((session_dir / "frontier-usage.json").read_text())
+    assert usage["planning"]["acceptedResponses"] == 1
+    assert usage["planning"]["usageStatus"] == "unavailable"
+    assert recorder.calls[0][0][2] == "mlx_swarm.cli"
+    assert recorder.calls[0][1]["shell"] is False
+    request = app.commander.request_detail(request_id)["request"]
+    assert request["status"] == "launched"
+    assert request["sessionRef"] == (
+        f"{detail['run']['planId']}/{detail['run']['sessionId']}"
+    )
+
+    old = Session.load(session_dir, app.config)
+    old.set_status("partial")
+    retried = app.retry_run(
+        detail["run"]["planId"],
+        detail["run"]["sessionId"],
+        1,
+    )
+    retry_dir = (
+        app.artifacts_dir
+        / retried["run"]["planId"]
+        / retried["run"]["sessionId"]
+    )
+    retry_state = json.loads((retry_dir / "session.json").read_text())
+    assert retry_state["retryOf"] == (
+        f"{detail['run']['planId']}/{detail['run']['sessionId']}"
+    )
+    assert retry_state["commanderRequestId"] == request_id
+    assert (retry_dir / "frontier-plan-receipt.json").is_file()
+
+
+def test_commander_api_acceptance_run_exposes_completed_dag_and_review(
+    tmp_path: Path,
+) -> None:
+    recorder = _PopenRecorder()
+    app = _app(tmp_path, recorder)
+    created = app.create_commander_request(
+        "Build and verify a local result",
+        [],
+        None,
+    )
+    request_id = created["request"]["requestId"]
+    claim = app.commander.claim_plan(request_id)
+    app.commander.import_plan(
+        request_id,
+        tmp_path / "plan.json",
+        claim_id=claim["claimId"],
+    )
+    request = app.commander.request_detail(request_id)["request"]
+    launched = app.approve_commander_run(
+        request_id,
+        request["planDigest"],
+        2,
+    )
+    session_dir = (
+        app.artifacts_dir
+        / launched["run"]["planId"]
+        / launched["run"]["sessionId"]
+    )
+    plan = load_plan(session_dir / "plan.snapshot.json", app.config)
+    execute_plan(
+        app.config,
+        plan,
+        session_dir=session_dir,
+        max_repair=2,
+        backend=_FakeBackend([
+            ["def result():\n    return 1\n"],
+            ["assert result() == 1", '{"verdict":"approve"}'],
+        ]),
+    )
+
+    detail = app.run_detail(plan.plan_id, launched["run"]["sessionId"])
+    assert detail["run"]["completed"] == 3
+    assert detail["run"]["status"] == "completed"
+    assert detail["tasks"]["implement"]["normalizedOutput"].startswith("def")
+    assert detail["tasks"]["test"]["normalizedOutput"].startswith("assert")
+    assert detail["frontierResult"]["schemaVersion"] == 2
+    assert detail["frontierResult"]["requiresFrontierReview"] is True
+    assert detail["actions"]["review"] is True
+
+    review_claim = app.commander.claim_review(session_dir)
+    review = tmp_path / "acceptance-review.json"
+    review.write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "sessionId": launched["run"]["sessionId"],
+            "planId": plan.plan_id,
+            "verdict": "approved",
+            "summary": "All completed artifacts satisfy the packet.",
+            "findings": [],
+        }),
+        encoding="utf-8",
+    )
+    app.commander.import_review(
+        session_dir,
+        review,
+        claim_id=review_claim["claimId"],
+    )
+    reviewed = app.run_detail(plan.plan_id, launched["run"]["sessionId"])
+    assert reviewed["reviewStatus"] == "approved"
+    assert reviewed["frontierReview"]["verdict"] == "approved"
+    assert reviewed["actions"]["review"] is False
 
 
 def test_resume_preserves_completed_tasks(tmp_path: Path) -> None:
@@ -367,7 +809,7 @@ def test_http_static_assets_and_api(http_cockpit) -> None:
     _app_instance, base = http_cockpit
     status, content, headers = _get(base + "/")
     assert status == 200
-    assert b"Swarm Work Cockpit" in content
+    assert b"MLX Swarm Cockpit" in content
     assert "default-src 'self'" in headers["Content-Security-Policy"]
     assert _get(base + "/styles.css")[0] == 200
     assert _get(base + "/app.js")[0] == 200
@@ -375,6 +817,42 @@ def test_http_static_assets_and_api(http_cockpit) -> None:
     assert status_payload["reviewMode"] == "frontier-final-only"
     plans_payload = json.loads(_get(base + "/api/plans")[1])
     assert plans_payload["plans"][0]["planId"] == "cockpit-plan"
+    commander_payload = json.loads(
+        _get(base + "/api/commander/requests")[1]
+    )
+    assert commander_payload == {"requests": []}
+
+
+def test_http_commander_request_and_unknown_fields(http_cockpit) -> None:
+    _app_instance, base = http_cockpit
+    status, created = _post(
+        base + "/api/commander/requests",
+        json.dumps({
+            "objective": "Build a local artifact",
+            "constraints": ["No network."],
+        }).encode(),
+        origin=base,
+    )
+    assert status == 201
+    request_id = created["request"]["requestId"]
+    detail = json.loads(
+        _get(
+            f"{base}/api/commander/requests/{request_id}"
+        )[1]
+    )
+    assert detail["request"]["status"] == "awaiting_plan"
+    assert "$mlx-swarm-commander" in detail["handoff"]["planCommand"]
+
+    status, payload = _post(
+        base + "/api/commander/requests",
+        json.dumps({
+            "objective": "Build a local artifact",
+            "unknown": True,
+        }).encode(),
+        origin=base,
+    )
+    assert status == 400
+    assert "Unknown fields" in payload["error"]
 
 
 def test_http_malformed_oversized_and_cross_origin_requests(
@@ -454,6 +932,7 @@ def test_http_path_traversal_and_missing_static_are_rejected(
     _app_instance, base = http_cockpit
     for path, expected in (
         ("/api/runs/%2e%2e/session", 400),
+        ("/api/commander/requests/%2e%2e", 400),
         ("/secret.txt", 404),
     ):
         try:

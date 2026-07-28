@@ -5,8 +5,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <meta name="description" content="Local operator cockpit for swarm runs">
-  <title>Swarm Work Cockpit</title>
+  <meta name="description" content="Local operator cockpit for MLX Swarm">
+  <title>MLX Swarm Cockpit</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
@@ -17,7 +17,7 @@
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
       <div>
         <p class="eyebrow">Local execution surface</p>
-        <h1>Swarm Work Cockpit</h1>
+        <h1>MLX Swarm Cockpit</h1>
       </div>
     </div>
     <div class="topbar-status" aria-label="System and run status">
@@ -31,6 +31,7 @@
       </div>
       <div class="status-item"><span class="status-label">Elapsed</span><strong id="metric-elapsed">—</strong></div>
       <div class="status-item"><span class="status-label">Local tokens</span><strong id="metric-tokens">—</strong></div>
+      <div class="status-item"><span class="status-label">Frontier tokens</span><strong id="metric-frontier">—</strong></div>
       <div class="status-item compact-only"><span class="status-label">Calls</span><strong id="metric-calls">—</strong></div>
       <div class="status-item compact-only"><span class="status-label">Loads</span><strong id="metric-loads">—</strong></div>
     </div>
@@ -38,6 +39,29 @@
 
   <main class="workspace">
     <aside class="left-rail" aria-label="Plans and run history">
+      <section class="panel commander-panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Frontier commander</p><h2>Plan once</h2></div>
+          <span id="commander-count" class="count-badge">0</span>
+        </div>
+        <form id="commander-form">
+          <label for="commander-objective">Objective</label>
+          <textarea id="commander-objective" rows="3" maxlength="12000" required placeholder="Describe the bounded result local workers should produce."></textarea>
+          <label for="commander-constraints">Constraints <span class="muted">(one per line)</span></label>
+          <textarea id="commander-constraints" rows="2" maxlength="8000" placeholder="No network access&#10;Return auditable artifacts"></textarea>
+          <button id="commander-create" class="button primary wide" type="submit">Create planning request</button>
+        </form>
+        <label for="commander-select">Commander requests</label>
+        <select id="commander-select">
+          <option value="">No requests yet</option>
+        </select>
+        <div id="commander-handoff" class="handoff" hidden>
+          <p id="commander-status-copy" class="field-hint"></p>
+          <pre id="commander-command" class="command-copy"></pre>
+          <button id="copy-plan-command" class="button secondary wide" type="button">Copy “Plan with Codex” command</button>
+        </div>
+      </section>
+
       <section class="panel launch-panel">
         <div class="section-heading">
           <div><p class="eyebrow">Approved work</p><h2>Launch plan</h2></div>
@@ -79,12 +103,44 @@
       </section>
     </aside>
 
-    <section id="dag-panel" class="panel dag-panel" tabindex="-1" aria-labelledby="dag-title">
+    <section id="dag-panel" class="panel dag-panel" tabindex="-1" aria-label="MLX Swarm work graph">
       <div id="empty-state" class="empty-state">
         <div class="empty-orbit" aria-hidden="true"><i></i><i></i><i></i></div>
         <p class="eyebrow">Operator ready</p>
         <h2>Select a run to inspect its execution graph</h2>
         <p>Launch an approved plan or choose an immutable run from the history rail.</p>
+      </div>
+
+      <div id="commander-workspace" hidden>
+        <header class="run-heading">
+          <div>
+            <div class="run-kicker">
+              <span id="commander-state-chip" class="state-chip pending">awaiting plan</span>
+              <span id="commander-request-id" class="mono muted"></span>
+            </div>
+            <h2 id="commander-plan-title">Frontier planning request</h2>
+            <p id="commander-plan-objective" class="run-objective"></p>
+          </div>
+          <div class="run-actions">
+            <button id="approve-run-button" class="button primary" type="button" hidden>Approve and run</button>
+          </div>
+        </header>
+        <div class="approval-strip">
+          <span><span class="eyebrow">Plan digest</span><code id="commander-plan-digest">Awaiting validated frontier plan</code></span>
+          <span><span class="eyebrow">Workspace</span><code id="commander-workspace-root"></code></span>
+          <span id="commander-execution-digest-wrap" hidden><span class="eyebrow">Execution digest</span><code id="commander-execution-digest"></code></span>
+          <span id="commander-base-wrap" hidden><span class="eyebrow">Git base</span><code id="commander-base-sha"></code></span>
+        </div>
+        <div id="commander-error" class="inline-alert warning" hidden></div>
+        <div class="graph-toolbar">
+          <div><p class="eyebrow">Approval preview</p><h3>Validated task DAG</h3></div>
+          <div id="commander-plan-meta" class="mono muted"></div>
+        </div>
+        <div id="commander-dag" class="dag" role="group" aria-label="Validated commander plan"></div>
+        <section class="plan-evidence">
+          <h3>Complete validated plan</h3>
+          <pre id="commander-plan-json" class="code-block"></pre>
+        </section>
       </div>
 
       <div id="run-workspace" hidden>
@@ -100,8 +156,26 @@
           <div class="run-actions">
             <button id="resume-button" class="button secondary" type="button" hidden>Resume</button>
             <button id="retry-button" class="button secondary" type="button" hidden>Retry as new run</button>
+            <button id="review-button" class="button secondary" type="button" hidden>Review with Codex</button>
+            <button id="cleanup-workspace-button" class="button secondary" type="button" hidden>Remove worktree</button>
           </div>
         </header>
+        <section id="workspace-boundary" class="workspace-boundary" hidden>
+          <div class="section-heading">
+            <div><p class="eyebrow">Workspace execution boundary</p><h3 id="workspace-branch">Session branch</h3></div>
+            <span id="workspace-dirty" class="state-chip pending">clean base</span>
+          </div>
+          <div class="approval-strip">
+            <span><span class="eyebrow">Approved root</span><code id="workspace-root"></code></span>
+            <span><span class="eyebrow">Base → head</span><code id="workspace-shas"></code></span>
+            <span><span class="eyebrow">Isolated worktree</span><code id="workspace-path"></code></span>
+          </div>
+          <p id="workspace-warning" class="field-hint"></p>
+          <details id="workspace-final-diff-wrap" hidden>
+            <summary>Final base-to-head branch diff</summary>
+            <pre id="workspace-final-diff" class="code-output"></pre>
+          </details>
+        </section>
         <div class="run-progress" aria-label="Task completion progress">
           <div class="progress-track"><span id="progress-fill"></span></div>
           <span id="progress-label">0 / 0 complete</span>
@@ -118,10 +192,20 @@
         <footer id="frontier-surface" class="frontier-surface" hidden>
           <div>
             <span class="frontier-icon" aria-hidden="true">F</span>
-            <div><p class="eyebrow">Final review surface</p><strong>Frontier packet ready</strong></div>
+            <div><p class="eyebrow">Final review surface</p><strong id="frontier-review-label">Frontier packet ready</strong></div>
           </div>
           <span id="frontier-usage" class="mono"></span>
         </footer>
+        <section id="frontier-review-panel" class="frontier-review-panel" hidden>
+          <div class="section-heading">
+            <div><p class="eyebrow">Frontier verdict</p><h3 id="frontier-verdict">Awaiting review</h3></div>
+            <span id="frontier-review-status" class="state-chip pending">awaiting review</span>
+          </div>
+          <p id="frontier-summary" class="run-objective"></p>
+          <div id="frontier-findings" class="evidence-list"></div>
+          <pre id="review-command" class="command-copy" hidden></pre>
+          <button id="copy-review-command" class="button secondary" type="button" hidden>Copy review command</button>
+        </section>
       </div>
     </section>
 

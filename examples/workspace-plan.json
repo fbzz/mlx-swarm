@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 2,
+  "planId": "workspace-palindrome-demo",
+  "objective": "Create and verify a palindrome module on an isolated MLX Swarm session branch.",
+  "context": {
+    "objective": "Produce an implementation patch, a test-suite patch, and a structured local review.",
+    "authoritativeSources": [
+      {
+        "label": "Interface Contract",
+        "content": "Target module: examples/workspace_demo/is_palindrome_module.py\nTarget tests: examples/workspace_demo/test_is_palindrome_module.py\n\nImplement def is_palindrome(s: str) -> bool that ignores case and non-alphanumeric characters."
+      }
+    ],
+    "constraints": [
+      "Return text-only unified Git diffs for workspace-changing tasks.",
+      "Do not emit or execute commands.",
+      "Use only Python standard-library functionality."
+    ],
+    "rejectionCriteria": [
+      "A diff touches paths outside the task allowlist.",
+      "A worker proposes a command.",
+      "The review is not exact JSON."
+    ],
+    "outputProtocol": "Return only the artifact required by the task contract."
+  },
+  "tasks": [
+    {
+      "id": "implementation-patch",
+      "role": "implementation",
+      "prompt": "Create the palindrome module as a new file. Return one unified Git diff.",
+      "artifactType": "patch",
+      "allowedPaths": ["examples/workspace_demo/is_palindrome_module.py"],
+      "verification": [],
+      "maxRepairAttempts": 2,
+      "gate": {
+        "requiredPatterns": [
+          {"id": "git-diff", "pattern": "^diff --git "}
+        ],
+        "forbiddenPatterns": [
+          {"id": "no-shell", "pattern": "(?m)^(?:\\$|sudo |rm |git apply )"}
+        ],
+        "maxCharacters": 10000,
+        "format": "text",
+        "stripSingleCodeFence": true,
+        "pythonSyntax": false
+      }
+    },
+    {
+      "id": "test-suite-patch",
+      "role": "test",
+      "prompt": "Add pytest coverage for empty, mixed-case, punctuated, true, and false cases. Return one unified Git diff.",
+      "artifactType": "test-suite",
+      "allowedPaths": ["examples/workspace_demo/test_is_palindrome_module.py"],
+      "verification": ["pytest-workspace-demo"],
+      "dependsOn": ["implementation-patch"],
+      "maxRepairAttempts": 2,
+      "gate": {
+        "requiredPatterns": [
+          {"id": "git-diff", "pattern": "^diff --git "},
+          {"id": "pytest-test", "pattern": "def test_"}
+        ],
+        "forbiddenPatterns": [],
+        "maxCharacters": 12000,
+        "format": "text",
+        "stripSingleCodeFence": true,
+        "pythonSyntax": false
+      }
+    },
+    {
+      "id": "local-review",
+      "role": "review",
+      "prompt": "Review the applied implementation and passing verification evidence. Return keys verdict, findings, and summary.",
+      "artifactType": "review",
+      "allowedPaths": [],
+      "verification": [],
+      "dependsOn": ["test-suite-patch"],
+      "maxRepairAttempts": 1,
+      "gate": {
+        "requiredPatterns": [],
+        "forbiddenPatterns": [],
+        "maxCharacters": 5000,
+        "format": "json",
+        "stripSingleCodeFence": true,
+        "pythonSyntax": false,
+        "jsonRequiredKeys": ["verdict", "findings", "summary"],
+        "jsonAllowedKeys": ["verdict", "findings", "summary"],
+        "jsonFieldEnums": {
+          "verdict": ["approve", "reject"]
+        }
+      }
+    }
+  ]
+}

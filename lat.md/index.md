@@ -1,10 +1,11 @@
-# Swarm Agents
+# MLX Swarm
 
 Local MLX swarm agent framework with context persistence and DAG execution.
 
 - [[architecture]] — Overall architecture: how config, plans, DAG execution, gates, and MLX batch inference fit together.
 - [[backend]] — MLX batch backend: model resolution, loading, and batched generation.
 - [[config]] — Swarm configuration JSON schema: model, batch, and artifacts settings.
+- [[commander]] — Frontier planning requests, digest approval, final review, and separate usage receipts.
 - [[decisions]] — Key design decisions and their trade-offs.
 - [[executor]] — DAG executor: topological sort, batch-by-level, repair loops.
 - [[gates]] — Deterministic local validation using regex, Python syntax, and structured JSON rules.
@@ -13,3 +14,4 @@ Local MLX swarm agent framework with context persistence and DAG execution.
 - [[session]] — Persistent session state plus the compact final frontier-review packet.
 - [[tests]] — Test specifications for backend, contracts, gates, prompting, session, executor, and CLI.
 - [[ui]] — Localhost work cockpit, same-origin API, packaged dashboard, and immutable retry lineage.
+- [[workspace-execution]] — Typed artifacts, isolated Git worktrees, human decisions, and allowlisted verification.

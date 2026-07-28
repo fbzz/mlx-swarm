@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -12,6 +14,17 @@ from .contracts import Plan, SwarmConfig, TaskDef
 from .gates import evaluate_gate, gate_feedback_for_repair, normalize_output
 from .prompting import compose_prompt, compose_repair_prompt
 from .session import Session, _run_id, _utc_now
+from .workspace import (
+    WorkspaceError,
+    apply_artifact,
+    load_artifact,
+    persist_artifact,
+    read_failed_verification_action,
+    read_initial_decision,
+    recover_artifact_application,
+    revert_applied_artifact,
+    run_verifications,
+)
 
 
 def execute_plan(
@@ -23,10 +36,43 @@ def execute_plan(
     backend: BatchBackend | None = None,
     retry_of: str | None = None,
     launch_source: str = "cli",
+    approval_poll_seconds: float = 1.0,
+) -> Session:
+    """Execute with an exclusive per-session runner lock."""
+    if session_dir is None:
+        run_id = _run_id()
+        session_dir = config.artifacts_dir / plan.plan_id / run_id
+    session_dir = session_dir.resolve()
+    session_dir.mkdir(parents=True, exist_ok=True)
+    with _runner_lock(session_dir):
+        return _execute_plan_unlocked(
+            config,
+            plan,
+            session_dir=session_dir,
+            max_repair=max_repair,
+            backend=backend,
+            retry_of=retry_of,
+            launch_source=launch_source,
+            approval_poll_seconds=approval_poll_seconds,
+        )
+
+
+def _execute_plan_unlocked(
+    config: SwarmConfig,
+    plan: Plan,
+    session_dir: Path,
+    max_repair: int = 2,
+    *,
+    backend: BatchBackend | None = None,
+    retry_of: str | None = None,
+    launch_source: str = "cli",
+    approval_poll_seconds: float = 1.0,
 ) -> Session:
     """Execute a validated plan and persist one final frontier-review packet."""
     if max_repair < 0:
         raise ValueError("max_repair must be non-negative.")
+    if approval_poll_seconds <= 0:
+        raise ValueError("approval_poll_seconds must be positive.")
 
     session = _open_session(
         config,
@@ -35,6 +81,10 @@ def execute_plan(
         retry_of=retry_of,
         launch_source=launch_source,
     )
+    if plan.workspace_execution and not session.state.get("workspaceExecution"):
+        raise RuntimeError(
+            "Schema-v2 workspace plans require a digest-approved worktree snapshot."
+        )
     session.set_status("running")
     _recover_interrupted_tasks(session)
 
@@ -57,6 +107,11 @@ def execute_plan(
 
     try:
         for level_idx, level_tasks in enumerate(plan.topological_order()):
+            _await_workspace_tasks(
+                session,
+                level_tasks,
+                poll_seconds=approval_poll_seconds,
+            )
             _block_tasks_with_failed_dependencies(session, level_tasks)
 
             initial_tasks = [
@@ -77,6 +132,7 @@ def execute_plan(
                     level_idx,
                     chunk_idx,
                     max_repair,
+                    approval_poll_seconds,
                 )
 
             # A process can die after a rejection was saved but before its
@@ -102,6 +158,7 @@ def execute_plan(
                     level_idx,
                     chunk_idx,
                     max_repair,
+                    approval_poll_seconds,
                 )
     finally:
         if owns_backend:
@@ -152,6 +209,7 @@ def _open_session(
         session = Session(
             session_dir,
             plan,
+            session_id=session_dir.name,
             retry_of=retry_of,
             launch_source=launch_source,
         )
@@ -161,13 +219,91 @@ def _open_session(
 
 
 def _recover_interrupted_tasks(session: Session) -> None:
+    tasks_by_id = {task.id: task for task in session.plan.tasks}
     for task_id, state in session.state["tasks"].items():
         if state["status"] == "running":
+            task = tasks_by_id[task_id]
+            if session.plan.workspace_execution:
+                try:
+                    manifest, payload = load_artifact(
+                        session.dir,
+                        task_id,
+                    )
+                except WorkspaceError:
+                    pass
+                else:
+                    session.update_task(
+                        task_id,
+                        status=(
+                            "awaiting_approval"
+                            if task.mutates_workspace
+                            else "completed"
+                        ),
+                        output=None,
+                        normalizedOutput=payload,
+                        artifact=manifest,
+                        gateResult={
+                            "configured": task.gate is not None,
+                            "passed": True,
+                            "violations": [],
+                            "normalizations": [
+                                "recovered-immutable-artifact"
+                            ],
+                        },
+                        error=None,
+                    )
+                    continue
             session.update_task(
                 task_id,
                 status="pending",
                 error="Interrupted before completion; queued for resume.",
             )
+        elif state["status"] in {"applying", "verifying"}:
+            task = tasks_by_id[task_id]
+            workspace = session.workspace_snapshot()
+            if workspace is None:
+                session.update_task(
+                    task_id,
+                    status="failed",
+                    error="Interrupted workspace task has no workspace snapshot.",
+                )
+                continue
+            try:
+                recovery = recover_artifact_application(
+                    session.dir,
+                    task,
+                    workspace,
+                )
+                session.update_workspace(workspace)
+            except WorkspaceError as exc:
+                session.update_task(
+                    task_id,
+                    status="failed",
+                    error=(
+                        "Could not safely recover interrupted application: "
+                        f"{exc}"
+                    ),
+                )
+                continue
+            if recovery["state"] == "applied":
+                session.update_task(
+                    task_id,
+                    status="verification_failed",
+                    applyReceipt=recovery["receipt"],
+                    error=(
+                        "Interrupted after application; operator verification "
+                        "or rejection is required."
+                    ),
+                )
+            else:
+                session.update_task(
+                    task_id,
+                    status="awaiting_approval",
+                    error=(
+                        "Interrupted before the artifact commit; the sealed "
+                        "apply decision will be resumed."
+                    ),
+                )
 
 
 def _dependencies_completed(session: Session, task: TaskDef) -> bool:
@@ -181,7 +317,12 @@ def _block_tasks_with_failed_dependencies(
     session: Session,
     tasks: Iterable[TaskDef],
 ) -> None:
-    terminal_failure_states = {"rejected", "failed", "blocked"}
+    terminal_failure_states = {
+        "rejected",
+        "rejected_by_operator",
+        "failed",
+        "blocked",
+    }
     for task in tasks:
         if session.get_task_status(task.id) not in {"pending", "running"}:
             continue
@@ -236,6 +377,7 @@ def _execute_initial_chunk(
     level_idx: int,
     chunk_idx: int,
     max_repair: int,
+    approval_poll_seconds: float,
 ) -> None:
     record: dict[str, Any] = {
         "levelIndex": level_idx,
@@ -283,6 +425,11 @@ def _execute_initial_chunk(
         max_repair,
         record,
     )
+    _await_workspace_tasks(
+        session,
+        runnable_tasks,
+        poll_seconds=approval_poll_seconds,
+    )
     record["finishedAt"] = _utc_now()
     record["elapsedSeconds"] = time.perf_counter() - started
     session.add_batch_record(record)
@@ -297,6 +444,7 @@ def _execute_resume_repairs(
     level_idx: int,
     chunk_idx: int,
     max_repair: int,
+    approval_poll_seconds: float,
 ) -> None:
     record: dict[str, Any] = {
         "levelIndex": level_idx,
@@ -315,6 +463,11 @@ def _execute_resume_repairs(
         tasks,
         max_repair,
         record,
+    )
+    _await_workspace_tasks(
+        session,
+        tasks,
+        poll_seconds=approval_poll_seconds,
     )
     record["finishedAt"] = _utc_now()
     record["elapsedSeconds"] = time.perf_counter() - started
@@ -470,7 +623,29 @@ def _process_task_output(
     """Evaluate the gate, normalize output, and update session state."""
     gate_result = evaluate_gate(output, task.gate)
     normalized, _ = normalize_output(output, task.gate)
+    artifact = None
+    if gate_result["passed"] and session.plan.workspace_execution:
+        try:
+            artifact = persist_artifact(
+                session.dir,
+                task,
+                normalized,
+                session.workspace_snapshot(),
+            )
+        except WorkspaceError as exc:
+            gate_result["passed"] = False
+            gate_result.setdefault("violations", []).append({
+                "id": "workspace-artifact",
+                "kind": "workspace",
+                "message": str(exc),
+            })
     status = "completed" if gate_result["passed"] else "rejected"
+    if (
+        gate_result["passed"]
+        and task.mutates_workspace
+        and artifact is not None
+    ):
+        status = "awaiting_approval"
 
     session.update_task(
         task.id,
@@ -478,5 +653,210 @@ def _process_task_output(
         output=output,
         normalizedOutput=normalized,
         gateResult=gate_result,
+        artifact=artifact,
         error=None,
     )
+
+
+def _await_workspace_tasks(
+    session: Session,
+    tasks: Iterable[TaskDef],
+    *,
+    poll_seconds: float,
+) -> None:
+    if not session.plan.workspace_execution:
+        return
+    for task in tasks:
+        while session.get_task_status(task.id) in {
+            "awaiting_approval",
+            "verification_failed",
+        }:
+            status = session.get_task_status(task.id)
+            if session.state.get("status") != "awaiting_approval":
+                session.set_status("awaiting_approval")
+            if status == "awaiting_approval":
+                try:
+                    decision = read_initial_decision(
+                        session.dir,
+                        task.id,
+                    )
+                except WorkspaceError as exc:
+                    session.update_task(
+                        task.id,
+                        status="failed",
+                        error=str(exc),
+                    )
+                    continue
+                if decision is None:
+                    time.sleep(poll_seconds)
+                    continue
+                _process_initial_decision(session, task, decision)
+            else:
+                task_state = session.state["tasks"][task.id]
+                processed = task_state.get(
+                    "processedVerificationRequests",
+                    [],
+                )
+                try:
+                    action = read_failed_verification_action(
+                        session.dir,
+                        task.id,
+                        processed,
+                    )
+                except WorkspaceError as exc:
+                    session.update_task(
+                        task.id,
+                        status="failed",
+                        error=str(exc),
+                    )
+                    continue
+                if action is None:
+                    time.sleep(poll_seconds)
+                    continue
+                request_name, decision = action
+                processed = [*processed, request_name]
+                session.update_task(
+                    task.id,
+                    processedVerificationRequests=processed,
+                )
+                _process_failed_verification_action(
+                    session,
+                    task,
+                    decision,
+                )
+    if session.state.get("status") == "awaiting_approval":
+        session.set_status("running")
+
+
+def _process_initial_decision(
+    session: Session,
+    task: TaskDef,
+    decision: dict[str, Any],
+) -> None:
+    manifest = session.state["tasks"][task.id].get("artifact") or {}
+    if decision.get("artifactSha256") != manifest.get("sha256"):
+        session.update_task(
+            task.id,
+            status="failed",
+            error="Artifact decision digest does not match the persisted artifact.",
+        )
+        return
+    if decision.get("action") == "reject":
+        session.update_task(
+            task.id,
+            status="rejected_by_operator",
+            decision=decision,
+            error=decision.get("reason") or "Rejected by the operator.",
+        )
+        return
+    if decision.get("action") != "apply":
+        session.update_task(
+            task.id,
+            status="failed",
+            error="Invalid initial artifact decision.",
+        )
+        return
+    workspace = session.workspace_snapshot()
+    assert workspace is not None
+    try:
+        session.update_task(task.id, status="applying", decision=decision)
+        apply_receipt = apply_artifact(session.dir, task, workspace)
+        session.update_workspace(workspace)
+        session.update_task(
+            task.id,
+            status="verifying",
+            applyReceipt=apply_receipt,
+        )
+        results = run_verifications(session.dir, task, workspace)
+    except WorkspaceError as exc:
+        session.update_task(task.id, status="failed", error=str(exc))
+        return
+    _record_verification_outcome(session, task, results)
+
+
+def _process_failed_verification_action(
+    session: Session,
+    task: TaskDef,
+    decision: dict[str, Any],
+) -> None:
+    manifest = session.state["tasks"][task.id].get("artifact") or {}
+    if decision.get("artifactSha256") != manifest.get("sha256"):
+        session.update_task(
+            task.id,
+            status="failed",
+            error="Artifact action digest does not match the persisted artifact.",
+        )
+        return
+    workspace = session.workspace_snapshot()
+    assert workspace is not None
+    if decision.get("action") == "reject":
+        try:
+            revert_receipt = revert_applied_artifact(
+                session.dir,
+                task.id,
+                workspace,
+            )
+            session.update_workspace(workspace)
+        except WorkspaceError as exc:
+            session.update_task(task.id, status="failed", error=str(exc))
+            return
+        session.update_task(
+            task.id,
+            status="rejected_by_operator",
+            decision=decision,
+            revertReceipt=revert_receipt,
+            error=decision.get("reason") or "Rejected by the operator.",
+        )
+        return
+    if decision.get("action") != "verify":
+        session.update_task(
+            task.id,
+            status="failed",
+            error="Invalid failed-verification action.",
+        )
+        return
+    try:
+        session.update_task(task.id, status="verifying", decision=decision)
+        results = run_verifications(session.dir, task, workspace)
+    except WorkspaceError as exc:
+        session.update_task(task.id, status="failed", error=str(exc))
+        return
+    _record_verification_outcome(session, task, results)
+
+
+def _record_verification_outcome(
+    session: Session,
+    task: TaskDef,
+    results: list[dict[str, Any]],
+) -> None:
+    previous = session.state["tasks"][task.id].get(
+        "verificationResults",
+        [],
+    )
+    combined = [*previous, *results]
+    passed = all(result.get("passed") for result in results)
+    session.update_task(
+        task.id,
+        status="completed" if passed else "verification_failed",
+        verificationResults=combined,
+        error=(
+            None
+            if passed
+            else "One or more allowlisted verification profiles failed."
+        ),
+    )
+
+
+@contextmanager
+def _runner_lock(session_dir: Path):
+    lock_path = session_dir / "runner.lock"
+    handle = lock_path.open("a+b")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError("Another runner already owns this session.") from exc
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()

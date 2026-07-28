@@ -5,8 +5,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from swarm_agents.backend import _render_prompt, _role_generation_config
-from swarm_agents.contracts import ModelConfig, SwarmConfig, TaskDef
+from mlx_swarm.backend import _render_prompt, _role_generation_config
+from mlx_swarm.contracts import ModelConfig, SwarmConfig, TaskDef
 
 
 class FakeThinkingTokenizer:

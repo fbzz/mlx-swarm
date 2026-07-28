@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "model": {
     "repository": "mlx-community/Qwen3-4B-4bit",
     "revision": "",
@@ -11,6 +11,39 @@
     "maxPromptCharacters": 120000
   },
   "artifacts": ".swarm/runs",
+  "workspace": {
+    "writeRoots": [
+      "src",
+      "tests",
+      "examples",
+      "README.md",
+      "lat.md",
+      "pyproject.toml"
+    ],
+    "verificationProfiles": {
+      "pytest": {
+        "argv": ["python", "-m", "pytest", "-q"],
+        "cwd": ".",
+        "timeoutSeconds": 600,
+        "inheritEnv": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
+        "environment": {}
+      },
+      "lat-check": {
+        "argv": ["lat", "check"],
+        "cwd": ".",
+        "timeoutSeconds": 120,
+        "inheritEnv": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
+        "environment": {}
+      },
+      "pytest-workspace-demo": {
+        "argv": ["python", "-m", "pytest", "-q", "examples/workspace_demo"],
+        "cwd": ".",
+        "timeoutSeconds": 120,
+        "inheritEnv": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
+        "environment": {}
+      }
+    }
+  },
   "enableThinking": false,
   "seed": 20260727
 }

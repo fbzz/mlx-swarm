@@ -38,6 +38,11 @@ def compose_prompt(
             parts.extend(_dependency_sections(task, session))
         if task.gate is not None:
             parts.append(_section("DETERMINISTIC VALIDATION", _gate_requirements(task)))
+        if session is not None and session.plan.workspace_execution:
+            parts.append(_section(
+                "WORKSPACE ARTIFACT CONTRACT",
+                _workspace_artifact_contract(task),
+            ))
         parts.extend(_section(t, b) for t, b in extra_sections)
         if task.output_protocol:
             parts.append(_section("OUTPUT PROTOCOL", task.output_protocol))
@@ -83,6 +88,11 @@ def compose_prompt(
 
     if task.gate is not None:
         sections.append(_section("DETERMINISTIC VALIDATION", _gate_requirements(task)))
+    if session is not None and session.plan.workspace_execution:
+        sections.append(_section(
+            "WORKSPACE ARTIFACT CONTRACT",
+            _workspace_artifact_contract(task),
+        ))
 
     sections.extend(_section(t, b) for t, b in extra_sections)
     sections.append(
@@ -108,6 +118,19 @@ def _dependency_sections(task: TaskDef, session: Session) -> list[str]:
                 )
             )
         else:
+            task_state = session.state["tasks"].get(dep_id, {})
+            verification = task_state.get("verificationResults", [])
+            verification_text = ""
+            if verification:
+                verification_text = (
+                    "\n\nVerified profiles:\n"
+                    + "\n".join(
+                        f"- {item.get('profileId')}: "
+                        f"{'passed' if item.get('passed') else 'failed'} "
+                        f"(exit {item.get('exitCode')})"
+                        for item in verification
+                    )
+                )
             sections.append(
                 _section(
                     f"DEPENDENCY OUTPUT: {dep_id}",
@@ -117,6 +140,7 @@ def _dependency_sections(task: TaskDef, session: Session) -> list[str]:
                         "The plan contract remains authoritative. Inspect this artifact "
                         "for your task and do not silently invent a different interface.\n\n"
                         f"```\n{output}\n```"
+                        f"{verification_text}"
                     ),
                 )
             )
@@ -157,6 +181,31 @@ def _gate_requirements(task: TaskDef) -> str:
             + "."
         )
     return "\n".join(rules)
+
+
+def _workspace_artifact_contract(task: TaskDef) -> str:
+    if task.mutates_workspace:
+        return (
+            f"Artifact type: {task.artifact_type}.\n"
+            "Return exactly one text-only unified Git diff beginning with "
+            "`diff --git`. Do not return prose, shell commands, command arrays, "
+            "binary patches, renames, copies, symlinks, or submodules.\n"
+            "The diff may target only these plan-approved relative paths:\n"
+            + "\n".join(f"- {path}" for path in task.allowed_paths)
+            + "\nVerification is controlled by the runtime using these "
+            "pre-approved profile IDs: "
+            + (", ".join(task.verification) or "(none)")
+            + ". You must not propose or execute verification commands."
+        )
+    if task.artifact_type == "review":
+        return (
+            "Artifact type: review. Return exactly one JSON object. "
+            "Do not include commands or workspace changes."
+        )
+    return (
+        "Artifact type: report. Return non-mutating text only. "
+        "Do not include commands or workspace changes."
+    )
 
 
 def compose_repair_prompt(

@@ -3,8 +3,8 @@
 
 from __future__ import annotations
 
-from swarm_agents.contracts import OutputGate, GatePattern
-from swarm_agents.gates import (
+from mlx_swarm.contracts import OutputGate, GatePattern
+from mlx_swarm.gates import (
     evaluate_gate,
     gate_feedback_for_repair,
     normalize_output,

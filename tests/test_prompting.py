@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from swarm_agents.contracts import (
+from mlx_swarm.contracts import (
     ContextSource,
     GatePattern,
     OutputGate,
@@ -15,7 +15,7 @@ from swarm_agents.contracts import (
     TaskContext,
     TaskDef,
 )
-from swarm_agents.prompting import compose_prompt, compose_repair_prompt
+from mlx_swarm.prompting import compose_prompt, compose_repair_prompt
 
 
 def _mock_session(outputs: dict[str, str]) -> MagicMock:

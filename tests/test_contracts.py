@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from swarm_agents.contracts import (
+from mlx_swarm.contracts import (
     ContractError,
     Plan,
     SwarmConfig,

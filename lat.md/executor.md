@@ -2,7 +2,7 @@
 
 DAG executor — runs tasks in dependency order with gate-feedback repair loops.
 
-The executor in [[src/swarm_agents/executor.py#execute_plan]] orchestrates the full plan execution.
+The executor in [[src/mlx_swarm/executor.py#execute_plan]] orchestrates the full plan execution.
 
 ## Execution Flow
 
@@ -20,7 +20,27 @@ The executor in [[src/swarm_agents/executor.py#execute_plan]] orchestrates the f
 4. **Final status**: "completed" if all pass, "failed" if execution failed, "partial" otherwise.
 5. **Frontier handoff**: Persist one compact `frontier-result.json` for final frontier review.
 
-See [[src/swarm_agents/executor.py#execute_plan]].
+See [[src/mlx_swarm/executor.py#execute_plan]].
+
+## Workspace task flow
+
+For a schema-v2 task, successful deterministic gates are followed by typed
+artifact validation. Non-mutating review/report artifacts complete normally.
+A valid patch/test-suite artifact moves through:
+
+`running → awaiting_approval → applying → verifying → completed`
+
+Operator rejection produces `rejected_by_operator`. A failed configured check
+produces `verification_failed`, which pauses for an operator Verify or Reject
+decision. Verify runs only the same snapshotted profiles. Reject after apply
+creates a revert commit. Neither action triggers local repair generation or a
+frontier call.
+
+The executor holds an exclusive session runner lock and keeps the backend
+resident while polling the immutable decision ledger. Recovery reconciles
+interrupted artifact persistence and Git commits without duplicate apply. See
+[[workspace-execution]] and
+[[src/mlx_swarm/executor.py#_await_workspace_tasks]].
 
 ## Repair Loop
 
@@ -32,7 +52,7 @@ After initial generation, rejected tasks with remaining task-level and global `-
 4. Process outputs and evaluate gates again.
 5. Repeat until all pass or budget exhausted.
 
-See [[src/swarm_agents/executor.py#_process_task_output]].
+See [[src/mlx_swarm/executor.py#_process_task_output]].
 
 ## Output Processing
 

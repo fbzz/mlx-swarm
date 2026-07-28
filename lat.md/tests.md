@@ -1,12 +1,12 @@
 # Tests
 
-Test specifications for the swarm-agents framework.
+Test specifications for the mlx-swarm framework.
 
 All tests use pytest with tmp_path fixtures. No MLX/model loading is required — backend and executor are mocked where needed.
 
 ## Backend
 
-Prompt rendering and generation configuration tests. See [[src/swarm_agents/backend.py]].
+Prompt rendering and generation configuration tests. See [[src/mlx_swarm/backend.py]].
 
 ### Thinking-disabled template
 Templates that always open a thinking block are closed in the assistant prefix when thinking is disabled.
@@ -22,7 +22,7 @@ Role defaults and validated task overrides merge without inheriting another task
 Validation of [[Config]] and [[Plans]] JSON schemas.
 
 ### Config loading
-Valid config loads successfully with correct field resolution and artifacts path. See [[src/swarm_agents/contracts.py#load_config]].
+Valid config loads successfully with correct field resolution and artifacts path. See [[src/mlx_swarm/contracts.py#load_config]].
 
 ### Config with local path
 Config with localPath resolves model directory correctly.
@@ -80,7 +80,7 @@ Context with authoritative sources, constraints, and rejection criteria parses c
 
 ## Gates
 
-[[Gates|Gate]] evaluation and output normalization. See [[src/swarm_agents/gates.py]].
+[[Gates|Gate]] evaluation and output normalization. See [[src/mlx_swarm/gates.py]].
 
 ### Preamble stripping
 "Here is the code." prefix is removed; plain code is unchanged.
@@ -117,7 +117,7 @@ Thinking blocks and trailing model role tokens are excluded from normalized arti
 
 ## Prompting
 
-[[Prompting|Prompt composition]] and dependency injection. See [[src/swarm_agents/prompting.py]].
+[[Prompting|Prompt composition]] and dependency injection. See [[src/mlx_swarm/prompting.py]].
 
 ### No context
 Prompt without context includes task prompt and worker identity.
@@ -142,7 +142,7 @@ Task protocol overrides a conflicting shared output protocol.
 
 ## Session
 
-[[Session]] persistence and state management. See [[src/swarm_agents/session.py]].
+[[Session]] persistence and state management. See [[src/mlx_swarm/session.py]].
 
 ### Initialization
 Session creates correct initial state with all tasks pending and persists to disk.
@@ -174,7 +174,7 @@ continue to load from their original plan source.
 
 ## Executor
 
-End-to-end local orchestration tests use a fake backend. See [[src/swarm_agents/executor.py]].
+End-to-end local orchestration tests use a fake backend. See [[src/mlx_swarm/executor.py]].
 
 ### Dependency failure
 Rejected parents block descendants and rejected text is never injected.
@@ -199,7 +199,7 @@ One final packet is persisted and omits rejected raw output.
 
 ## CLI
 
-CLI entrypoint tests. See [[src/swarm_agents/cli.py]].
+CLI entrypoint tests. See [[src/mlx_swarm/cli.py]].
 
 ### Doctor ready
 Doctor command returns 0 when model is available.
@@ -232,10 +232,46 @@ Invalid config raises SystemExit(2) via argparse error.
 The localhost cockpit receives the configured plan root, port, and browser-open
 preference.
 
+### Commander and skill commands
+Commander creation, claim/import, unavailable usage, and config-independent
+skill installation use deterministic CLI paths.
+
+## Commander
+
+Frontier contracts and persistence tests. See
+[[src/mlx_swarm/commander.py]].
+
+### Request and workspace
+Requests bind to the config directory, preserve constraints and revision
+lineage, and generate deterministic prompts.
+
+### Exclusive phase claims
+Planning and review response slots cannot be claimed or imported twice. Claims
+can be released only before a raw response is recorded.
+
+### Strict plan and review imports
+One optional outer JSON fence is accepted; malformed contracts persist errors
+and seal their phase without an automatic frontier retry.
+
+### Digest approval
+Canonical plan SHA-256 mismatch prevents launch.
+
+### Usage separation
+Planning and review receipts remain separate from local usage. Missing Codex
+usage is nullable and explicitly unavailable.
+
+### Completed-only review
+Completed sessions accept one structured verdict. Partial and failed sessions
+remain ineligible and use local resume/retry evidence.
+
+### Bundled skill
+The packaged skill validates, installs to an explicit skills root, and refuses
+implicit overwrite.
+
 ## UI
 
-[[UI]] server and serialization tests. See [[src/swarm_agents/ui.py]] and the
-packaged assets under [[src/swarm_agents/ui_static/app.js]].
+[[UI]] server and serialization tests. See [[src/mlx_swarm/ui.py]] and the
+packaged assets under [[src/mlx_swarm/ui_static/app.js]].
 
 ### Plan catalog
 Only validated plans inside the approved root are launchable; artifact snapshots,
@@ -254,6 +290,56 @@ while retry creates a new session with `retryOf` lineage.
 Task states, normalized and raw output, gate violations, normalizations, repairs,
 batch statistics, token totals, and the frontier packet are exposed together.
 
+### Commander acceptance flow
+A three-node DAG passes through request, import, digest approval, local
+completion, self-contained frontier packet, and one final persisted verdict.
+
 ### HTTP boundary
 Static assets and JSON endpoints enforce request size, JSON validity, path safety,
 localhost binding, and same-origin mutation requests. Server shutdown is graceful.
+
+## Workspace execution
+
+Schema-v2 tests use real temporary Git repositories and never touch the source
+checkout.
+
+### Contracts and execution digest
+
+Strict workspace config/profile fields, schema-v2 typed tasks, write-root
+intersection, profile references, one mutating task per level, schema-v1
+generation-only compatibility, plan binding, and HEAD-sensitive execution
+digests are covered.
+
+### Worktrees and lineage
+
+Tests prove dirty source changes are excluded, the session branch begins at
+committed HEAD, and applied artifacts create commits only in the worktree.
+
+Final v3 packets contain base/head/diff evidence, cleanup removes only the
+worktree, and the branch remains.
+
+### Diff boundary
+
+Traversal, binary metadata, unapproved paths, symlink traversal, submodule
+modes, stale lineage, and external Git drivers are rejected. Fixed
+`git apply --check` failures enter the bounded local repair loop.
+
+### Human decisions and recovery
+
+The executor waits with its backend open, concurrent decisions cannot overwrite
+evidence, and operator rejection blocks descendants.
+
+Failed verification waits without another worker call, Verify reruns the same
+profiles, Reject creates a revert commit, and crash recovery recognizes an
+already committed artifact.
+
+### Verification processes
+
+Exact argv, `shell=False`, closed stdin, sanitized environment, confined cwd,
+bounded one-megabyte logs, and process-group timeouts are asserted.
+
+### CLI and API
+
+Workspace preview, dual-digest launch, artifact decisions, status, cleanup,
+same-origin artifact endpoints, digest mismatch, subprocess arrays, and
+retained branches are covered.
