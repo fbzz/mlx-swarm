@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import importlib.metadata
 import json
@@ -2206,6 +2207,11 @@ class EvaluationRunner:
                 case_root / "verifier.json",
                 base_snapshot,
             )
+            unsupported_failure = oracle_infrastructure_failure(
+                buggy_result
+            )
+            if unsupported_failure is not None:
+                raise EvaluationError(unsupported_failure)
             fixed_runtime = case_root / "fixed-validation"
             validate_repository_symlinks(fixed_checkout)
             shutil.copytree(
@@ -2229,6 +2235,15 @@ class EvaluationRunner:
                 )
             finally:
                 shutil.rmtree(fixed_runtime, ignore_errors=True)
+            stable_buggy_result = run_case_verifier(
+                case_root / "verifier.json",
+                base_snapshot,
+            )
+            unsupported_failure = oracle_infrastructure_failure(
+                stable_buggy_result
+            )
+            if unsupported_failure is not None:
+                raise EvaluationError(unsupported_failure)
             _atomic_json(
                 case_root / "preflight-oracle.json",
                 {
@@ -2242,6 +2257,12 @@ class EvaluationRunner:
                         **fixed_result,
                         "evidence": fixed_result["evidence"][:MAX_LOG_BYTES],
                     },
+                    "buggyAfterFixed": {
+                        **stable_buggy_result,
+                        "evidence": (
+                            stable_buggy_result["evidence"][:MAX_LOG_BYTES]
+                        ),
+                    },
                     "recordedAt": utc_now(),
                 },
             )
@@ -2253,7 +2274,11 @@ class EvaluationRunner:
                 raise EvaluationError(
                     "Fixed snapshot does not pass the frozen oracle."
                 )
-            failure_evidence = buggy_result["evidence"][:40_000]
+            if stable_buggy_result["passed"]:
+                raise EvaluationError(
+                    "Buggy snapshot passed after fixed-oracle validation."
+                )
+            failure_evidence = stable_buggy_result["evidence"][:40_000]
             runtime = {
                 "schemaVersion": 1,
                 "caseId": case["caseId"],
@@ -2271,7 +2296,10 @@ class EvaluationRunner:
                 "verifierManifest": str(case_root / "verifier.json"),
                 "failureEvidence": failure_evidence,
                 "preparationSeconds": time.perf_counter() - started,
-                "buggyOracleSeconds": buggy_result["elapsedSeconds"],
+                "buggyOracleSeconds": (
+                    buggy_result["elapsedSeconds"]
+                    + stable_buggy_result["elapsedSeconds"]
+                ),
                 "fixedOracleSeconds": fixed_result["elapsedSeconds"],
                 "preparedAt": utc_now(),
             }
@@ -3251,6 +3279,26 @@ def run_case_verifier(
     }
 
 
+def oracle_infrastructure_failure(
+    result: dict[str, Any],
+) -> str | None:
+    """Identify preparation failures that cannot be repaired by source edits."""
+    evidence = str(result.get("evidence") or "").lower()
+    markers = (
+        "modulenotfounderror: no module named",
+        "importerror while importing test module",
+        "error: not found:",
+        "found no collectors",
+    )
+    marker = next((value for value in markers if value in evidence), None)
+    if marker is None:
+        return None
+    return (
+        "Buggy oracle has an unsupported preparation or dependency failure: "
+        f"{marker}"
+    )
+
+
 def rewrite_benchmark_argv(
     raw_argv: Sequence[str],
     environment: Path,
@@ -3945,46 +3993,125 @@ def copy_fixed_test_support(
     buggy_checkout: Path,
     test_files: Sequence[str],
 ) -> None:
-    """Copy designated fixed tests and newly introduced Python support files."""
+    """Copy fixed tests and their bounded Python import closure.
+
+    The executable oracle must not combine a fixed test module with helper
+    modules from the buggy revision.  At the same time, copying the entire
+    fixed test tree could expose unrelated future tests.  Follow only imports
+    that resolve below the selected test package and copy those modules,
+    overwriting buggy counterparts when necessary.
+    """
     copied: set[Path] = set()
     copied_bytes = 0
-    for relative_text in test_files:
-        relative = Path(relative_text)
+    queue = [Path(value) for value in test_files]
+    allowed_roots: set[Path] = set()
+    for relative in queue:
+        parts = relative.parent.parts
+        for index, part in enumerate(parts):
+            if part.lower() in {"test", "tests", "testing"}:
+                allowed_roots.add(Path(*parts[:index + 1]))
+                break
+    while queue:
+        relative = queue.pop(0)
+        if relative in copied:
+            continue
         source = fixed_checkout / relative
         if not source.is_file():
             raise EvaluationError(
-                f"Fixed test file is missing: {relative_text}"
+                f"Fixed test support file is missing: {relative}"
+            )
+        copied_bytes += source.stat().st_size
+        if len(copied) >= 512 or copied_bytes > 10_000_000:
+            raise EvaluationError(
+                "Fixed test support exceeds the preparation limit."
             )
         target = buggy_checkout / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, target)
         copied.add(relative)
-        copied_bytes += source.stat().st_size
-        if not any(
-            part.lower() in {"test", "tests", "testing"}
-            for part in relative.parent.parts
-        ):
+        if source.suffix != ".py":
             continue
-        support_root = source.parent
-        for support in support_root.rglob("*.py"):
-            support_relative = support.relative_to(fixed_checkout)
-            support_target = buggy_checkout / support_relative
-            if (
-                support_relative in copied
-                or (
-                    support_target.exists()
-                    and support.name not in {"__init__.py", "conftest.py"}
-                )
+        queue.extend(
+            _fixed_test_imports(
+                fixed_checkout,
+                relative,
+                allowed_roots,
+            )
+        )
+        for parent in relative.parents:
+            if parent == Path("."):
+                break
+            for support in (
+                parent / "__init__.py",
+                parent / "conftest.py",
             ):
-                continue
-            copied_bytes += support.stat().st_size
-            if len(copied) >= 512 or copied_bytes > 10_000_000:
-                raise EvaluationError(
-                    "Fixed test support exceeds the preparation limit."
+                if (
+                    fixed_checkout.joinpath(support).is_file()
+                    and support not in copied
+                    and any(
+                        support == root or root in support.parents
+                        for root in allowed_roots
+                    )
+                ):
+                    queue.append(support)
+
+
+def _fixed_test_imports(
+    fixed_checkout: Path,
+    relative: Path,
+    allowed_roots: set[Path],
+) -> list[Path]:
+    try:
+        tree = ast.parse(
+            (fixed_checkout / relative).read_text(encoding="utf-8")
+        )
+    except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+        raise EvaluationError(
+            f"Cannot inspect fixed test support imports: {relative}"
+        ) from exc
+    candidates: set[Path] = set()
+    for node in ast.walk(tree):
+        modules: list[tuple[int, str]] = []
+        if isinstance(node, ast.ImportFrom):
+            if node.module:
+                modules.append((node.level, node.module))
+                modules.extend(
+                    (
+                        node.level,
+                        f"{node.module}.{alias.name}",
+                    )
+                    for alias in node.names
+                    if alias.name != "*"
                 )
-            support_target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(support, support_target)
-            copied.add(support_relative)
+            elif node.level:
+                modules.extend(
+                    (node.level, alias.name)
+                    for alias in node.names
+                    if alias.name != "*"
+                )
+        elif isinstance(node, ast.Import):
+            modules.extend((0, alias.name) for alias in node.names)
+        for level, module in modules:
+            if level:
+                base = relative.parent
+                for _ in range(level - 1):
+                    base = base.parent
+                module_path = base.joinpath(*module.split("."))
+            else:
+                module_path = Path(*module.split("."))
+            for candidate in (
+                module_path.with_suffix(".py"),
+                module_path / "__init__.py",
+            ):
+                if not (fixed_checkout / candidate).is_file():
+                    continue
+                if not any(
+                    candidate == root or root in candidate.parents
+                    for root in allowed_roots
+                ):
+                    continue
+                candidates.add(candidate)
+    return sorted(candidates)
 
 
 def validate_repository_symlinks(repository: Path) -> None:

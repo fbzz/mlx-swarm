@@ -32,6 +32,7 @@ from mlx_swarm.evaluation import (
     make_arm_result,
     mlx_swarm_source_revision,
     normalize_setup_parallelism,
+    oracle_infrastructure_failure,
     parse_benchmark_commands,
     parse_codex_usage_jsonl,
     patch_metadata,
@@ -1053,7 +1054,7 @@ def test_repository_symlinks_remain_internal(tmp_path: Path) -> None:
         validate_repository_symlinks(repository)
 
 
-def test_fixed_test_support_copies_new_helpers_without_future_source(
+def test_fixed_test_support_copies_only_imported_helpers_without_future_source(
     tmp_path: Path,
 ) -> None:
     fixed = tmp_path / "fixed"
@@ -1061,7 +1062,7 @@ def test_fixed_test_support_copies_new_helpers_without_future_source(
     (fixed / "tests" / "helpers").mkdir(parents=True)
     (buggy / "tests").mkdir(parents=True)
     (fixed / "tests" / "test_bug.py").write_text(
-        "from .helpers import value\n",
+        "from .helpers import value\nfrom .existing import current\n",
         encoding="utf-8",
     )
     (fixed / "tests" / "helpers" / "__init__.py").write_text(
@@ -1069,11 +1070,23 @@ def test_fixed_test_support_copies_new_helpers_without_future_source(
         encoding="utf-8",
     )
     (fixed / "tests" / "existing.py").write_text(
-        "value = 'future'\n",
+        "current = 'fixed support'\n",
         encoding="utf-8",
     )
     (buggy / "tests" / "existing.py").write_text(
-        "value = 'buggy'\n",
+        "current = 'buggy support'\n",
+        encoding="utf-8",
+    )
+    (fixed / "tests" / "unrelated_future.py").write_text(
+        "secret = True\n",
+        encoding="utf-8",
+    )
+    (fixed / "tests" / "conftest.py").write_text(
+        "FIXED_FIXTURE = True\n",
+        encoding="utf-8",
+    )
+    (buggy / "tests" / "conftest.py").write_text(
+        "BUGGY_FIXTURE = True\n",
         encoding="utf-8",
     )
     (fixed / "src").mkdir()
@@ -1087,7 +1100,11 @@ def test_fixed_test_support_copies_new_helpers_without_future_source(
     assert (buggy / "tests" / "helpers" / "__init__.py").is_file()
     assert (
         buggy / "tests" / "existing.py"
-    ).read_text(encoding="utf-8") == "value = 'buggy'\n"
+    ).read_text(encoding="utf-8") == "current = 'fixed support'\n"
+    assert (
+        buggy / "tests" / "conftest.py"
+    ).read_text(encoding="utf-8") == "FIXED_FIXTURE = True\n"
+    assert not (buggy / "tests" / "unrelated_future.py").exists()
     assert not (buggy / "src" / "future.py").exists()
 
 
@@ -1107,6 +1124,18 @@ def test_dependency_install_commands_are_not_worker_controlled(
     expected: bool,
 ) -> None:
     assert is_dependency_or_project_install(argv) is expected
+
+
+def test_oracle_dependency_failure_is_not_a_scored_bug() -> None:
+    assert oracle_infrastructure_failure({
+        "evidence": (
+            "ImportError while importing test module\n"
+            "ModuleNotFoundError: No module named 'python_toolbox'"
+        ),
+    }) is not None
+    assert oracle_infrastructure_failure({
+        "evidence": "FAILED tests/test_bug.py::test_value - AssertionError",
+    }) is None
 
 
 def test_evaluation_write_roots_exclude_tests_docs_dependencies_and_hidden(
