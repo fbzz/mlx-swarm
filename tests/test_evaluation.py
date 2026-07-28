@@ -873,6 +873,127 @@ def test_prepare_replaces_failed_oracle_candidates_before_freeze(
     assert storage_checks == len(prepared) + 2
 
 
+def test_prepare_resumes_unsealed_evaluation_and_reuses_case_runtimes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    store = EvaluationStore(config, root=tmp_path / "evaluations")
+    evaluation_id = "interrupted-study"
+    evaluation_dir = store.root / evaluation_id
+    benchmark = evaluation_dir / "benchmark"
+    benchmark.mkdir(parents=True)
+    (evaluation_dir / "profile.snapshot.json").write_text(
+        json.dumps(profile_payload(profile)),
+        encoding="utf-8",
+    )
+
+    candidates = [
+        _case(f"{project}-{index}", project, stratum)
+        for project in ("alpha", "beta", "gamma")
+        for index, stratum in enumerate(
+            ("small", "medium", "large", "small", "medium", "large"),
+            start=1,
+        )
+    ]
+    excluded_id = candidates[0]["caseId"]
+    (evaluation_dir / "preparation-exclusions.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "cases": [{
+                "caseId": excluded_id,
+                "reason": "previous oracle failure",
+            }],
+            "recordedAt": "earlier",
+        }),
+        encoding="utf-8",
+    )
+    eligible = [
+        value for value in candidates
+        if value["caseId"] != excluded_id
+    ]
+    pilot, measured = select_cases(eligible, profile)
+    reused_id = (pilot + measured)[0]["caseId"]
+    reused_runtime = (
+        evaluation_dir / "cases" / reused_id / "runtime.json"
+    )
+    reused_runtime.parent.mkdir(parents=True)
+    reused_runtime.write_text("{}", encoding="utf-8")
+    observed: list[tuple[str, bool]] = []
+
+    class Runner:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            pass
+
+        def prepare_case(
+            self,
+            root: Path,
+            case: dict[str, Any],
+            *,
+            retain_mirror: bool = False,
+        ) -> dict[str, Any]:
+            runtime = root / "cases" / case["caseId"] / "runtime.json"
+            observed.append((case["caseId"], runtime.is_file()))
+            runtime.parent.mkdir(parents=True, exist_ok=True)
+            runtime.write_text("{}", encoding="utf-8")
+            return {}
+
+    monkeypatch.setattr(store, "_check_storage", lambda _profile: None)
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.mlx_swarm_source_revision",
+        lambda: {
+            "root": str(tmp_path),
+            "commit": "a" * 40,
+            "dirty": False,
+        },
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.inspect_container",
+        lambda _profile: {"digest": _profile.container.digest},
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.inspect_codex_version",
+        lambda _profile: _profile.frontier.codex_version,
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.enumerate_bugsinpy_candidates",
+        lambda *args: list(candidates),
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.resolve_case_commits",
+        lambda *args: None,
+    )
+    monkeypatch.setattr("mlx_swarm.evaluation.EvaluationRunner", Runner)
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.environment_fingerprint",
+        lambda *args, **kwargs: {
+            "profileSha256": "digest",
+            "mlxSwarmCommit": "a" * 40,
+        },
+    )
+
+    detail = store.prepare(
+        profile,
+        clone=lambda *_args: pytest.fail(
+            "resume must not clone benchmark metadata"
+        ),
+        resume_evaluation_id=evaluation_id,
+    )
+
+    assert detail["evaluation"]["evaluationId"] == evaluation_id
+    assert (reused_id, True) in observed
+    assert excluded_id not in {
+        case["caseId"] for case in detail["suite"]["cases"]
+    }
+    assert not benchmark.exists()
+    with pytest.raises(EvaluationError, match="immutable"):
+        store.prepare(
+            profile,
+            resume_evaluation_id=evaluation_id,
+        )
+
+
 def test_codex_usage_aggregates_every_completed_turn() -> None:
     payload = "\n".join([
         json.dumps({"type": "thread.started", "thread_id": "x"}),

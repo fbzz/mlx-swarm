@@ -1772,6 +1772,7 @@ class EvaluationStore:
         profile: EvaluationProfile,
         *,
         clone: Callable[[EvaluationProfile, Path], Path] | None = None,
+        resume_evaluation_id: str | None = None,
     ) -> dict[str, Any]:
         source = mlx_swarm_source_revision()
         if source["dirty"]:
@@ -1782,29 +1783,92 @@ class EvaluationStore:
         inspect_codex_version(profile)
         container = inspect_container(profile)
         self._check_storage(profile)
-        evaluation_id = (
-            f"{profile.profile_id}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
-        ).lower()
-        evaluation_dir = self.root / evaluation_id
-        try:
-            evaluation_dir.mkdir(parents=True, exist_ok=False)
-        except FileExistsError as exc:
-            raise EvaluationError(
-                f"Evaluation already exists: {evaluation_id}"
-            ) from exc
-        _atomic_json(
-            evaluation_dir / "profile.snapshot.json",
-            profile_payload(profile),
-        )
-        clone_fn = clone or clone_benchmark_metadata
-        metadata_root = clone_fn(profile, evaluation_dir / "benchmark")
+        excluded: list[dict[str, Any]] = []
+        if resume_evaluation_id is None:
+            evaluation_id = (
+                f"{profile.profile_id}-"
+                f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+            ).lower()
+            evaluation_dir = self.root / evaluation_id
+            try:
+                evaluation_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError as exc:
+                raise EvaluationError(
+                    f"Evaluation already exists: {evaluation_id}"
+                ) from exc
+            _atomic_json(
+                evaluation_dir / "profile.snapshot.json",
+                profile_payload(profile),
+            )
+            clone_fn = clone or clone_benchmark_metadata
+            metadata_root = clone_fn(
+                profile,
+                evaluation_dir / "benchmark",
+            )
+        else:
+            evaluation_id = _identifier(
+                resume_evaluation_id,
+                "evaluationId",
+            )
+            evaluation_dir = self._dir(evaluation_id)
+            sealed = [
+                name
+                for name in (
+                    "evaluation.json",
+                    "suite.json",
+                    "environment.json",
+                )
+                if (evaluation_dir / name).exists()
+            ]
+            if sealed:
+                raise EvaluationError(
+                    "Prepared evaluations are immutable and cannot resume "
+                    f"preparation ({', '.join(sealed)} already exists)."
+                )
+            snapshot_path = evaluation_dir / "profile.snapshot.json"
+            if not snapshot_path.is_file():
+                raise EvaluationError(
+                    "Interrupted evaluation has no profile snapshot."
+                )
+            expected_profile = canonical_json_sha256(
+                profile_payload(profile)
+            )
+            actual_profile = canonical_json_sha256(
+                _read_json(snapshot_path)
+            )
+            if actual_profile != expected_profile:
+                raise EvaluationError(
+                    "Evaluation profile differs from the interrupted snapshot."
+                )
+            metadata_root = evaluation_dir / "benchmark"
+            if not metadata_root.is_dir():
+                raise EvaluationError(
+                    "Interrupted evaluation no longer has preparation metadata."
+                )
+            exclusions_path = (
+                evaluation_dir / "preparation-exclusions.json"
+            )
+            if exclusions_path.is_file():
+                excluded = list(
+                    _read_json(exclusions_path).get("cases", [])
+                )
         candidates = enumerate_bugsinpy_candidates(metadata_root, profile)
         resolve_case_commits(
             candidates,
             evaluation_dir / "cache" / "repositories",
         )
+        excluded_ids = {
+            value.get("caseId")
+            for value in excluded
+            if isinstance(value, dict)
+            and isinstance(value.get("caseId"), str)
+        }
+        candidates = [
+            value
+            for value in candidates
+            if value["caseId"] not in excluded_ids
+        ]
         runner = EvaluationRunner(self.config, self, profile)
-        excluded: list[dict[str, Any]] = []
         while True:
             pilot, measured = select_cases(candidates, profile)
             cases = [

@@ -260,6 +260,15 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Prepare 2 calibration and 6 measured cases (one per project).",
     )
+    evaluation_prepare.add_argument(
+        "--resume",
+        dest="resume_evaluation_id",
+        default=None,
+        help=(
+            "Resume an interrupted, unsealed preparation by evaluation ID. "
+            "Completed case runtimes are reused."
+        ),
+    )
     evaluation_run = evaluation_sub.add_parser(
         "run",
         help="Run or resume one paired evaluation phase.",
@@ -411,7 +420,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 profile = load_evaluation_profile(args.profile)
                 if args.preliminary:
                     profile = preliminary_evaluation_profile(profile)
-                _print(evaluation_store.prepare(profile))
+                if args.resume_evaluation_id is None:
+                    detail = evaluation_store.prepare(profile)
+                else:
+                    detail = evaluation_store.prepare(
+                        profile,
+                        resume_evaluation_id=args.resume_evaluation_id,
+                    )
+                _print(detail)
                 return 0
             if args.evaluation_command == "status":
                 _print(evaluation_store.detail(args.evaluation_id))

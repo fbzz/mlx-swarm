@@ -33,6 +33,10 @@ phase fail before an arm starts if the resolved CLI version or canonical
 profile digest differs from the frozen environment.
 Every selected case must prove buggy-fails and fixed-passes before freezing;
 failed candidates are recorded, excluded, and deterministically replaced.
+If preparation is interrupted before the suite is sealed,
+`eval prepare PROFILE --resume EVALUATION_ID` verifies the frozen profile,
+retains prior exclusions, reuses complete case runtimes, and rebuilds only
+partial cases. A sealed suite refuses preparation resume.
 After selection, the BugsInPy metadata clone and project mirrors are deleted.
 Fixed-revision compilation bypasses the shared ccache so fixed objects are not
 retained for model execution.

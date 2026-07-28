@@ -518,3 +518,40 @@ def test_cli_evaluation_prepare_status_and_run_use_pinned_profile(
 
     store.prepare.assert_called_once_with(profile)
     runner.run_phase.assert_called_once_with("study-1", "pilot")
+
+
+def test_cli_evaluation_prepare_can_resume_unsealed_study(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text("{}", encoding="utf-8")
+    profile = MagicMock()
+    store = MagicMock()
+    store.prepare.return_value = {
+        "evaluation": {"evaluationId": "interrupted-study"},
+    }
+
+    with (
+        patch("mlx_swarm.cli.EvaluationStore", return_value=store),
+        patch(
+            "mlx_swarm.cli.load_evaluation_profile",
+            return_value=profile,
+        ),
+    ):
+        assert main([
+            "--config",
+            str(config_path),
+            "eval",
+            "prepare",
+            str(profile_path),
+            "--resume",
+            "interrupted-study",
+        ]) == 0
+
+    capsys.readouterr()
+    store.prepare.assert_called_once_with(
+        profile,
+        resume_evaluation_id="interrupted-study",
+    )

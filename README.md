@@ -261,6 +261,15 @@ mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
   --phase measured --profile benchmarks/bugsinpy-v1/profile.json --preliminary
 ```
 
+If preparation is interrupted before `evaluation.json` seals the suite, resume
+the same evaluation and reuse its completed case runtimes:
+
+```bash
+mlx-swarm --config examples/swarm.json eval prepare \
+  benchmarks/bugsinpy-v1/profile.json --preliminary \
+  --resume EVALUATION_ID
+```
+
 Execution is one case at a time, pass@1, and resumable. The measured phase
 remains locked until the calibration pairs prove preparation, isolation,
 Codex usage capture, storage enforcement, and immutable result serialization.

@@ -244,6 +244,8 @@ leakage prevention, Codex JSONL usage capture, missing-usage invalidation,
 symmetric oracle scoring, storage gates, immutable/resumable ledgers, seeded
 bootstrap intervals, the strict claim gate, sanitized exports, deterministic
 README rendering, and read-only cockpit API serialization.
+Interrupted preparation tests prove completed case-runtime reuse, retained
+exclusions, profile binding, metadata cleanup, and sealed-suite immutability.
 
 Fairness regressions additionally require one immutable paired-arm contract
 with a shared write-root set and task packet, reject contract drift, reject
