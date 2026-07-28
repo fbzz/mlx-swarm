@@ -14,6 +14,7 @@ RUN sh /uv-installer.sh && rm /uv-installer.sh
 COPY --from=python37 /usr/local /opt/python37
 COPY --from=python37 /usr/lib/x86_64-linux-gnu/libcrypto.so.1.1 /opt/python37/lib/
 COPY --from=python37 /usr/lib/x86_64-linux-gnu/libssl.so.1.1 /opt/python37/lib/
+COPY --from=python37 /usr/lib/x86_64-linux-gnu/libffi.so.7.1.0 /opt/python37/lib/libffi.so.7
 
 ENV PATH="/root/.local/bin/:/usr/local/bin:/opt/python37/bin:$PATH"
 ENV LD_LIBRARY_PATH="/opt/python37/lib"

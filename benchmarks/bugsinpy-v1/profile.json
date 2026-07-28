@@ -32,7 +32,7 @@
   },
   "container": {
     "image": "mlx-swarm-bugsinpy-amd64:11c5f1eea954-py37",
-    "digest": "sha256:01da253f9c61f30b389dc7c5cb7e741e03d4daf386405d62f0b768bb81dff07a",
+    "digest": "sha256:f577bdd087333bbc04de8641a2523cd47860dea704aee62339283a40030ee1cb",
     "platform": "linux/amd64"
   },
   "frontier": {

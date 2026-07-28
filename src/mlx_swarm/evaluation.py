@@ -1563,12 +1563,20 @@ class EvaluationStore:
             failures: list[dict[str, Any]] = []
             for case in cases:
                 try:
+                    runtime_path = (
+                        evaluation_dir
+                        / "cases"
+                        / case["caseId"]
+                        / "runtime.json"
+                    )
+                    was_prepared = runtime_path.is_file()
                     runner.prepare_case(
                         evaluation_dir,
                         case,
                         retain_mirror=True,
                     )
-                    self._check_storage(profile)
+                    if not was_prepared:
+                        self._check_storage(profile)
                 except Exception as exc:
                     failures.append({
                         "caseId": case["caseId"],
@@ -1604,6 +1612,7 @@ class EvaluationStore:
                     and case_dir.name not in selected_ids
                 ):
                     shutil.rmtree(case_dir)
+        self._check_storage(profile)
         _atomic_json(
             evaluation_dir / "preparation-exclusions.json",
             {

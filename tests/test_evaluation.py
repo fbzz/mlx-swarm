@@ -422,6 +422,13 @@ def test_prepare_replaces_failed_oracle_candidates_before_freeze(
     config = load_config(_write_config(tmp_path))
     profile = load_evaluation_profile(_write_profile(tmp_path))
     store = EvaluationStore(config, root=tmp_path / "evaluations")
+    storage_checks = 0
+
+    def check_storage(_profile: Any) -> None:
+        nonlocal storage_checks
+        storage_checks += 1
+
+    monkeypatch.setattr(store, "_check_storage", check_storage)
     candidates = [
         _case(f"{project}-{index}", project, stratum)
         for project in ("alpha", "beta", "gamma")
@@ -431,6 +438,7 @@ def test_prepare_replaces_failed_oracle_candidates_before_freeze(
         )
     ]
     failed: list[str] = []
+    prepared: set[str] = set()
 
     class Runner:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -449,6 +457,7 @@ def test_prepare_replaces_failed_oracle_candidates_before_freeze(
                 failed.append(case["caseId"])
                 raise EvaluationError("buggy snapshot passed")
             (case_dir / "runtime.json").write_text("{}", encoding="utf-8")
+            prepared.add(case["caseId"])
             return {}
 
     def clone(_profile: Any, target: Path) -> Path:
@@ -497,6 +506,9 @@ def test_prepare_replaces_failed_oracle_candidates_before_freeze(
     )
     assert exclusions["cases"][0]["caseId"] == failed[0]
     assert len(frozen_ids) == 9
+    # One initial check, one after each newly prepared runtime, and one final
+    # check. Runtimes reused after reselection are not rescanned.
+    assert storage_checks == len(prepared) + 2
 
 
 def test_codex_usage_aggregates_every_completed_turn() -> None:
