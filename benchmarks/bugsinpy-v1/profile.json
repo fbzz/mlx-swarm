@@ -22,7 +22,8 @@
       "scrapy",
       "sanic",
       "tornado",
-      "PySnooper"
+      "PySnooper",
+      "youtube-dl"
     ]
   },
   "storage": {
@@ -96,7 +97,8 @@
     "tornado": [],
     "PySnooper": [
       "pytest"
-    ]
+    ],
+    "youtube-dl": []
   },
   "dependencyPins": {
     "black": [],
@@ -115,7 +117,8 @@
       "pyparsing==2.4.7",
       "six==1.15.0",
       "wcwidth==0.1.9"
-    ]
+    ],
+    "youtube-dl": []
   },
   "local": {
     "maxRepair": 2

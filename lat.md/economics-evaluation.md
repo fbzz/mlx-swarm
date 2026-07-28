@@ -9,7 +9,7 @@ See [[src/mlx_swarm/evaluation.py]].
 `mlx-swarm eval prepare PROFILE` clones the pinned BugsInPy metadata revision,
 filters unsupported cases, and freezes the calibration and measured cases.
 
-The committed profile uses seed `20260728`, a seven-project allowlist, at
+The committed profile uses seed `20260728`, an eight-project allowlist, at
 least six represented projects, no more than five measured cases per project,
 and balanced reference patch-size strata. It selects six calibration cases
 and thirty measured cases.

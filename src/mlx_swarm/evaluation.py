@@ -1582,6 +1582,14 @@ class EvaluationStore:
                 break
             failed_ids = {value["caseId"] for value in failures}
             excluded.extend(failures)
+            _atomic_json(
+                evaluation_dir / "preparation-exclusions.json",
+                {
+                    "schemaVersion": 1,
+                    "cases": excluded,
+                    "recordedAt": utc_now(),
+                },
+            )
             candidates = [
                 value
                 for value in candidates
