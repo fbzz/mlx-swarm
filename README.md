@@ -119,16 +119,129 @@ Install the zero-extra-key Codex bridge:
 mlx-swarm skill install
 ```
 
-In the cockpit, enter an objective, create a commander request, and copy the
-displayed `$mlx-swarm-commander` handoff into Codex. The skill imports one
-validated plan for preview. **Approve and run** records the exact plan SHA-256
-and, for workspace plans, the displayed execution SHA-256 before starting
-local workers. When a completed run is ready, use the displayed review handoff
-for the one final frontier verdict.
-
 The skill uses existing Codex access and requires no separate provider key. The
 Python process cannot observe Codex-internal token counts, so those receipts
 are stored as unavailable rather than estimated.
+
+## How to use
+
+### Recommended: cockpit and Codex
+
+1. **Check readiness.**
+
+   ```bash
+   mlx-swarm --config examples/swarm.json doctor
+   ```
+
+   `doctor` validates the config, resolves the cached model, and reports the
+   detected Git workspace boundary without loading the model into memory.
+
+2. **Install the skill once and start the cockpit.**
+
+   ```bash
+   mlx-swarm skill install
+   mlx-swarm --config examples/swarm.json ui
+   ```
+
+3. **Request a plan.** In **Frontier Commander**, enter the objective and any
+   constraints, create the request, and copy the displayed **Plan with Codex**
+   handoff into Codex. The skill returns one strict Plan JSON artifact to MLX
+   Swarm; it does not start local execution.
+
+4. **Inspect before approving.** Review the complete DAG, task prompts,
+   dependencies, gates, artifact types, allowed paths, verification profiles,
+   detected Git root, base commit, plan digest, and execution digest. Choose
+   **Approve and run** only if that displayed authority is correct.
+
+5. **Supervise local execution.** Local MLX workers execute the DAG without
+   frontier coordination between waves. Non-mutating reports and reviews can
+   complete automatically. Every `patch` or `test-suite` artifact pauses with
+   its full escaped diff and SHA-256.
+
+6. **Apply or reject each diff.** **Apply** rechecks the digest and worktree,
+   commits the diff only to the isolated session branch, and automatically runs
+   the referenced allowlisted verification profiles. **Reject** seals the
+   artifact and blocks its descendants. A failed check remains visible for an
+   explicit verification rerun or revert.
+
+7. **Review the completed run.** A successful workspace run produces
+   `frontier-result.json` v3 with outputs, gates, commits, diffs, verification
+   receipts, lineage, and local usage. Copy **Review with Codex** for the one
+   final structured verdict. Requested changes begin a new linked commander
+   request; the completed run is never rewritten.
+
+The browser and executor never contact a frontier provider directly. The
+operator controls both Codex handoffs and every workspace mutation.
+
+### Use an existing plan
+
+Place a validated plan below the cockpit's approved plans directory, select it
+from the left rail, inspect its complete preview, and launch it. Schema-v1 plans
+are generation-only. Schema-v2 plans additionally require the displayed
+execution digest and use typed workspace artifacts.
+
+The included examples demonstrate both modes:
+
+- [`examples/plan.json`](examples/plan.json): generation-only
+  implementation → test/review DAG.
+- [`examples/workspace-plan.json`](examples/workspace-plan.json): typed
+  workspace patch → test-suite → review DAG.
+
+### CLI-only workspace flow
+
+First preview and record the two displayed digests:
+
+```bash
+mlx-swarm --config examples/swarm.json workspace preview \
+  examples/workspace-plan.json
+```
+
+Launch using those exact values. Supplying a known session directory makes the
+approval commands easy to run from another terminal:
+
+```bash
+mlx-swarm --config examples/swarm.json run \
+  examples/workspace-plan.json \
+  --session-dir .swarm/runs/manual-workspace-run \
+  --approve-plan-digest PLAN_SHA256 \
+  --approve-execution-digest EXECUTION_SHA256 \
+  --verbose
+```
+
+When the executor pauses, inspect the artifact and submit its displayed digest:
+
+```bash
+mlx-swarm --config examples/swarm.json artifact show \
+  .swarm/runs/manual-workspace-run TASK_ID
+
+mlx-swarm --config examples/swarm.json artifact apply \
+  .swarm/runs/manual-workspace-run TASK_ID --digest ARTIFACT_SHA256
+```
+
+`artifact apply` automatically runs the snapshotted verification profiles.
+After a failed check, `artifact verify` reruns those same profiles; it never
+accepts a command:
+
+```bash
+mlx-swarm --config examples/swarm.json artifact verify \
+  .swarm/runs/manual-workspace-run TASK_ID --digest ARTIFACT_SHA256
+
+mlx-swarm --config examples/swarm.json artifact reject \
+  .swarm/runs/manual-workspace-run TASK_ID --digest ARTIFACT_SHA256
+```
+
+Inspect retained lineage or remove only a terminal run's worktree:
+
+```bash
+mlx-swarm --config examples/swarm.json workspace status \
+  .swarm/runs/manual-workspace-run
+
+mlx-swarm --config examples/swarm.json workspace cleanup \
+  .swarm/runs/manual-workspace-run
+```
+
+Cleanup retains the session branch. Promotion into the original checkout is an
+explicit manual Git operation outside MLX Swarm.
 
 ## How it works
 
