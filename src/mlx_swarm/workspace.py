@@ -1067,16 +1067,25 @@ def _atomic_json(path: Path, value: Any) -> None:
 
 def _exclusive_text(path: Path, value: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         descriptor = os.open(
-            path,
+            temporary,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
             0o600,
         )
-    except FileExistsError as exc:
-        raise WorkspaceError(f"Immutable artifact already exists: {path.name}") from exc
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(value)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise WorkspaceError(
+                f"Immutable artifact already exists: {path.name}"
+            ) from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _exclusive_json(path: Path, value: Any) -> None:

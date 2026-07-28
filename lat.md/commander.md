@@ -17,8 +17,10 @@ local runtime limits.
 
 Planning transitions through `open → claimed → accepted|invalid`. Claim files
 use exclusive creation so concurrent skill or file-import invocations cannot
-both occupy the response slot. One optional outer JSON fence is normalized;
-the result must then satisfy the existing strict [[Plans]] contract.
+both occupy the response slot. Claims and immutable response artifacts publish
+atomically only after their complete contents are durable. One optional outer
+JSON fence is normalized; the result must then satisfy the existing strict
+[[Plans]] contract.
 
 An accepted plan receives a canonical JSON SHA-256. The cockpit submits that
 digest when the operator chooses **Approve and run**. A workspace plan also

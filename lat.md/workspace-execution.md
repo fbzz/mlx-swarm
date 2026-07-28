@@ -82,7 +82,9 @@ Structural failures become deterministic workspace gate violations and may use
 only the existing bounded local repair budget.
 
 A valid diff becomes `awaiting_approval`. Apply or Reject writes an immutable
-digest-bound decision. Concurrent decisions cannot overwrite one another.
+digest-bound decision. Evidence is fsynced to a temporary inode and
+atomically hard-linked to its final path, so readers never observe partial JSON
+and concurrent decisions cannot overwrite one another.
 
 Apply rechecks worktree HEAD and cleanliness, validates the diff again, runs
 `git apply --index`, and creates one unsigned, hook-free commit with a fixed

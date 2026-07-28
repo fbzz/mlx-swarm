@@ -12,6 +12,7 @@ from typing import Any
 
 import pytest
 
+from mlx_swarm import workspace as workspace_module
 from mlx_swarm.contracts import (
     ContractError,
     MUTATING_ARTIFACT_TYPES,
@@ -1030,6 +1031,7 @@ def test_cleanup_removes_only_worktree_and_retains_branch(
 
 def test_concurrent_artifact_decisions_cannot_overwrite_evidence(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _repo_path, _config, plan, snapshot, session = _prepared_session(
         tmp_path,
@@ -1041,6 +1043,18 @@ def test_concurrent_artifact_decisions_cannot_overwrite_evidence(
         _diff(),
         snapshot,
     )
+    published: list[tuple[bool, dict[str, Any]]] = []
+    real_link = workspace_module.os.link
+
+    def inspect_publish(source: str, target: str) -> None:
+        if Path(target).name == "decision.json":
+            published.append((
+                Path(target).exists(),
+                json.loads(Path(source).read_text(encoding="utf-8")),
+            ))
+        real_link(source, target)
+
+    monkeypatch.setattr(workspace_module.os, "link", inspect_publish)
     barrier = threading.Barrier(3)
     accepted: list[dict[str, Any]] = []
     errors: list[Exception] = []
@@ -1070,6 +1084,9 @@ def test_concurrent_artifact_decisions_cannot_overwrite_evidence(
 
     assert len(accepted) == 1
     assert len(errors) == 1
+    assert published
+    assert published[0][0] is False
+    assert all(value["action"] in {"apply", "reject"} for _, value in published)
     persisted = json.loads(
         (
             session.dir

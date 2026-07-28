@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from mlx_swarm import commander as commander_module
 from mlx_swarm.commander import (
     CommanderError,
     CommanderStore,
@@ -292,7 +293,19 @@ def test_invalid_plan_is_recorded_and_request_is_sealed(tmp_path: Path) -> None:
 
 def test_claims_are_exclusive_and_releasable_before_response(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    published: list[tuple[bool, dict]] = []
+    real_link = commander_module.os.link
+
+    def inspect_publish(source: str, target: str) -> None:
+        published.append((
+            Path(target).exists(),
+            json.loads(Path(source).read_text(encoding="utf-8")),
+        ))
+        real_link(source, target)
+
+    monkeypatch.setattr(commander_module.os, "link", inspect_publish)
     store = CommanderStore(_workspace(tmp_path))
     request_id = store.create_request("Make a plan")["request"]["requestId"]
     claim = store.claim_plan(request_id)
@@ -301,6 +314,8 @@ def test_claims_are_exclusive_and_releasable_before_response(
     store.release_plan_claim(request_id, claim["claimId"])
     second = store.claim_plan(request_id)
     assert second["claimId"] != claim["claimId"]
+    assert published[0][0] is False
+    assert all(value["phase"] == "plan" for _, value in published)
 
 
 def test_usage_is_never_partially_reported_or_estimated() -> None:

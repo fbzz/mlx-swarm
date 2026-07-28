@@ -1147,19 +1147,11 @@ class CommanderStore:
             "adapter": adapter,
             "claimedAt": utc_now(),
         }
-        try:
-            descriptor = os.open(
-                path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600,
-            )
-        except FileExistsError as exc:
-            raise CommanderError(
-                f"The {phase} phase is already claimed."
-            ) from exc
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(claim, handle, ensure_ascii=False, indent=2)
-            handle.write("\n")
+        _exclusive_text(
+            path,
+            json.dumps(claim, ensure_ascii=False, indent=2) + "\n",
+            exists_message=f"The {phase} phase is already claimed.",
+        )
         return claim
 
     @staticmethod
@@ -1266,14 +1258,35 @@ def _read_bounded_text(path: Path) -> str:
     return resolved.read_text(encoding="utf-8")
 
 
-def _exclusive_text(path: Path, value: str) -> None:
+def _exclusive_text(
+    path: Path,
+    value: str,
+    *,
+    exists_message: str | None = None,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     try:
-        with path.open("x", encoding="utf-8") as handle:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(value)
             if value and not value.endswith("\n"):
                 handle.write("\n")
-    except FileExistsError as exc:
-        raise CommanderError(f"Immutable artifact already exists: {path.name}") from exc
+            handle.flush()
+            os.fsync(handle.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError as exc:
+            raise CommanderError(
+                exists_message
+                or f"Immutable artifact already exists: {path.name}"
+            ) from exc
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _atomic_text(path: Path, value: str) -> None:
