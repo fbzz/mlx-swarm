@@ -11,7 +11,9 @@ When a plan includes a [[Plans|context object]], the prompt is assembled from th
 1. **AUTHORITY**: Warning that the contract is authoritative and worker output is untrusted.
 2. **OBJECTIVE**: The context objective.
 3. **VALIDATED COMMANDER DIAGNOSIS**: The evidence-backed observed failure,
-   falsifiable causal hypothesis, validation, and evidence-source labels.
+   falsifiable causal hypothesis, validation, evidence-source labels, and—when
+   present—the candidate change, failing-path prediction, preserved-control
+   prediction, and minimality evidence.
 4. **AUTHORITATIVE SOURCE**: One section per source, with label, origin, and sha256.
 5. **GLOBAL CONSTRAINTS**: Numbered list of constraints.
 6. **AUTOMATIC REJECTION CONDITIONS**: Numbered list of rejection criteria.

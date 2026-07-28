@@ -321,6 +321,16 @@ delegate only mechanical transformations with exact files, symbols, source
 anchors, and old-to-new instructions. Plans cannot request more generation
 tokens than `maxGenerationTokens`.
 
+Commander plans also carry a mandatory candidate-change specificity record.
+The frontier must simulate its proposed edit through the observed failing path
+and at least one named passing or non-target control path, then explain why its
+predicate is the narrowest evidence-backed discriminator. For exact-edit
+workers, that candidate must match the literal old-to-new task instructions.
+This catches the important case where a small worker faithfully renders a
+mechanical edit but the frontier selected an overly broad behavioral proxy.
+Standalone historical plans remain readable, but a new commander response
+without this evidence is rejected before approval or local inference.
+
 Only mutating `patch` and `test-suite` tasks use two stages. The first pass
 reasons over the frozen artifact prompt; the second receives that reasoning as
 untrusted JSON-string-encoded evidence and must emit only the strict artifact.

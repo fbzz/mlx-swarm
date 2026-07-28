@@ -416,6 +416,26 @@ CAUSAL DIAGNOSIS GATE
 - If the causal hypothesis cannot be supported, do not substitute a speculative
   repair. Continue inspection within the same call until it can be supported.
 
+CANDIDATE CHANGE SPECIFICITY GATE
+- context.diagnosis.changeValidation is mandatory for commander plans.
+- Validation must cover the proposed change, not only the suspected root cause.
+- candidateChange states the exact behavioral effect encoded by the task edits.
+- failingPathPrediction traces how the proposed change alters the observed
+  failing input or state through the cited source.
+- preservedControlPrediction names at least one passing or non-target control
+  path and traces why the proposed change leaves its behavior correct.
+- minimalityEvidence proves the changed predicate or transformation uses the
+  narrowest distinguishing property supported by the failure evidence. Do not
+  replace the observed discriminator with a broader correlated proxy.
+- changeValidation.evidenceSources must name exact authoritative excerpts that
+  expose the failing path, proposed target, and preserved control reasoning.
+- For exact-edit delegation, the candidateChange must match the literal old-to-
+  new transformations in the mutating task prompts.
+- A source trace that only explains current code is insufficient. Simulate the
+  proposed change on both the failing path and the preserved control during this
+  same call. If either prediction is unsupported, continue inspection and do
+  not emit a plan.
+
 PLAN LIMITS
 - schemaVersion must be {schema_version}.
 - planId and task IDs use lowercase letters, digits, dot, underscore, or hyphen.
@@ -443,7 +463,14 @@ TOP-LEVEL SHAPE
       "validationMethod": "source-trace|approved-verification",
       "validationEvidence": "string",
       "falsificationCondition": "string",
-      "evidenceSources": ["authoritative source label"]
+      "evidenceSources": ["authoritative source label"],
+      "changeValidation": {{
+        "candidateChange": "exact behavioral effect encoded by task edits",
+        "failingPathPrediction": "candidate effect on observed failing path",
+        "preservedControlPrediction": "named passing or non-target path preserved",
+        "minimalityEvidence": "why this is the narrowest supported discriminator",
+        "evidenceSources": ["authoritative source label"]
+      }}
     }},
     "authoritativeSources": [{{"label": "string", "content": "string"}}],
     "constraints": ["string"],
@@ -807,6 +834,13 @@ class CommanderStore:
                     raise CommanderError(
                         "Commander plans require an evidence-backed "
                         "context.diagnosis produced during the planning call."
+                    )
+                if plan.context.diagnosis.change_validation is None:
+                    raise CommanderError(
+                        "Commander plans require "
+                        "context.diagnosis.changeValidation covering the "
+                        "candidate edit, failing path, preserved control, and "
+                        "minimality during the same planning call."
                     )
             finally:
                 if candidate.exists() and candidate.name.endswith(".tmp"):

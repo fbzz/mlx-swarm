@@ -38,6 +38,13 @@ validation, approval, execution, or claim logic in ad hoc scripts.
    model name. For `exact-edit`, retain diagnosis and edit design in this
    frontier call, then give each mutating worker one mechanical transformation
    with exact file, symbol, source anchors, and old-to-new instructions.
+   Complete the mandatory candidate-change specificity gate before emitting the
+   plan. Trace the literal proposed edit through the observed failing path and
+   at least one named passing or non-target control path. Explain why the
+   predicate uses the narrowest evidence-backed discriminator rather than a
+   broader proxy, cite exact authoritative excerpts for those predictions, and
+   keep `changeValidation.candidateChange` consistent with every mutating task's
+   literal old-to-new instructions.
 5. Save the response beside the prompt as
    `frontier-plan.response.json`.
 6. Import it once using the returned claim:

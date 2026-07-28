@@ -77,6 +77,22 @@ def _write_workspace(tmp_path: Path) -> tuple[Path, Path]:
                     "An authoritative source already contains def result."
                 ),
                 "evidenceSources": ["request"],
+                "changeValidation": {
+                    "candidateChange": (
+                        "Add only the requested def result implementation."
+                    ),
+                    "failingPathPrediction": (
+                        "The missing-definition path now exposes def result."
+                    ),
+                    "preservedControlPrediction": (
+                        "Existing unrelated definitions remain unchanged."
+                    ),
+                    "minimalityEvidence": (
+                        "Adding the one requested definition is the narrowest "
+                        "change that satisfies the request."
+                    ),
+                    "evidenceSources": ["request"],
+                },
             },
         },
         "tasks": [

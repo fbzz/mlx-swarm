@@ -53,6 +53,22 @@ def _write_plan(tmp_path: Path) -> Path:
                     "A greeting is already present in the task output."
                 ),
                 "evidenceSources": ["request"],
+                "changeValidation": {
+                    "candidateChange": (
+                        "Produce the requested hello greeting exactly once."
+                    ),
+                    "failingPathPrediction": (
+                        "The empty output gains the required greeting."
+                    ),
+                    "preservedControlPrediction": (
+                        "No unrelated output or behavior is changed."
+                    ),
+                    "minimalityEvidence": (
+                        "A single greeting is the smallest change satisfying "
+                        "the request."
+                    ),
+                    "evidenceSources": ["request"],
+                },
             },
         },
         "tasks": [{"id": "t1", "role": "general", "prompt": "Say hello"}],

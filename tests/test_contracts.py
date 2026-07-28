@@ -358,6 +358,19 @@ def test_plan_diagnosis_must_reference_authoritative_evidence(
             "validationEvidence": "The trace identifies src/value.py:1.",
             "falsificationCondition": "The failing value comes from elsewhere.",
             "evidenceSources": ["trace"],
+            "changeValidation": {
+                "candidateChange": "Replace the wrong returned value.",
+                "failingPathPrediction": (
+                    "The assertion observes the corrected return value."
+                ),
+                "preservedControlPrediction": (
+                    "The control path returning the other value is unchanged."
+                ),
+                "minimalityEvidence": (
+                    "Only the exact failing return expression changes."
+                ),
+                "evidenceSources": ["trace"],
+            },
         },
     }
     plan = load_plan(
@@ -367,10 +380,52 @@ def test_plan_diagnosis_must_reference_authoritative_evidence(
     assert plan.context is not None
     assert plan.context.diagnosis is not None
     assert plan.context.diagnosis.validation_method == "source-trace"
+    assert plan.context.diagnosis.change_validation is not None
+    assert (
+        plan.context.diagnosis.change_validation.candidate_change
+        == "Replace the wrong returned value."
+    )
 
     context["diagnosis"]["evidenceSources"] = ["invented"]
     with pytest.raises(ContractError, match="authoritative source"):
         load_plan(_write_plan(tmp_path, {"context": context}), config)
+
+    context["diagnosis"]["evidenceSources"] = ["trace"]
+    context["diagnosis"]["changeValidation"]["evidenceSources"] = [
+        "invented"
+    ]
+    with pytest.raises(ContractError, match="changeValidation"):
+        load_plan(_write_plan(tmp_path, {"context": context}), config)
+
+
+def test_historical_plan_diagnosis_without_change_validation_is_readable(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    context = {
+        "objective": "Inspect an existing result",
+        "authoritativeSources": [{
+            "label": "result",
+            "content": "The existing artifact was accepted.",
+        }],
+        "constraints": [],
+        "rejectionCriteria": ["The accepted result is ignored."],
+        "outputProtocol": "Return a report.",
+        "diagnosis": {
+            "observedFailure": "The result has not been summarized.",
+            "causalHypothesis": "No report task has consumed the result.",
+            "validationMethod": "source-trace",
+            "validationEvidence": "The source contains only the result.",
+            "falsificationCondition": "A report already exists.",
+            "evidenceSources": ["result"],
+        },
+    }
+
+    plan = load_plan(_write_plan(tmp_path, {"context": context}), config)
+
+    assert plan.context is not None
+    assert plan.context.diagnosis is not None
+    assert plan.context.diagnosis.change_validation is None
 
 
 def test_load_plan_task_output_protocol(tmp_path: Path) -> None:

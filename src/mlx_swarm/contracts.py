@@ -447,6 +447,15 @@ class ContextSource:
 
 
 @dataclass(frozen=True)
+class PlanChangeValidation:
+    candidate_change: str
+    failing_path_prediction: str
+    preserved_control_prediction: str
+    minimality_evidence: str
+    evidence_sources: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class PlanDiagnosis:
     observed_failure: str
     causal_hypothesis: str
@@ -454,6 +463,7 @@ class PlanDiagnosis:
     validation_evidence: str
     falsification_condition: str
     evidence_sources: tuple[str, ...] = ()
+    change_validation: PlanChangeValidation | None = None
 
 
 @dataclass(frozen=True)
@@ -858,6 +868,7 @@ def _parse_context(raw: Any, config: SwarmConfig) -> TaskContext:
                 "falsificationCondition",
                 "evidenceSources",
             },
+            {"changeValidation"},
         )
         validation_method = _text(
             raw_diagnosis["validationMethod"],
@@ -887,6 +898,56 @@ def _parse_context(raw: Any, config: SwarmConfig) -> TaskContext:
             raise ContractError(
                 "context.diagnosis.evidenceSources must not be empty."
             )
+        change_validation = None
+        if "changeValidation" in raw_diagnosis:
+            raw_change = _object(
+                raw_diagnosis["changeValidation"],
+                "context.diagnosis.changeValidation",
+            )
+            _exact_keys(
+                raw_change,
+                "context.diagnosis.changeValidation",
+                {
+                    "candidateChange",
+                    "failingPathPrediction",
+                    "preservedControlPrediction",
+                    "minimalityEvidence",
+                    "evidenceSources",
+                },
+            )
+            change_sources = _unique_text_array(
+                raw_change["evidenceSources"],
+                "context.diagnosis.changeValidation.evidenceSources",
+                minimum=1,
+            )
+            unknown_change_sources = set(change_sources) - known_labels
+            if unknown_change_sources:
+                raise ContractError(
+                    "context.diagnosis.changeValidation.evidenceSources "
+                    "references unknown authoritative source labels: "
+                    + ", ".join(sorted(unknown_change_sources))
+                )
+            change_validation = PlanChangeValidation(
+                candidate_change=_text(
+                    raw_change["candidateChange"],
+                    "context.diagnosis.changeValidation.candidateChange",
+                ),
+                failing_path_prediction=_text(
+                    raw_change["failingPathPrediction"],
+                    "context.diagnosis.changeValidation."
+                    "failingPathPrediction",
+                ),
+                preserved_control_prediction=_text(
+                    raw_change["preservedControlPrediction"],
+                    "context.diagnosis.changeValidation."
+                    "preservedControlPrediction",
+                ),
+                minimality_evidence=_text(
+                    raw_change["minimalityEvidence"],
+                    "context.diagnosis.changeValidation.minimalityEvidence",
+                ),
+                evidence_sources=change_sources,
+            )
         diagnosis = PlanDiagnosis(
             observed_failure=_text(
                 raw_diagnosis["observedFailure"],
@@ -906,6 +967,7 @@ def _parse_context(raw: Any, config: SwarmConfig) -> TaskContext:
                 "context.diagnosis.falsificationCondition",
             ),
             evidence_sources=evidence_sources,
+            change_validation=change_validation,
         )
     return TaskContext(
         objective=_text(ctx["objective"], "context.objective"),

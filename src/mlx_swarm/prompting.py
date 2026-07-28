@@ -64,6 +64,21 @@ def compose_prompt(
 
     if context.diagnosis is not None:
         diagnosis = context.diagnosis
+        change_validation = ""
+        if diagnosis.change_validation is not None:
+            change = diagnosis.change_validation
+            change_validation = (
+                "\nCandidate change: "
+                f"{change.candidate_change}\n"
+                "Failing-path prediction: "
+                f"{change.failing_path_prediction}\n"
+                "Preserved-control prediction: "
+                f"{change.preserved_control_prediction}\n"
+                "Minimality evidence: "
+                f"{change.minimality_evidence}\n"
+                "Change evidence sources: "
+                + ", ".join(change.evidence_sources)
+            )
         sections.append(
             _section(
                 "VALIDATED COMMANDER DIAGNOSIS",
@@ -76,6 +91,7 @@ def compose_prompt(
                     f"{diagnosis.falsification_condition}\n"
                     "Evidence sources: "
                     + ", ".join(diagnosis.evidence_sources)
+                    + change_validation
                 ),
             )
         )

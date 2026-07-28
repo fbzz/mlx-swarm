@@ -93,6 +93,14 @@ calibration case must pass the independent oracle before the measured phase
 can start. Invalid verifier infrastructure, a failed patch, or any missing case
 keeps the measured phase locked.
 
+The calibration gate also distinguishes worker rendering failures from
+frontier plan-quality failures. Exact prompts, raw local responses, materialized
+diffs, and oracle evidence make it possible to show whether the worker departed
+from the task or faithfully applied a behaviorally incorrect frontier edit.
+When the latter occurs, measured execution remains locked while the Commander
+candidate-change specificity contract is improved; the harness does not spend
+six measured frontier pairs merely to reproduce that defect.
+
 `eval replay-local --adapted-plan-dir DIR` is a separate diagnostic path for
 testing a capability-aware delegation strategy with the same local model and
 zero frontier calls. It composes fresh prompts from the supplied validated

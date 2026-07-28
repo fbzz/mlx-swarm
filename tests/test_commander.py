@@ -70,6 +70,21 @@ def _plan(plan_id: str = "commander-plan") -> dict:
                     "the required RESULT."
                 ),
                 "evidenceSources": ["contract"],
+                "changeValidation": {
+                    "candidateChange": (
+                        "The build task emits the missing RESULT artifact."
+                    ),
+                    "failingPathPrediction": (
+                        "The previously absent task output becomes RESULT."
+                    ),
+                    "preservedControlPrediction": (
+                        "The surrounding persistence path remains unchanged."
+                    ),
+                    "minimalityEvidence": (
+                        "Only the missing task output is introduced."
+                    ),
+                    "evidenceSources": ["contract"],
+                },
             },
         },
         "tasks": [
@@ -137,6 +152,9 @@ def test_plan_prompt_exposes_worker_capability_and_delegation_boundary(
     assert "calibration: failed (0/2 passed" in prompt
     assert "Do not delegate discovery" in prompt
     assert "This describes local generation capability, not worker concurrency" in prompt
+    assert "CANDIDATE CHANGE SPECIFICITY GATE" in prompt
+    assert "preservedControlPrediction" in prompt
+    assert "narrowest distinguishing property" in prompt
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -222,6 +240,19 @@ def _plan_v2() -> dict:
                     "source."
                 ),
                 "evidenceSources": ["workspace-source"],
+                "changeValidation": {
+                    "candidateChange": "Replace VALUE = 1 with VALUE = 2.",
+                    "failingPathPrediction": (
+                        "The direct module value becomes the requested 2."
+                    ),
+                    "preservedControlPrediction": (
+                        "No file or symbol other than VALUE changes."
+                    ),
+                    "minimalityEvidence": (
+                        "The exact defining assignment is the narrowest target."
+                    ),
+                    "evidenceSources": ["workspace-source"],
+                },
             },
         },
         "tasks": [{
@@ -313,6 +344,26 @@ def test_commander_rejects_unvalidated_causal_hypothesis(
         )
     detail = store.request_detail(request_id)
     assert detail["request"]["status"] == "plan_invalid"
+
+
+def test_commander_rejects_diagnosis_without_candidate_change_validation(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    created = store.create_request("Produce a bounded artifact")
+    request_id = created["request"]["requestId"]
+    claim = store.claim_plan(request_id)
+    response = tmp_path / "missing-change-validation.json"
+    plan = _plan()
+    del plan["context"]["diagnosis"]["changeValidation"]
+    response.write_text(json.dumps(plan), encoding="utf-8")
+
+    with pytest.raises(CommanderError, match="changeValidation"):
+        store.import_plan(
+            request_id,
+            response,
+            claim_id=claim["claimId"],
+        )
 
 
 def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(

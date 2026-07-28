@@ -31,6 +31,17 @@ states one falsifiable causal hypothesis, records its concrete validation
 evidence, and names the condition that would disprove it. Unsupported
 speculation is rejected at import and seals that request as invalid.
 
+Commander imports additionally require
+`context.diagnosis.changeValidation`. It records the literal candidate
+behavior, its predicted effect on the failing path, at least one named passing
+or non-target control that must remain correct, the minimality evidence for the
+chosen discriminator, and the authoritative source labels supporting those
+claims. A source trace of the current implementation alone is insufficient:
+the same planning call must simulate the proposed change on both paths. For
+`exact-edit`, the candidate description must agree with the old-to-new
+transformation delegated to the worker. The base [[Plans]] loader keeps this
+field optional so historical non-commander plans remain readable.
+
 Planning transitions through `open → claimed → accepted|invalid`. Claim files
 use exclusive creation so concurrent skill or file-import invocations cannot
 both occupy the response slot. Claims and immutable response artifacts publish
