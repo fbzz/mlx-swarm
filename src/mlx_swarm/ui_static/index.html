@@ -101,6 +101,20 @@
         </label>
         <div id="run-list" class="run-list" aria-live="polite"></div>
       </section>
+
+      <section class="panel economics-panel">
+        <div class="section-heading">
+          <div><p class="eyebrow">Measured economics</p><h2>Evaluations</h2></div>
+          <span id="evaluation-count" class="count-badge">0</span>
+        </div>
+        <label for="evaluation-select">Paired study</label>
+        <select id="evaluation-select">
+          <option value="">No evaluations yet</option>
+        </select>
+        <div id="evaluation-summary" class="evaluation-summary" aria-live="polite">
+          <p class="field-hint">Run <code>mlx-swarm eval prepare</code> to create a study.</p>
+        </div>
+      </section>
     </aside>
 
     <section id="dag-panel" class="panel dag-panel" tabindex="-1" aria-label="MLX Swarm work graph">

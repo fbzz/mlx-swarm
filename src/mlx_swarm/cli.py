@@ -15,6 +15,15 @@ from .commander import (
     canonical_json_sha256,
 )
 from .contracts import ContractError, load_config, load_plan
+from .evaluation import (
+    DEFAULT_PUBLIC_RESULTS_DIR,
+    EvaluationError,
+    EvaluationRunner,
+    EvaluationStore,
+    load_evaluation_profile,
+    profile_payload,
+    update_readme_economics,
+)
 from .executor import execute_plan
 from .session import Session, _run_id, _utc_now
 from .skill_install import SkillInstallError, install_bundled_skill
@@ -232,6 +241,63 @@ def _parser() -> argparse.ArgumentParser:
     )
     review_status_parser.add_argument("session_dir", type=Path)
 
+    evaluation_parser = sub.add_parser(
+        "eval",
+        help="Prepare, run, inspect, and publish paired economics studies.",
+    )
+    evaluation_sub = evaluation_parser.add_subparsers(
+        dest="evaluation_command",
+        required=True,
+    )
+    evaluation_prepare = evaluation_sub.add_parser(
+        "prepare",
+        help="Freeze a pinned BugsInPy pilot and measured suite.",
+    )
+    evaluation_prepare.add_argument("profile", type=Path)
+    evaluation_run = evaluation_sub.add_parser(
+        "run",
+        help="Run or resume one paired evaluation phase.",
+    )
+    evaluation_run.add_argument("evaluation_id")
+    evaluation_run.add_argument(
+        "--phase",
+        required=True,
+        choices=("pilot", "measured"),
+    )
+    evaluation_run.add_argument(
+        "--profile",
+        type=Path,
+        required=True,
+        help="Original profile; its digest is checked against the snapshot.",
+    )
+    evaluation_status = evaluation_sub.add_parser(
+        "status",
+        help="Inspect an evaluation ledger and paired progress.",
+    )
+    evaluation_status.add_argument("evaluation_id")
+    evaluation_report = evaluation_sub.add_parser(
+        "report",
+        help="Export sanitized evidence and update the README tables.",
+    )
+    evaluation_report.add_argument("evaluation_id")
+    evaluation_report.add_argument(
+        "--export",
+        type=Path,
+        default=None,
+        help="Empty export directory (defaults under benchmarks/results).",
+    )
+    evaluation_report.add_argument(
+        "--readme",
+        type=Path,
+        default=None,
+        help="README to update (defaults beside the config).",
+    )
+    evaluation_report.add_argument(
+        "--check",
+        action="store_true",
+        help="Verify the generated README block without changing it.",
+    )
+
     skill_parser = sub.add_parser(
         "skill",
         help="Manage the bundled Codex orchestration skill.",
@@ -319,6 +385,68 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.config is None:
             parser.error("--config is required for this command.")
         config = load_config(args.config)
+
+        if args.command == "eval":
+            evaluation_store = EvaluationStore(config)
+            if args.evaluation_command == "prepare":
+                profile = load_evaluation_profile(args.profile)
+                _print(evaluation_store.prepare(profile))
+                return 0
+            if args.evaluation_command == "status":
+                _print(evaluation_store.detail(args.evaluation_id))
+                return 0
+            if args.evaluation_command == "run":
+                profile = load_evaluation_profile(args.profile)
+                detail = evaluation_store.detail(args.evaluation_id)
+                expected = detail["environment"].get("profileSha256")
+                actual = canonical_json_sha256(profile_payload(profile))
+                if expected != actual:
+                    raise EvaluationError(
+                        "Evaluation profile differs from the prepared snapshot."
+                    )
+                runner = EvaluationRunner(
+                    config,
+                    evaluation_store,
+                    profile,
+                )
+                _print(
+                    runner.run_phase(
+                        args.evaluation_id,
+                        args.phase,
+                    )
+                )
+                return 0
+            export_dir = (
+                args.export
+                if args.export is not None
+                else (
+                    evaluation_store.workspace_root
+                    / DEFAULT_PUBLIC_RESULTS_DIR
+                    / args.evaluation_id
+                )
+            )
+            report = evaluation_store.report(
+                args.evaluation_id,
+                export_dir,
+                check=args.check,
+            )
+            readme = (
+                args.readme
+                if args.readme is not None
+                else evaluation_store.workspace_root / "README.md"
+            )
+            update_readme_economics(
+                readme.resolve(),
+                report["readmeMarkdown"],
+                check=args.check,
+            )
+            _print({
+                "evaluationId": args.evaluation_id,
+                "exportDir": str(export_dir.resolve()),
+                "readme": str(readme.resolve()),
+                "checked": args.check,
+            })
+            return 0
 
         if args.command == "artifact":
             session = Session.load(args.session_dir, config)
@@ -649,7 +777,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ContractError as exc:
         parser.error(str(exc))
         return 2
-    except (CommanderError, SkillInstallError, WorkspaceError) as exc:
+    except (
+        CommanderError,
+        EvaluationError,
+        SkillInstallError,
+        WorkspaceError,
+    ) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
     except Exception as exc:

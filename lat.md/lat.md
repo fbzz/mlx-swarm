@@ -6,6 +6,7 @@ This directory defines the high-level concepts, business logic, and architecture
 - [[config]] — Swarm configuration JSON schema: model, batch, and artifacts settings.
 - [[commander]] — Frontier planning requests, digest approval, final review, and separate usage receipts.
 - [[decisions]] — Key design decisions and their trade-offs.
+- [[economics-evaluation]] — Reproducible BugsInPy paired study, immutable evidence, metrics, and claim gate.
 - [[executor]] — DAG executor: topological sort, batch-by-level, repair loops.
 - [[gates]] — Deterministic local validation using regex, Python syntax, and structured JSON rules.
 - [[plans]] — Plan JSON schema: DAG of tasks with dependencies, gates, and shared context.

@@ -451,3 +451,70 @@ def test_cli_skill_install_does_not_require_config(
     payload = json.loads(capsys.readouterr().out)
     assert payload["installed"] is True
     assert Path(payload["path"]).is_dir()
+
+
+def test_cli_evaluation_prepare_status_and_run_use_pinned_profile(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text("{}", encoding="utf-8")
+    profile = MagicMock()
+    profile_payload_value = {"schemaVersion": 1, "profileId": "study"}
+    detail = {
+        "environment": {"profileSha256": "digest"},
+        "evaluation": {"evaluationId": "study-1"},
+    }
+    store = MagicMock()
+    store.prepare.return_value = detail
+    store.detail.return_value = detail
+    runner = MagicMock()
+    runner.run_phase.return_value = detail
+
+    with (
+        patch("mlx_swarm.cli.EvaluationStore", return_value=store),
+        patch(
+            "mlx_swarm.cli.load_evaluation_profile",
+            return_value=profile,
+        ),
+        patch(
+            "mlx_swarm.cli.profile_payload",
+            return_value=profile_payload_value,
+        ),
+        patch(
+            "mlx_swarm.cli.canonical_json_sha256",
+            return_value="digest",
+        ),
+        patch("mlx_swarm.cli.EvaluationRunner", return_value=runner),
+    ):
+        assert main([
+            "--config",
+            str(config_path),
+            "eval",
+            "prepare",
+            str(profile_path),
+        ]) == 0
+        capsys.readouterr()
+        assert main([
+            "--config",
+            str(config_path),
+            "eval",
+            "status",
+            "study-1",
+        ]) == 0
+        capsys.readouterr()
+        assert main([
+            "--config",
+            str(config_path),
+            "eval",
+            "run",
+            "study-1",
+            "--phase",
+            "pilot",
+            "--profile",
+            str(profile_path),
+        ]) == 0
+
+    store.prepare.assert_called_once_with(profile)
+    runner.run_phase.assert_called_once_with("study-1", "pilot")

@@ -1,0 +1,935 @@
+"""Tests for the paired BugsInPy economics evaluation."""
+# @lat: [[Tests#Economics evaluation]]
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from mlx_swarm.contracts import load_config
+from mlx_swarm.evaluation import (
+    _remove_timed_out_docker_container,
+    CommandResult,
+    EvaluationError,
+    EvaluationStore,
+    aggregate_results,
+    bootstrap_mean_interval,
+    container_path,
+    docker_runtime_argv,
+    empty_local_usage,
+    evaluation_write_roots,
+    exclusive_case_lock,
+    inspect_container,
+    is_dependency_or_project_install,
+    load_evaluation_profile,
+    make_arm_result,
+    mlx_swarm_source_revision,
+    normalize_setup_parallelism,
+    parse_benchmark_commands,
+    parse_codex_usage_jsonl,
+    patch_metadata,
+    profile_payload,
+    remove_sensitive_preparation_sources,
+    render_readme_economics,
+    run_swarm_with_synthetic_operator,
+    sanitize_suite,
+    select_cases,
+    update_readme_economics,
+    usage_with_phases,
+    validate_arm_result,
+    validate_repository_symlinks,
+    validate_resolved_dependencies,
+)
+
+
+def _write_config(tmp_path: Path) -> Path:
+    model = tmp_path / "model"
+    model.mkdir()
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    (model / "tokenizer.json").write_text("{}", encoding="utf-8")
+    (model / "model.safetensors").write_bytes(b"")
+    path = tmp_path / "swarm.json"
+    path.write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "model": {
+                "repository": "local/evaluation-model",
+                "localPath": str(model),
+            },
+            "batch": {"maxWorkers": 2},
+            "artifacts": ".swarm/runs",
+        }),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _profile_payload(
+    *,
+    pilot_size: int = 3,
+    measured_size: int = 6,
+    projects: tuple[str, ...] = ("alpha", "beta", "gamma"),
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "profileId": "test-study",
+        "benchmark": {
+            "repository": "https://example.invalid/bugsinpy.git",
+            "revision": "a" * 40,
+        },
+        "seed": 20260728,
+        "selection": {
+            "pilotSize": pilot_size,
+            "measuredSize": measured_size,
+            "minProjects": len(projects),
+            "maxPerProject": measured_size // len(projects),
+            "maxChangedFiles": 4,
+            "maxChangedLines": 200,
+            "maxContextCharacters": 120000,
+            "minimumPython": "3.8",
+            "projects": list(projects),
+        },
+        "storage": {
+            "maxBytes": 20 * 1024**3,
+            "minFreeBytes": 15 * 1024**3,
+        },
+        "container": {
+            "image": "benchmark@sha256:" + "b" * 64,
+            "digest": "sha256:" + "b" * 64,
+            "platform": "linux/amd64",
+        },
+        "frontier": {
+            "command": "codex",
+            "model": "gpt-5.6-sol",
+            "reasoningEffort": "high",
+            "armTimeoutSeconds": 2700,
+            "planningTimeoutSeconds": 600,
+            "localTimeoutSeconds": 1500,
+            "reviewTimeoutSeconds": 600,
+        },
+        "pythonBootstrap": [
+            "pip==23.3.2",
+            "setuptools==57.5.0",
+            "wheel==0.41.3",
+            "Cython==0.29.36",
+        ],
+        "dependencyRoots": {
+            project: ["pytest"]
+            for project in projects
+        },
+        "dependencyPins": {
+            project: []
+            for project in projects
+        },
+        "local": {"maxRepair": 2},
+    }
+
+
+def _write_profile(tmp_path: Path, payload: dict[str, Any] | None = None) -> Path:
+    path = tmp_path / "profile.json"
+    path.write_text(
+        json.dumps(payload or _profile_payload()),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _case(case_id: str, project: str, stratum: str) -> dict[str, Any]:
+    number = int(case_id.rsplit("-", 1)[-1])
+    return {
+        "caseId": case_id,
+        "project": project,
+        "bugId": number,
+        "repository": f"https://example.invalid/{project}.git",
+        "buggyCommit": f"{number:040x}",
+        "fixedCommit": f"{number + 100:040x}",
+        "pythonVersion": "3.11",
+        "testFiles": ["tests/test_bug.py"],
+        "setupArgv": [],
+        "verificationArgv": [["pytest", "-q", "tests/test_bug.py"]],
+        "requirements": ["pytest==8.3.0"],
+        "reference": {
+            "paths": ["src/value.py"],
+            "changedFiles": 1,
+            "changedLines": {"small": 2, "medium": 20, "large": 100}[stratum],
+            "sha256": f"{number + 200:064x}",
+            "stratum": stratum,
+        },
+    }
+
+
+def _reported_usage(total: int) -> dict[str, Any]:
+    return usage_with_phases([(
+        "phase",
+        {
+            "usageStatus": "reported",
+            "turns": 1,
+            "promptTokens": total - 10,
+            "cachedInputTokens": 2,
+            "completionTokens": 10,
+            "reasoningTokens": 3,
+            "totalTokens": total,
+            "malformedLines": 0,
+        },
+    )])
+
+
+def _result(
+    case_id: str,
+    arm: str,
+    *,
+    total_tokens: int,
+    score: int = 1,
+    elapsed: float = 60,
+) -> dict[str, Any]:
+    case = {"caseId": case_id, "phase": "measured"}
+    return make_arm_result(
+        case=case,
+        arm=arm,
+        status="completed",
+        completed=True,
+        score=score,
+        elapsed_seconds=elapsed,
+        phase_seconds={
+            (
+                "frontier"
+                if arm == "frontier-alone"
+                else "local"
+            ): elapsed - 1,
+            "oracle": 1,
+        },
+        frontier_usage=_reported_usage(total_tokens),
+        local_usage=(
+            {
+                "promptTokens": 100,
+                "generationTokens": 50,
+                "generationCalls": 2,
+                "modelLoads": 1,
+            }
+            if arm == "mlx-swarm"
+            else empty_local_usage()
+        ),
+        repairs=1 if arm == "mlx-swarm" else 0,
+        model_loads=1 if arm == "mlx-swarm" else 0,
+        review_verdict="approved" if arm == "mlx-swarm" else None,
+        patch={"sha256": "f" * 64, "changedFiles": 1},
+        oracle={"passed": bool(score), "exitCode": 0 if score else 1, "evidence": "ok"},
+    )
+
+
+def test_profile_is_strict_pinned_and_round_trips(tmp_path: Path) -> None:
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    assert profile.seed == 20260728
+    assert profile.frontier.model == "gpt-5.6-sol"
+    assert profile.frontier.reasoning_effort == "high"
+    assert profile.storage.max_bytes == 20 * 1024**3
+    assert profile_payload(profile) == _profile_payload()
+
+    invalid = _profile_payload()
+    invalid["surprise"] = True
+    with pytest.raises(EvaluationError, match="unknown fields"):
+        load_evaluation_profile(_write_profile(tmp_path, invalid))
+
+
+def test_profile_rejects_unpinned_revision_and_timeout_drift(
+    tmp_path: Path,
+) -> None:
+    unpinned = _profile_payload()
+    unpinned["benchmark"]["revision"] = "main"
+    with pytest.raises(EvaluationError, match="pinned"):
+        load_evaluation_profile(_write_profile(tmp_path, unpinned))
+
+    timeout = _profile_payload()
+    timeout["frontier"]["reviewTimeoutSeconds"] = 601
+    with pytest.raises(EvaluationError, match="must sum"):
+        load_evaluation_profile(_write_profile(tmp_path, timeout))
+
+    missing_project_roots = _profile_payload()
+    del missing_project_roots["dependencyRoots"]["alpha"]
+    with pytest.raises(EvaluationError, match="exactly match"):
+        load_evaluation_profile(
+            _write_profile(tmp_path, missing_project_roots)
+        )
+
+    floating_bootstrap = _profile_payload()
+    floating_bootstrap["pythonBootstrap"][0] = "pip>=23"
+    with pytest.raises(EvaluationError, match="exact"):
+        load_evaluation_profile(_write_profile(tmp_path, floating_bootstrap))
+
+
+def test_source_revision_uses_package_checkout_and_reports_dirty(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], Path]] = []
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation._best_effort_output",
+        lambda argv, cwd: "a" * 40,
+    )
+
+    def run(argv: list[str], *, cwd: Path, **kwargs: Any) -> CommandResult:
+        calls.append((argv, cwd))
+        return CommandResult(
+            argv=tuple(argv),
+            returncode=0,
+            stdout=" M src/mlx_swarm/evaluation.py\n",
+            stderr="",
+            elapsed_seconds=0.01,
+        )
+
+    monkeypatch.setattr("mlx_swarm.evaluation.run_command", run)
+    source = mlx_swarm_source_revision()
+    assert source["commit"] == "a" * 40
+    assert source["dirty"] is True
+    assert calls[0][0] == [
+        "git",
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+    ]
+    assert (calls[0][1] / "pyproject.toml").is_file()
+
+
+def test_prepare_rejects_dirty_unpinned_harness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    store = EvaluationStore(config, root=tmp_path / "evaluations")
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.mlx_swarm_source_revision",
+        lambda: {"commit": "a" * 40, "dirty": True},
+    )
+    with pytest.raises(EvaluationError, match="source is dirty"):
+        store.prepare(profile)
+
+
+def test_benchmark_command_parser_has_no_shell_surface(tmp_path: Path) -> None:
+    commands = tmp_path / "run_test.sh"
+    commands.write_text(
+        "pytest -q tests/test_bug.py\npython -m pytest -q\n",
+        encoding="utf-8",
+    )
+    assert parse_benchmark_commands(commands) == [
+        ["pytest", "-q", "tests/test_bug.py"],
+        ["python", "-m", "pytest", "-q"],
+    ]
+
+    commands.write_text("pytest -q && touch escaped\n", encoding="utf-8")
+    with pytest.raises(EvaluationError, match="shell syntax"):
+        parse_benchmark_commands(commands)
+
+
+def test_build_ext_zero_parallelism_is_normalized_deterministically() -> None:
+    assert normalize_setup_parallelism([
+        "/environment/bin/python",
+        "setup.py",
+        "build_ext",
+        "--inplace",
+        "-j",
+        "0",
+    ])[-1] == "4"
+    untouched = ["/environment/bin/python", "-m", "pytest"]
+    assert normalize_setup_parallelism(untouched) == untouched
+
+
+def test_bugsinpy_info_allows_portable_assignment_spacing(
+    tmp_path: Path,
+) -> None:
+    from mlx_swarm.evaluation import parse_info_file
+
+    path = tmp_path / "bug.info"
+    path.write_text(
+        'python_version = "3.11"\n'
+        'buggy_commit_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"\n',
+        encoding="utf-8",
+    )
+    assert parse_info_file(path)["python_version"] == "3.11"
+
+
+def test_patch_contract_rejects_rename_traversal_and_duplicate_paths() -> None:
+    patch = (
+        "diff --git a/src/a.py b/src/a.py\n"
+        "--- a/src/a.py\n+++ b/src/a.py\n"
+        "@@ -1 +1 @@\n-a = 1\n+a = 2\n"
+    )
+    assert patch_metadata(patch)["changedLines"] == 2
+    with pytest.raises(EvaluationError, match="rename/copy"):
+        patch_metadata("diff --git a/src/a.py b/src/b.py\n")
+    with pytest.raises(EvaluationError, match="escapes"):
+        patch_metadata("diff --git a/../secret b/../secret\n")
+    with pytest.raises(EvaluationError, match="unique"):
+        patch_metadata(
+            "diff --git a/src/a.py b/src/a.py\n"
+            "diff --git a/src/a.py b/src/a.py\n"
+        )
+
+
+def test_selection_is_seeded_disjoint_balanced_and_project_bounded(
+    tmp_path: Path,
+) -> None:
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    candidates = [
+        _case(f"{project}-{index}", project, stratum)
+        for project in ("alpha", "beta", "gamma")
+        for index, stratum in enumerate(
+            ("small", "medium", "large", "small", "medium", "large"),
+            start=1,
+        )
+    ]
+    pilot, measured = select_cases(candidates, profile)
+    pilot_again, measured_again = select_cases(candidates, profile)
+    assert [case["caseId"] for case in pilot] == [
+        case["caseId"] for case in pilot_again
+    ]
+    assert [case["caseId"] for case in measured] == [
+        case["caseId"] for case in measured_again
+    ]
+    assert len(pilot) == 3
+    assert len(measured) == 6
+    assert not ({case["caseId"] for case in pilot} & {
+        case["caseId"] for case in measured
+    })
+    assert {
+        stratum: sum(
+            case["reference"]["stratum"] == stratum for case in measured
+        )
+        for stratum in ("small", "medium", "large")
+    } == {"small": 2, "medium": 2, "large": 2}
+    assert {
+        project: sum(case["project"] == project for case in measured)
+        for project in ("alpha", "beta", "gamma")
+    } == {"alpha": 2, "beta": 2, "gamma": 2}
+
+
+def test_codex_usage_aggregates_every_completed_turn() -> None:
+    payload = "\n".join([
+        json.dumps({"type": "thread.started", "thread_id": "x"}),
+        "not-json",
+        json.dumps({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 100,
+                "cached_input_tokens": 80,
+                "output_tokens": 20,
+            },
+        }),
+        json.dumps({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 50,
+                "cached_input_tokens": 10,
+                "output_tokens": 5,
+                "reasoning_output_tokens": 3,
+                "total_tokens": 55,
+            },
+        }),
+    ])
+    usage = parse_codex_usage_jsonl(payload)
+    assert usage["usageStatus"] == "reported"
+    assert usage["turns"] == 2
+    assert usage["promptTokens"] == 150
+    assert usage["cachedInputTokens"] == 90
+    assert usage["completionTokens"] == 25
+    assert usage["totalTokens"] == 175
+    assert usage["malformedLines"] == 1
+
+
+def test_missing_codex_usage_is_explicitly_unavailable() -> None:
+    usage = parse_codex_usage_jsonl(
+        json.dumps({"type": "item.completed", "item": {}})
+    )
+    assert usage["usageStatus"] == "unavailable"
+    assert usage["totalTokens"] is None
+    combined = usage_with_phases([("planning", usage)])
+    assert combined["usageStatus"] == "unavailable"
+    assert combined["totalTokens"] is None
+
+
+def test_arm_result_contract_rejects_unknown_fields_and_mixed_usage() -> None:
+    result = _result("alpha-1", "frontier-alone", total_tokens=500)
+    assert validate_arm_result(result)["score"] == 1
+    result["unexpected"] = True
+    with pytest.raises(EvaluationError, match="unknown fields"):
+        validate_arm_result(result)
+
+    result = _result("alpha-1", "frontier-alone", total_tokens=500)
+    result["frontierUsage"]["usageStatus"] = "unavailable"
+    with pytest.raises(EvaluationError, match="must be null"):
+        validate_arm_result(result)
+
+
+def test_bootstrap_and_claim_gate_are_deterministic() -> None:
+    first = bootstrap_mean_interval([100, 120, 80], seed=7, samples=500)
+    second = bootstrap_mean_interval([100, 120, 80], seed=7, samples=500)
+    assert first == second
+    assert first[0] > 0
+
+    suite = {
+        "suiteId": "study-1",
+        "seed": 20260728,
+        "cases": [
+            {"caseId": f"alpha-{index}", "project": "alpha", "phase": "measured"}
+            for index in range(1, 4)
+        ],
+    }
+    results = [
+        result
+        for index in range(1, 4)
+        for result in (
+            _result(f"alpha-{index}", "frontier-alone", total_tokens=1_000),
+            _result(f"alpha-{index}", "mlx-swarm", total_tokens=400),
+        )
+    ]
+    summary = aggregate_results(suite, results, bootstrap_samples=500)
+    assert summary["claim"]["status"] == "established"
+    assert summary["paired"]["frontierTokensSaved"] == 1_800
+    assert summary["mlxSwarm"]["localTokens"] == 450
+
+
+def test_claim_gate_fails_on_score_regression_or_missing_usage() -> None:
+    suite = {
+        "suiteId": "study-2",
+        "seed": 1,
+        "cases": [
+            {"caseId": "alpha-1", "project": "alpha", "phase": "measured"}
+        ],
+    }
+    frontier = _result("alpha-1", "frontier-alone", total_tokens=1_000)
+    swarm = _result(
+        "alpha-1",
+        "mlx-swarm",
+        total_tokens=100,
+        score=0,
+    )
+    summary = aggregate_results(
+        suite,
+        [frontier, swarm],
+        bootstrap_samples=100,
+    )
+    assert summary["claim"]["status"] == "tradeoff_measured"
+
+    swarm = _result("alpha-1", "mlx-swarm", total_tokens=100)
+    swarm["frontierUsage"] = usage_with_phases([(
+        "planning",
+        {
+            "usageStatus": "unavailable",
+            "turns": 0,
+            "promptTokens": None,
+            "cachedInputTokens": None,
+            "completionTokens": None,
+            "reasoningTokens": None,
+            "totalTokens": None,
+            "malformedLines": 0,
+        },
+    )])
+    summary = aggregate_results(
+        suite,
+        [frontier, swarm],
+        bootstrap_samples=100,
+    )
+    assert summary["paired"]["allUsageValid"] is False
+    assert summary["claim"]["status"] == "tradeoff_measured"
+
+
+def test_readme_renderer_is_deterministic_and_checkable(tmp_path: Path) -> None:
+    suite = {
+        "suiteId": "study-3",
+        "seed": 2,
+        "cases": [
+            {"caseId": "alpha-1", "project": "alpha", "phase": "measured"}
+        ],
+    }
+    summary = aggregate_results(
+        suite,
+        [
+            _result("alpha-1", "frontier-alone", total_tokens=1_000),
+            _result(
+                "alpha-1",
+                "mlx-swarm",
+                total_tokens=400,
+                elapsed=90,
+            ),
+        ],
+        bootstrap_samples=100,
+    )
+    rendered = render_readme_economics(summary)
+    assert "| [alpha-1](benchmarks/results/study-3/cases/alpha-1.json)" in rendered
+    assert "01:00" in rendered
+    assert "01:30" in rendered
+    readme = tmp_path / "README.md"
+    readme.write_text("# Project\n", encoding="utf-8")
+    assert update_readme_economics(readme, rendered) is True
+    assert update_readme_economics(readme, rendered, check=True) is False
+    with pytest.raises(EvaluationError, match="out of date"):
+        update_readme_economics(
+            readme,
+            rendered.replace("01:30", "01:31"),
+            check=True,
+        )
+
+
+def test_public_suite_omits_fixed_patch_future_commit_and_commands() -> None:
+    case = {
+        **_case("alpha-1", "alpha", "small"),
+        "phase": "measured",
+        "objective": "Fix it",
+    }
+    suite = {
+        "schemaVersion": 1,
+        "suiteId": "study-4",
+        "profileId": "profile",
+        "benchmark": {
+            "name": "BugsInPy",
+            "repository": "https://example.invalid/benchmark.git",
+            "revision": "a" * 40,
+        },
+        "seed": 1,
+        "createdAt": "now",
+        "cases": [case],
+    }
+    sanitized = sanitize_suite(suite)
+    public_case = sanitized["cases"][0]
+    assert "fixedCommit" not in public_case
+    assert "verificationArgv" not in public_case
+    assert "requirements" not in public_case
+    assert public_case["reference"]["sha256"] == case["reference"]["sha256"]
+
+
+def test_preparation_sources_are_removed_before_model_execution(
+    tmp_path: Path,
+) -> None:
+    evaluation = tmp_path / "evaluation"
+    benchmark = evaluation / "benchmark"
+    mirrors = evaluation / "cache" / "repositories"
+    runtime = evaluation / "cache" / "environments"
+    benchmark.mkdir(parents=True)
+    mirrors.mkdir(parents=True)
+    runtime.mkdir(parents=True)
+    (benchmark / "reference.patch").write_text("secret", encoding="utf-8")
+    (mirrors / "project.git").mkdir()
+    (runtime / "ready.json").write_text("{}", encoding="utf-8")
+
+    remove_sensitive_preparation_sources(evaluation)
+    assert not benchmark.exists()
+    assert not mirrors.exists()
+    assert runtime.is_dir()
+
+
+def test_store_exports_immutable_sanitized_evidence_and_check(
+    tmp_path: Path,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    store = EvaluationStore(config, root=tmp_path / "evaluations")
+    evaluation_id = "study-5"
+    root = store.root / evaluation_id
+    root.mkdir()
+    case = {
+        **_case("alpha-1", "alpha", "small"),
+        "phase": "measured",
+        "objective": "Fix it",
+    }
+    suite = {
+        "schemaVersion": 1,
+        "suiteId": evaluation_id,
+        "profileId": "test-study",
+        "benchmark": {
+            "name": "BugsInPy",
+            "repository": "https://example.invalid/benchmark.git",
+            "revision": "a" * 40,
+        },
+        "seed": 7,
+        "createdAt": "now",
+        "cases": [case],
+    }
+    summary = aggregate_results(
+        suite,
+        [
+            _result("alpha-1", "frontier-alone", total_tokens=900),
+            _result("alpha-1", "mlx-swarm", total_tokens=300),
+        ],
+        bootstrap_samples=100,
+    )
+    (root / "evaluation.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "evaluationId": evaluation_id,
+            "status": "completed",
+            "pilotStatus": "completed",
+            "measuredStatus": "completed",
+            "createdAt": "now",
+            "updatedAt": "now",
+            "results": {},
+        }),
+        encoding="utf-8",
+    )
+    (root / "suite.json").write_text(json.dumps(suite), encoding="utf-8")
+    (root / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
+    (root / "environment.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "localModel": {"path": "/private/model", "fingerprint": "x"},
+        }),
+        encoding="utf-8",
+    )
+    export = tmp_path / "public" / evaluation_id
+    report = store.report(evaluation_id, export)
+    assert report["summary"]["completePairs"] == 1
+    assert store.report(evaluation_id, export, check=True)["summary"] == report["summary"]
+    assert json.loads(
+        (export / "study.json").read_text(encoding="utf-8")
+    )["environment"]["localModel"]["path"] is None
+    (export / "report.md").write_text("tampered", encoding="utf-8")
+    with pytest.raises(EvaluationError, match="out of date"):
+        store.report(evaluation_id, export, check=True)
+
+
+def test_case_lock_rejects_concurrency_and_releases(tmp_path: Path) -> None:
+    with exclusive_case_lock(tmp_path, "alpha-1"):
+        with pytest.raises(EvaluationError, match="already locked"):
+            with exclusive_case_lock(tmp_path, "alpha-1"):
+                pass
+    with exclusive_case_lock(tmp_path, "alpha-1"):
+        assert (tmp_path / "locks" / "alpha-1.lock").is_file()
+    assert not (tmp_path / "locks" / "alpha-1.lock").exists()
+
+
+def test_container_digest_is_verified_not_inferred(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    digest = profile.container.digest
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.run_command",
+        lambda *args, **kwargs: CommandResult(
+            argv=("docker", "image", "inspect"),
+            returncode=0,
+            stdout=json.dumps([{
+                "Id": digest,
+                "Architecture": "amd64",
+                "Os": "linux",
+                "Size": 123,
+            }]),
+            stderr="",
+            elapsed_seconds=0.01,
+        ),
+    )
+    assert inspect_container(profile)["digest"] == digest
+
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.run_command",
+        lambda *args, **kwargs: CommandResult(
+            argv=("docker", "image", "inspect"),
+            returncode=0,
+            stdout=json.dumps([{
+                "Id": "sha256:" + "c" * 64,
+                "Architecture": "amd64",
+                "Os": "linux",
+                "Size": 123,
+            }]),
+            stderr="",
+            elapsed_seconds=0.01,
+        ),
+    )
+    with pytest.raises(EvaluationError, match="digest mismatch"):
+        inspect_container(profile)
+
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.run_command",
+        lambda *args, **kwargs: CommandResult(
+            argv=("docker", "image", "inspect"),
+            returncode=0,
+            stdout=json.dumps([{
+                "Id": digest,
+                "Architecture": "arm64",
+                "Os": "linux",
+                "Size": 123,
+            }]),
+            stderr="",
+            elapsed_seconds=0.01,
+        ),
+    )
+    with pytest.raises(EvaluationError, match="platform mismatch"):
+        inspect_container(profile)
+
+
+def test_container_runtime_is_confined_and_network_is_explicit(
+    tmp_path: Path,
+) -> None:
+    evaluation_root = tmp_path / "evaluation"
+    workspace = evaluation_root / "cases" / "alpha-1"
+    workspace.mkdir(parents=True)
+    argv = docker_runtime_argv(
+        image="benchmark@sha256:" + "b" * 64,
+        platform_name="linux/amd64",
+        evaluation_root=evaluation_root,
+        cwd=workspace,
+        argv=["python", "-m", "pytest"],
+        network="none",
+        extra_env=("CCACHE_DISABLE=true",),
+    )
+    assert argv[:2] == ["docker", "run"]
+    assert argv[argv.index("--network") + 1] == "none"
+    assert argv[argv.index("--platform") + 1] == "linux/amd64"
+    assert argv[argv.index("--name") + 1].startswith("mlx-swarm-eval-")
+    assert argv[argv.index("--label") + 1] == "mlx-swarm.evaluation=true"
+    assert "--cap-drop" in argv
+    assert "no-new-privileges" in argv
+    assert "CC=ccache gcc" in argv
+    assert "CXX=ccache g++" in argv
+    assert argv[argv.index("CCACHE_DISABLE=true") - 1] == "--env"
+    assert argv[-3:] == ["python", "-m", "pytest"]
+    assert container_path(workspace, evaluation_root) == (
+        "/evaluation/cases/alpha-1"
+    )
+    with pytest.raises(EvaluationError, match="escapes"):
+        container_path(tmp_path / "outside", evaluation_root)
+    with pytest.raises(EvaluationError, match="network"):
+        docker_runtime_argv(
+            image="benchmark",
+            platform_name="linux/amd64",
+            evaluation_root=evaluation_root,
+            cwd=workspace,
+            argv=["python"],
+            network="host",
+        )
+    with pytest.raises(EvaluationError, match="environment"):
+        docker_runtime_argv(
+            image="benchmark",
+            platform_name="linux/amd64",
+            evaluation_root=evaluation_root,
+            cwd=workspace,
+            argv=["python"],
+            network="none",
+            extra_env=("BAD=value\nINJECTED=true",),
+        )
+
+
+def test_timed_out_container_cleanup_targets_only_generated_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.subprocess.run",
+        lambda argv, **kwargs: calls.append((argv, kwargs)),
+    )
+    generated = "mlx-swarm-eval-" + "a" * 20
+    _remove_timed_out_docker_container([
+        "docker",
+        "run",
+        "--name",
+        generated,
+        "image",
+    ])
+    assert calls[0][0] == ["docker", "rm", "--force", generated]
+    assert calls[0][1]["shell"] is False
+
+    _remove_timed_out_docker_container([
+        "docker",
+        "run",
+        "--name",
+        "operator-container",
+        "image",
+    ])
+    assert len(calls) == 1
+
+
+def test_resolved_dependencies_cannot_escape_frozen_constraints() -> None:
+    assert validate_resolved_dependencies(
+        "pytest==8.3.0\npip==23.3.2\n",
+        ["pytest==8.3.0"],
+        ["pip==23.3.2"],
+    ) == ["pip==23.3.2", "pytest==8.3.0"]
+    with pytest.raises(EvaluationError, match="escaped"):
+        validate_resolved_dependencies(
+            "pytest==8.4.0\n",
+            ["pytest==8.3.0"],
+            ["pip==23.3.2"],
+        )
+    with pytest.raises(EvaluationError, match="exact registry pin"):
+        validate_resolved_dependencies(
+            "editable @ file:///workspace\n",
+            ["pytest==8.3.0"],
+            ["pip==23.3.2"],
+        )
+
+
+def test_repository_symlinks_remain_internal(tmp_path: Path) -> None:
+    repository = tmp_path / "repository"
+    target = repository / "docs" / "source.rst"
+    target.parent.mkdir(parents=True)
+    target.write_text("source", encoding="utf-8")
+    (repository / "source.rst").symlink_to("docs/source.rst")
+    validate_repository_symlinks(repository)
+
+    (repository / "escape").symlink_to("../../outside")
+    with pytest.raises(EvaluationError, match="escapes"):
+        validate_repository_symlinks(repository)
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected"),
+    [
+        (["pip", "install", "pytest"], True),
+        (["pip3", "install", "pytest"], True),
+        (["python", "setup.py", "install"], True),
+        (["python", "-m", "pip", "install", "pytest"], True),
+        (["python", "setup.py", "build_ext", "--inplace"], False),
+        (["touch", "tests/__init__.py"], False),
+    ],
+)
+def test_dependency_install_commands_are_not_worker_controlled(
+    argv: list[str],
+    expected: bool,
+) -> None:
+    assert is_dependency_or_project_install(argv) is expected
+
+
+def test_evaluation_write_roots_exclude_tests_docs_dependencies_and_hidden(
+    tmp_path: Path,
+) -> None:
+    for directory in ("src", "tests", "docs", ".cache"):
+        (tmp_path / directory).mkdir()
+    for filename in ("module.py", "README.md", "pyproject.toml"):
+        (tmp_path / filename).write_text("", encoding="utf-8")
+    assert evaluation_write_roots(tmp_path) == ["module.py", "src"]
+
+
+def test_local_swarm_subprocess_contains_no_frontier_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    class Process:
+        pid = 123
+        returncode = 0
+
+        def poll(self) -> int:
+            return 0
+
+        def communicate(self, timeout: int | None = None):
+            return b"done", b""
+
+    def popen(argv: list[str], **kwargs: Any) -> Process:
+        calls.append((argv, kwargs))
+        return Process()
+
+    monkeypatch.setattr("mlx_swarm.evaluation.subprocess.Popen", popen)
+    result = run_swarm_with_synthetic_operator(
+        config,
+        tmp_path / "plan.json",
+        tmp_path / "session",
+        2,
+        timeout=30,
+    )
+    argv, kwargs = calls[0]
+    assert argv[2:5] == ["mlx_swarm.cli", "--config", str(config.source)]
+    assert "codex" not in argv
+    assert kwargs["shell"] is False
+    assert result.returncode == 0

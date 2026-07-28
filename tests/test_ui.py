@@ -131,6 +131,55 @@ def _app(tmp_path: Path, recorder: _PopenRecorder | None = None) -> CockpitApp:
     )
 
 
+def test_evaluation_api_payload_is_read_only_and_path_safe(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+    evaluation_id = "bugsinpy-v1-example"
+    root = app.evaluations.root / evaluation_id
+    root.mkdir(parents=True)
+    (root / "evaluation.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "evaluationId": evaluation_id,
+            "status": "prepared",
+            "pilotStatus": "pending",
+            "measuredStatus": "locked",
+            "createdAt": "2026-07-28T00:00:00+00:00",
+            "updatedAt": "2026-07-28T00:00:00+00:00",
+            "results": {},
+        }),
+        encoding="utf-8",
+    )
+    (root / "suite.json").write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "suiteId": evaluation_id,
+            "profileId": "bugsinpy-v1",
+            "benchmark": {
+                "name": "BugsInPy",
+                "repository": "https://example.invalid/benchmark.git",
+                "revision": "a" * 40,
+            },
+            "seed": 20260728,
+            "createdAt": "2026-07-28T00:00:00+00:00",
+            "cases": [],
+        }),
+        encoding="utf-8",
+    )
+    (root / "environment.json").write_text(
+        json.dumps({"schemaVersion": 1}),
+        encoding="utf-8",
+    )
+
+    listing = app.evaluations_payload()
+    assert listing["evaluations"][0]["evaluationId"] == evaluation_id
+    detail = app.evaluation_detail(evaluation_id)
+    assert detail["evaluation"]["measuredStatus"] == "locked"
+    with pytest.raises(APIError):
+        app.evaluation_detail("../outside")
+
+
 def _git_ui(repo: Path, *args: str) -> str:
     return subprocess.run(
         [

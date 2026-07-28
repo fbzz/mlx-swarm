@@ -6,6 +6,8 @@ const appState = {
   plans: [],
   invalidPlans: [],
   commanderRequests: [],
+  evaluations: [],
+  evaluationDetail: null,
   selectedRequest: null,
   requestDetail: null,
   runs: [],
@@ -37,6 +39,7 @@ function bindEvents() {
   el("retry-button").addEventListener("click", retryRun);
   el("review-button").addEventListener("click", copyReviewCommand);
   el("cleanup-workspace-button").addEventListener("click", cleanupWorkspace);
+  el("evaluation-select").addEventListener("change", selectEvaluation);
   el("copy-review-command").addEventListener("click", copyReviewCommand);
   document.querySelectorAll("[data-tab]").forEach((button) => {
     button.addEventListener("click", () => selectTab(button.dataset.tab));
@@ -66,18 +69,21 @@ async function api(path, options = {}) {
 
 async function refreshAll(manual = false) {
   try {
-    const [system, plansPayload, commanderPayload, runsPayload] = await Promise.all([
+    const [system, plansPayload, commanderPayload, runsPayload, evaluationsPayload] = await Promise.all([
       api("/api/status"), api("/api/plans"), api("/api/commander/requests"), api("/api/runs"),
+      api("/api/evaluations"),
     ]);
     appState.system = system;
     appState.plans = plansPayload.plans || [];
     appState.invalidPlans = plansPayload.invalid || [];
     appState.commanderRequests = commanderPayload.requests || [];
     appState.runs = runsPayload.runs || [];
+    appState.evaluations = evaluationsPayload.evaluations || [];
     renderSystem();
     renderPlans();
     renderCommanderRequests();
     renderRuns();
+    renderEvaluations();
 
     if (appState.viewMode === "catalog") {
       selectPlanForPreview();
@@ -141,6 +147,98 @@ function renderPlans() {
     warning.hidden = true;
   }
   renderPlanDescription();
+}
+
+function renderEvaluations() {
+  const select = el("evaluation-select");
+  const previous = select.value;
+  select.replaceChildren();
+  el("evaluation-count").textContent = String(appState.evaluations.length);
+  if (!appState.evaluations.length) {
+    select.add(new Option("No evaluations yet", ""));
+    select.disabled = true;
+    renderEvaluationSummary(null);
+    return;
+  }
+  select.disabled = false;
+  select.add(new Option("Select an evaluation", ""));
+  appState.evaluations.forEach((evaluation) => {
+    select.add(new Option(
+      `${evaluation.evaluationId} · ${(evaluation.status || "unknown").replaceAll("_", " ")}`,
+      evaluation.evaluationId,
+    ));
+  });
+  if (appState.evaluations.some((item) => item.evaluationId === previous)) {
+    select.value = previous;
+  } else if (appState.evaluationDetail?.evaluation?.evaluationId) {
+    select.value = appState.evaluationDetail.evaluation.evaluationId;
+  }
+}
+
+async function selectEvaluation() {
+  const evaluationId = el("evaluation-select").value;
+  if (!evaluationId) {
+    appState.evaluationDetail = null;
+    renderEvaluationSummary(null);
+    return;
+  }
+  try {
+    appState.evaluationDetail = await api(
+      `/api/evaluations/${encodeURIComponent(evaluationId)}`,
+    );
+    renderEvaluationSummary(appState.evaluationDetail);
+  } catch (error) {
+    showToast(error.message, true);
+  }
+}
+
+function renderEvaluationSummary(detail) {
+  const panel = el("evaluation-summary");
+  panel.replaceChildren();
+  if (!detail) {
+    const message = document.createElement("p");
+    message.className = "field-hint";
+    message.textContent = "Prepare and run a paired study to see measured economics.";
+    panel.append(message);
+    return;
+  }
+  const summary = detail.summary;
+  const state = document.createElement("span");
+  state.className = `state-chip ${summary?.claim?.status === "established" ? "completed" : "pending"}`;
+  state.textContent = summary?.claim?.status?.replaceAll("_", " ")
+    || detail.evaluation.status.replaceAll("_", " ");
+  panel.append(state);
+  const copy = document.createElement("p");
+  copy.className = "field-hint";
+  copy.textContent = summary?.claim?.text
+    || `${detail.results.length} immutable arm result${detail.results.length === 1 ? "" : "s"}.`;
+  panel.append(copy);
+  if (!summary) return;
+  const table = document.createElement("table");
+  table.className = "economics-mini-table";
+  const rows = [
+    ["Score", `${summary.frontierAlone.score}/${summary.measuredCases}`, `${summary.mlxSwarm.score}/${summary.measuredCases}`],
+    ["Median time", formatDuration(summary.frontierAlone.medianElapsedSeconds), formatDuration(summary.mlxSwarm.medianElapsedSeconds)],
+    ["Frontier tokens", formatNumber(summary.frontierAlone.frontierTokens), formatNumber(summary.mlxSwarm.frontierTokens)],
+    ["Local tokens", "—", formatNumber(summary.mlxSwarm.localTokens)],
+  ];
+  const head = document.createElement("tr");
+  ["Metric", "Frontier", "Swarm"].forEach((value) => {
+    const cell = document.createElement("th");
+    cell.textContent = value;
+    head.append(cell);
+  });
+  table.append(head);
+  rows.forEach((values) => {
+    const row = document.createElement("tr");
+    values.forEach((value) => {
+      const cell = document.createElement("td");
+      cell.textContent = value;
+      row.append(cell);
+    });
+    table.append(row);
+  });
+  panel.append(table);
 }
 
 function renderPlanDescription() {

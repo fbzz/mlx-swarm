@@ -173,6 +173,55 @@ are stored as unavailable rather than estimated.
 The browser and executor never contact a frontier provider directly. The
 operator controls both Codex handoffs and every workspace mutation.
 
+### Measure frontier-token economics
+
+The committed BugsInPy profile freezes six calibration cases followed by
+thirty measured cases. It uses GPT-5.6 Sol with high reasoning for both paired
+arms, the configured local MLX model with at most two repairs, a 45-minute
+ceiling per arm, seed `20260728`, a 20 GiB storage ceiling, and a 15 GiB
+free-space reserve.
+
+Prepare the immutable suite, pass the calibration gate, then run the measured
+pairs:
+
+```bash
+mlx-swarm --config examples/swarm.json eval prepare \
+  benchmarks/bugsinpy-v1/profile.json
+
+mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
+  --phase pilot --profile benchmarks/bugsinpy-v1/profile.json
+
+mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
+  --phase measured --profile benchmarks/bugsinpy-v1/profile.json
+```
+
+Execution is one case at a time, pass@1, and resumable. The measured phase
+remains locked unless all six calibration pairs prove preparation, isolation,
+Codex usage capture, storage enforcement, and immutable result serialization.
+Preparation also requires a clean MLX Swarm source checkout so the recorded
+commit identifies the exact harness. The metadata checkout, upstream project
+mirrors, and fixed-validation tree are removed before either model arm starts.
+Historical compiled projects use a bounded four-job ccache during unscored
+preparation; fixed-revision objects are not admitted to that shared cache.
+Inspect progress or export sanitized evidence and the generated tables:
+
+```bash
+mlx-swarm --config examples/swarm.json eval status EVALUATION_ID
+
+mlx-swarm --config examples/swarm.json eval report EVALUATION_ID \
+  --export benchmarks/results/EVALUATION_ID \
+  --readme README.md
+
+mlx-swarm --config examples/swarm.json eval report EVALUATION_ID \
+  --export benchmarks/results/EVALUATION_ID \
+  --readme README.md --check
+```
+
+Raw evidence remains under `.swarm/evaluations/<evaluationId>/`; the public
+export omits prompts, raw model responses, fixed patches, and local absolute
+paths. A missing `turn.completed` usage event invalidates that measurement
+instead of becoming zero. Frontier and local tokens are never combined.
+
 ### Use an existing plan
 
 Place a validated plan below the cockpit's approved plans directory, select it
@@ -516,6 +565,7 @@ The runtime is intentionally small and dependency-light outside MLX:
 | `prompting.py` | Authority, context, dependency, task, and repair prompts |
 | `session.py` | Atomic persistence and final packet export |
 | `workspace.py` | Git discovery, execution digests, worktrees, artifacts, decisions, verification, and cleanup |
+| `evaluation.py` | Frozen BugsInPy suites, isolated paired execution, usage capture, oracle scoring, economics, and publication |
 | `skill_install.py` | Safe installation of the bundled Codex orchestration skill |
 | `ui.py` | Localhost HTTP boundary and isolated CLI subprocess launch |
 | `ui_static/` | Packaged dependency-free operator cockpit |
@@ -534,14 +584,33 @@ failure behavior remain fast and reproducible:
 python -m pytest -q
 ```
 
-Current release baseline: **133 passed** when localhost sockets are available.
-In a socket-restricted sandbox, the same suite reports **127 passed, 6 skipped**;
-the skipped cases are the live HTTP-server checks.
+Current release baseline is maintained by the test suite; live socket tests may
+skip in restricted sandboxes.
 
 The screenshot above is a real completed local run on an Apple M4 Pro: three
 workers across two DAG waves, one model load, three generation calls, 1,848
 local tokens, and a persisted final-review packet. It is an example, not a
 cross-machine benchmark.
+
+<!-- BEGIN MLX-SWARM-ECONOMICS -->
+## Measured economics
+
+**Study status:** `not_run` — No token-saving claim has been measured yet.
+
+The deterministic report command replaces this block only after all thirty
+measured BugsInPy pairs have immutable executable-oracle and usage evidence.
+Calibration results remain in the detailed report and never enter this table.
+
+| Metric | Frontier Alone | MLX Swarm | Delta |
+|---|---:|---:|---:|
+| Completed | — | — | — |
+| Score | —/30 | —/30 | — |
+| Median end-to-end time | — | — | — |
+| Frontier tokens | — | — | — |
+| Local tokens | — | — | separate |
+| Repairs | — | — | — |
+| Model loads | — | — | — |
+<!-- END MLX-SWARM-ECONOMICS -->
 
 ## Scope and limitations
 

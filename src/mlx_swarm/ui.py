@@ -35,6 +35,7 @@ from .contracts import (
     TaskDef,
     load_plan,
 )
+from .evaluation import EvaluationError, EvaluationStore
 from .session import Session, _run_id, _utc_now
 from .workspace import (
     WorkspaceError,
@@ -73,6 +74,7 @@ class CockpitApp:
         self.plans_dir = plans_dir.resolve()
         self.artifacts_dir = config.artifacts_dir.resolve()
         self.commander = CommanderStore(config)
+        self.evaluations = EvaluationStore(config)
         self.popen_factory = popen_factory
         self._processes: dict[str, subprocess.Popen[Any]] = {}
         self._lock = threading.Lock()
@@ -109,6 +111,7 @@ class CockpitApp:
             },
             "plansDir": str(self.plans_dir),
             "artifactsDir": str(self.artifacts_dir),
+            "evaluationsDir": str(self.evaluations.root),
             "commanderRoot": str(self.commander.requests_root),
             "workspaceRoot": (
                 workspace.get("workspaceRoot")
@@ -121,6 +124,16 @@ class CockpitApp:
 
     def commander_requests_payload(self) -> dict[str, Any]:
         return {"requests": self.commander.list_requests()}
+
+    def evaluations_payload(self) -> dict[str, Any]:
+        return {"evaluations": self.evaluations.list()}
+
+    def evaluation_detail(self, evaluation_id: str) -> dict[str, Any]:
+        _validate_identifier(evaluation_id, "evaluationId")
+        try:
+            return self.evaluations.detail(evaluation_id)
+        except EvaluationError as exc:
+            raise APIError(HTTPStatus.NOT_FOUND, str(exc)) from exc
 
     def commander_request_detail(self, request_id: str) -> dict[str, Any]:
         _validate_identifier(request_id, "requestId")
@@ -1103,7 +1116,7 @@ def _read_json_file(path: Path) -> dict[str, Any]:
 
 class CockpitHandler(BaseHTTPRequestHandler):
     app: CockpitApp
-    server_version = "MLXSwarmCockpit/0.2"
+    server_version = "MLXSwarmCockpit/0.3"
 
     def do_GET(self) -> None:
         try:
@@ -1117,8 +1130,17 @@ class CockpitHandler(BaseHTTPRequestHandler):
             if path == "/api/commander/requests":
                 self._send_json(self.app.commander_requests_payload())
                 return
+            if path == "/api/evaluations":
+                self._send_json(self.app.evaluations_payload())
+                return
             if path == "/api/runs":
                 self._send_json(self.app.runs_payload())
+                return
+            evaluation_id = _api_evaluation_id(path)
+            if evaluation_id is not None:
+                self._send_json(
+                    self.app.evaluation_detail(evaluation_id)
+                )
                 return
             commander_parts = _api_commander_request_parts(path)
             if commander_parts is not None:
@@ -1375,6 +1397,13 @@ def _api_run_parts(path: str) -> tuple[str, str, str | None] | None:
     if action not in {None, "resume", "retry"}:
         return None
     return parts[2], parts[3], action
+
+
+def _api_evaluation_id(path: str) -> str | None:
+    parts = [unquote(part) for part in path.strip("/").split("/")]
+    if len(parts) != 3 or parts[:2] != ["api", "evaluations"]:
+        return None
+    return parts[2]
 
 
 def _api_commander_request_parts(

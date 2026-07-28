@@ -219,6 +219,18 @@ List command returns 0 with no sessions.
 ### List with sessions
 List command returns 0 and shows existing sessions.
 
+## Economics evaluation
+
+[[economics-evaluation]] tests cover the frozen-study contracts, paired
+execution evidence, economics calculation, and deterministic publication.
+
+They cover portable BugsInPy metadata, safe command parsing and container
+timeouts, deterministic disjoint suite selection, patch-size balancing,
+leakage prevention, Codex JSONL usage capture, missing-usage invalidation,
+symmetric oracle scoring, storage gates, immutable/resumable ledgers, seeded
+bootstrap intervals, the strict claim gate, sanitized exports, deterministic
+README rendering, and read-only cockpit API serialization.
+
 ### Inspect
 Inspect command returns session summary.
 

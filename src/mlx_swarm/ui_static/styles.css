@@ -84,7 +84,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .left-rail {
   min-width: 0; overflow: auto; border-right: 1px solid var(--line); background: #0d1015;
 }
-.commander-panel, .launch-panel, .history-panel { padding: 18px; border-bottom: 1px solid var(--line); }
+.commander-panel, .launch-panel, .history-panel, .economics-panel {
+  padding: 18px; border-bottom: 1px solid var(--line);
+}
 .section-heading, .run-heading, .inspector-heading, .graph-toolbar {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
 }
@@ -163,6 +165,19 @@ select:hover, input:hover, textarea:hover { border-color: var(--line-bright); }
 .run-card-status { font: 9px var(--mono); letter-spacing: .04em; text-transform: uppercase; }
 .run-card-meta { margin-top: 6px; color: var(--subtle); font: 9px var(--mono); }
 .run-list-empty { padding: 24px 10px; color: var(--subtle); font-size: 12px; line-height: 1.6; text-align: center; }
+.evaluation-summary { margin-top: 11px; }
+.economics-mini-table {
+  width: 100%; margin-top: 10px; border-collapse: collapse; font: 9px var(--mono);
+}
+.economics-mini-table th, .economics-mini-table td {
+  border-bottom: 1px solid var(--line); padding: 7px 3px; text-align: right;
+}
+.economics-mini-table th:first-child, .economics-mini-table td:first-child {
+  text-align: left;
+}
+.economics-mini-table th {
+  color: var(--subtle); font-size: 8px; letter-spacing: .05em; text-transform: uppercase;
+}
 
 .dag-panel {
   position: relative; overflow: auto; border-right: 1px solid var(--line);
@@ -396,8 +411,8 @@ select:hover, input:hover, textarea:hover { border-color: var(--line-bright); }
   .status-item { flex: 1 0 95px; min-height: 58px; }
   .workspace { height: auto; min-height: calc(100vh - 120px); grid-template-columns: minmax(0,1fr); }
   .left-rail, .dag-panel { border-right: 0; border-bottom: 1px solid var(--line); }
-  .left-rail { display: grid; grid-template-columns: repeat(3,minmax(260px,1fr)); }
-  .commander-panel, .launch-panel, .history-panel { border-bottom: 0; }
+  .left-rail { display: grid; grid-template-columns: repeat(4,minmax(250px,1fr)); }
+  .commander-panel, .launch-panel, .history-panel, .economics-panel { border-bottom: 0; }
   .commander-panel, .launch-panel { border-right: 1px solid var(--line); }
   .run-list { max-height: 220px; overflow: auto; }
   .dag-panel { min-height: 560px; }
@@ -407,7 +422,9 @@ select:hover, input:hover, textarea:hover { border-color: var(--line-bright); }
 @media (max-width: 620px) {
   .compact-only { display: none; }
   .left-rail { display: block; }
-  .commander-panel, .launch-panel { border-right: 0; border-bottom: 1px solid var(--line); }
+  .commander-panel, .launch-panel, .history-panel {
+    border-right: 0; border-bottom: 1px solid var(--line);
+  }
   .run-heading, .graph-toolbar { display: block; }
   .run-actions, .legend { margin-top: 15px; }
   .legend { justify-content: flex-start; }
