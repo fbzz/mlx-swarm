@@ -28,6 +28,7 @@ from mlx_swarm.workspace import (
     cleanup_worktree,
     execution_preview,
     load_artifact,
+    materialize_edit_manifest,
     persist_artifact,
     prepare_worktree,
     recover_artifact_application,
@@ -136,6 +137,125 @@ def test_schema_v2_workspace_contract_and_plan(tmp_path: Path) -> None:
     assert plan.workspace_execution is True
     assert plan.tasks[0].artifact_type in MUTATING_ARTIFACT_TYPES
     assert plan.tasks[0].verification == ("syntax",)
+
+
+def _edit_manifest_plan_file(repo: Path) -> Path:
+    raw = json.loads(_plan_file(repo).read_text(encoding="utf-8"))
+    task = raw["tasks"][0]
+    task["workerOutputProtocol"] = "edit-manifest-v1"
+    task["outputProtocol"] = "Return only the strict edit manifest JSON."
+    task["gate"] = {
+        "requiredPatterns": [],
+        "forbiddenPatterns": [],
+        "maxCharacters": 4000,
+        "format": "json",
+        "stripSingleCodeFence": False,
+        "pythonSyntax": False,
+        "jsonRequiredKeys": ["edits"],
+        "jsonAllowedKeys": ["edits"],
+        "jsonFieldEnums": {},
+    }
+    path = repo / "config" / "edit-plan.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    return path
+
+
+def test_edit_manifest_plan_contract_requires_exact_json_gate(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    config = load_config(config_path)
+    plan_path = _edit_manifest_plan_file(repo)
+    plan = load_plan(plan_path, config)
+    assert plan.tasks[0].worker_output_protocol == "edit-manifest-v1"
+
+    raw = json.loads(plan_path.read_text(encoding="utf-8"))
+    raw["tasks"][0]["gate"]["jsonAllowedKeys"] = ["edits", "extra"]
+    plan_path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ContractError, match="contain exactly edits"):
+        load_plan(plan_path, config)
+
+
+def test_edit_manifest_materializes_and_executes_as_reviewable_diff(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    config = load_config(config_path)
+    plan = load_plan(_edit_manifest_plan_file(repo), config)
+    preview = execution_preview(config, plan)
+    session_id = "edit-manifest"
+    snapshot = prepare_worktree(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+    )
+    raw_output = json.dumps({
+        "edits": [{
+            "path": "src/value.py",
+            "old": "VALUE = 1",
+            "new": "VALUE = 2",
+        }]
+    })
+    diff = materialize_edit_manifest(
+        raw_output,
+        task=plan.tasks[0],
+        workspace=snapshot,
+    )
+    assert diff.startswith("diff --git a/src/value.py b/src/value.py\n")
+    assert "-VALUE = 1\n+VALUE = 2\n" in diff
+    assert Path(snapshot["worktreePath"], "src/value.py").read_text() == (
+        "VALUE = 1\n"
+    )
+
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(
+        snapshot,
+        execution_approval={
+            "planSha256": preview["planSha256"],
+            "executionDigest": preview["executionDigest"],
+        },
+    )
+    backend = _SequenceBackend([raw_output])
+    outcome: list[Session] = []
+    thread = threading.Thread(
+        target=lambda: outcome.append(execute_plan(
+            config,
+            plan,
+            session_dir=session_dir,
+            backend=backend,
+            approval_poll_seconds=0.01,
+        )),
+        daemon=True,
+    )
+    thread.start()
+    manifest_path = session_dir / "artifacts" / "change" / "manifest.json"
+    deadline = time.time() + 5
+    while time.time() < deadline and not manifest_path.is_file():
+        time.sleep(0.01)
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    _manifest, stored_diff = load_artifact(session_dir, "change")
+    assert stored_diff == diff
+    submit_artifact_decision(
+        session_dir,
+        "change",
+        action="apply",
+        artifact_sha256=manifest["sha256"],
+        source="test",
+    )
+    thread.join(timeout=10)
+    assert not thread.is_alive()
+    task_state = outcome[0].state["tasks"]["change"]
+    assert task_state["output"] == raw_output
+    assert task_state["normalizedOutput"] == diff
+    assert (
+        "edit-manifest-v1-to-unified-diff"
+        in task_state["gateResult"]["normalizations"]
+    )
+    assert outcome[0].state["status"] == "completed"
 
 
 def test_v2_plan_rejects_unknown_profile_and_path(tmp_path: Path) -> None:

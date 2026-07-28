@@ -48,7 +48,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 1
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 2
+FAIR_EVALUATION_PROTOCOL_VERSION = 3
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -2969,6 +2969,17 @@ class EvaluationRunner:
                     "path in the source label; never summarize, rewrite, or "
                     "silently omit lines inside an excerpt."
                 ),
+                (
+                    "Every mutating task must use workerOutputProtocol "
+                    "edit-manifest-v1 with a JSON gate whose required and "
+                    "allowed top-level keys are exactly edits. Ask the worker "
+                    "for the smallest exact old/new anchors, not a Git diff."
+                ),
+                (
+                    "Every mutating task must explicitly set deterministic "
+                    "generationOverride temperature 0, top_p 1, "
+                    "enable_thinking false, and max_tokens no greater than 800."
+                ),
                 *split_constraint_text(task_packet),
             ],
             request_id=f"eval-{case['caseId']}",
@@ -4132,6 +4143,22 @@ def validate_evaluation_plan(
             raise EvaluationError(
                 f"Evaluation task {task.id} must use exactly the frozen "
                 "bugsinpy-acceptance verification profile."
+            )
+        if task.worker_output_protocol != "edit-manifest-v1":
+            raise EvaluationError(
+                f"Evaluation task {task.id} must use edit-manifest-v1."
+            )
+        generation = task.generation_override
+        if (
+            generation.get("temperature") != 0
+            or generation.get("top_p") != 1
+            or generation.get("enable_thinking") is not False
+            or not isinstance(generation.get("max_tokens"), int)
+            or generation["max_tokens"] > 800
+        ):
+            raise EvaluationError(
+                f"Evaluation task {task.id} must use the bounded "
+                "deterministic edit-manifest generation settings."
             )
 
     if plan.context is None:

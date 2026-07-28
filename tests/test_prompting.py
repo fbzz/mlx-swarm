@@ -108,3 +108,22 @@ def test_task_output_protocol_overrides_shared_protocol() -> None:
     prompt = compose_prompt(context, task)
     assert "Return JSON only." in prompt
     assert "Return Python only." not in prompt
+
+
+def test_edit_manifest_worker_prompt_preserves_diff_approval_boundary() -> None:
+    task = TaskDef(
+        id="edit",
+        role="implementation",
+        prompt="Change the value.",
+        artifact_type="patch",
+        allowed_paths=("src/value.py",),
+        verification=("unit",),
+        worker_output_protocol="edit-manifest-v1",
+    )
+    session = _mock_session({})
+    session.plan.workspace_execution = True
+    prompt = compose_prompt(None, task, session=session)
+    assert "Worker output protocol: edit-manifest-v1" in prompt
+    assert '"edits"' in prompt
+    assert "runtime will materialize and validate the unified diff" in prompt
+    assert "do not return a Git diff" in prompt

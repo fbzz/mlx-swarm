@@ -20,9 +20,12 @@ validation, approval, execution, or claim logic in ad hoc scripts.
    below the returned, auto-detected `workspaceRoot`.
 4. Produce exactly one Plan schema JSON object. When the prompt specifies
    workspace execution, use schema version 2 and declare `artifactType`,
-   `allowedPaths`, and verification profile IDs for every task. Patch and
-   test-suite tasks return unified diffs; review and report tasks are
-   non-mutating. Never invent or emit command arrays.
+   `workerOutputProtocol`, `allowedPaths`, and verification profile IDs for
+   every task. Prefer `edit-manifest-v1` for patch and test-suite workers:
+   workers return strict exact search/replace JSON and MLX Swarm materializes
+   the operator-visible unified diff. `artifact` retains direct unified-diff
+   output. Review and report tasks are non-mutating. Never invent or emit
+   command arrays.
 5. Save the response beside the prompt as
    `frontier-plan.response.json`.
 6. Import it once using the returned claim:

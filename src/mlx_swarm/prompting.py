@@ -186,6 +186,27 @@ def _gate_requirements(task: TaskDef) -> str:
 
 def _workspace_artifact_contract(task: TaskDef) -> str:
     if task.mutates_workspace:
+        if task.worker_output_protocol == "edit-manifest-v1":
+            return (
+                f"Artifact type: {task.artifact_type}.\n"
+                "Worker output protocol: edit-manifest-v1.\n"
+                "Return exactly one JSON object with this shape and no other "
+                "keys: "
+                '{"edits":[{"path":"relative/file","old":"exact existing '
+                'text","new":"exact replacement text"}]}.\n'
+                "Each edit must contain exactly path, old, and new. The old "
+                "text must be a non-empty exact source substring that occurs "
+                "once in the current file. Use the smallest sufficient old "
+                "anchor, preserve indentation and newlines exactly, and do "
+                "not return a Git diff or Markdown fence. The runtime will "
+                "materialize and validate the unified diff before approval.\n"
+                "Edits may target only these plan-approved relative paths:\n"
+                + "\n".join(f"- {path}" for path in task.allowed_paths)
+                + "\nVerification is controlled by the runtime using these "
+                "pre-approved profile IDs: "
+                + (", ".join(task.verification) or "(none)")
+                + ". You must not propose or execute verification commands."
+            )
         return (
             f"Artifact type: {task.artifact_type}.\n"
             "Return exactly one text-only unified Git diff beginning with "

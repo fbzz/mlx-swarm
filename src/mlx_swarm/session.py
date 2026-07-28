@@ -363,6 +363,10 @@ class Session:
                     "id": tid,
                     "role": t["role"],
                     "artifactType": t.get("artifactType", "report"),
+                    "workerOutputProtocol": t.get(
+                        "workerOutputProtocol",
+                        "artifact",
+                    ),
                     "status": t["status"],
                     "gatePassed": t.get("gateResult", {}).get("passed") if t.get("gateResult") else None,
                     "output": (
@@ -510,6 +514,7 @@ def _initial_task_state(task: TaskDef) -> dict[str, Any]:
         "id": task.id,
         "role": task.role,
         "artifactType": task.artifact_type,
+        "workerOutputProtocol": task.worker_output_protocol,
         "allowedPaths": list(task.allowed_paths),
         "verification": list(task.verification),
         "status": "pending",

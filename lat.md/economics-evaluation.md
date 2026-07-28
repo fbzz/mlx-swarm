@@ -47,7 +47,7 @@ most two repairs, and one final frontier review only after a completed local
 run. The evaluation harness can approve typed artifacts only inside disposable
 case workspaces; normal sessions retain their human approval boundary.
 
-Protocol version 2 constructs one deterministic task packet for both arms. It
+Protocol version 3 constructs one deterministic task packet for both arms. It
 contains the objective, failing evidence, fixed acceptance argv, frozen
 repository tree, and exact relevant test/traceback source context. Both arms
 receive the same production write roots. Every mutating plan task must preserve
@@ -59,6 +59,14 @@ Workspace-derived plan context is validated against the buggy checkout. A
 source excerpt must be an exact contiguous substring, and a mutating task that
 names a file cannot rely on a rewritten or elided version of that file. This
 prevents source summaries from becoming non-applicable diff context.
+
+Protocol-v3 evaluation plans also require `edit-manifest-v1` mutating workers
+with deterministic sampling, thinking disabled, and at most 800 generation
+tokens. The worker returns bounded exact old/new anchors; the runtime derives
+the candidate unified diff and runs the same workspace checks. This keeps the
+frontier and local arms symmetric at the task-evidence and write-authority
+levels while avoiding a known failure mode where the 4B model understood a
+repair but hallucinated full-file diff syntax.
 
 Both candidate diffs are scored in fresh oracle workspaces using the same
 frozen verifier. A score of one means the clean executable oracle passed.

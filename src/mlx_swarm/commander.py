@@ -357,8 +357,15 @@ def build_plan_prompt(
 WORKSPACE EXECUTION CONTRACT
 - Every task must declare artifactType, allowedPaths, and verification.
 - artifactType is patch, test-suite, review, or report.
-- patch and test-suite output exactly one unified Git diff and require at
-  least one allowed path.
+- Every task should declare workerOutputProtocol.
+- For patch and test-suite tasks, prefer workerOutputProtocol
+  edit-manifest-v1: workers return strict exact search/replace JSON and the
+  runtime materializes the operator-visible unified Git diff. Such tasks
+  require a JSON gate whose jsonRequiredKeys and jsonAllowedKeys are both
+  exactly ["edits"].
+- workerOutputProtocol artifact keeps the original direct unified-diff path.
+- review and report tasks use workerOutputProtocol artifact.
+- patch and test-suite require at least one allowed path.
 - review and report use empty allowedPaths and verification arrays.
 - task allowedPaths must stay within configured write roots: {roots}
 - verification may contain only these profile IDs: {profiles}
@@ -367,6 +374,7 @@ WORKSPACE EXECUTION CONTRACT
 """
         task_workspace_fields = """
       "artifactType": "patch|test-suite|review|report",
+      "workerOutputProtocol": "artifact|edit-manifest-v1",
       "allowedPaths": ["relative/path"],
       "verification": ["approved-profile-id"],"""
     return f"""You are the frontier commander for MLX Swarm.

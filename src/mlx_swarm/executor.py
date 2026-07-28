@@ -18,6 +18,7 @@ from .workspace import (
     WorkspaceError,
     apply_artifact,
     load_artifact,
+    materialize_edit_manifest,
     persist_artifact,
     read_failed_verification_action,
     read_initial_decision,
@@ -657,6 +658,15 @@ def _process_task_output(
     artifact = None
     if gate_result["passed"] and session.plan.workspace_execution:
         try:
+            if task.worker_output_protocol == "edit-manifest-v1":
+                normalized = materialize_edit_manifest(
+                    normalized,
+                    task=task,
+                    workspace=session.workspace_snapshot(),
+                )
+                gate_result.setdefault("normalizations", []).append(
+                    "edit-manifest-v1-to-unified-diff"
+                )
             artifact = persist_artifact(
                 session.dir,
                 task,

@@ -885,6 +885,7 @@ def _serialize_task(task: TaskDef) -> dict[str, Any]:
         "id": task.id,
         "role": task.role,
         "artifactType": task.artifact_type,
+        "workerOutputProtocol": task.worker_output_protocol,
         "allowedPaths": list(task.allowed_paths),
         "verification": list(task.verification),
         "prompt": task.prompt,

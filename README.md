@@ -493,16 +493,28 @@ a command:
 {
   "id": "implement",
   "role": "implementation",
-  "prompt": "Return exactly one unified Git diff.",
+  "prompt": "Return the smallest exact search/replace edits.",
   "artifactType": "patch",
+  "workerOutputProtocol": "edit-manifest-v1",
   "allowedPaths": ["src/package"],
-  "verification": ["pytest"]
+  "verification": ["pytest"],
+  "gate": {
+    "requiredPatterns": [],
+    "forbiddenPatterns": [],
+    "maxCharacters": 4000,
+    "format": "json",
+    "jsonRequiredKeys": ["edits"],
+    "jsonAllowedKeys": ["edits"]
+  }
 }
 ```
 
 `patch` and `test-suite` payloads must be text-only unified Git diffs. `review`
 is structured JSON, while `report` is non-mutating text or Markdown. At most one
-mutating artifact may appear in a DAG level.
+mutating artifact may appear in a DAG level. Small workers can use
+`edit-manifest-v1` to return strict exact-anchor JSON; MLX Swarm materializes
+and validates the unified diff before the operator sees or approves it. The
+persisted artifact is still a diff, never an automatically applied edit.
 
 Before launch, MLX Swarm auto-detects the nearest Git top-level and displays two
 digests. The plan digest binds the canonical plan. The execution digest binds

@@ -141,6 +141,10 @@ Prompt always includes worker id and role section.
 ### Task-specific protocol
 Task protocol overrides a conflicting shared output protocol.
 
+### Edit-manifest protocol
+Workspace prompts explain the strict edit JSON shape and preserve the
+operator-visible unified-diff approval boundary.
+
 ## Session
 
 [[Session]] persistence and state management. See [[src/mlx_swarm/session.py]].
@@ -355,6 +359,11 @@ Global/system Git drivers and inherited `GIT_*` overrides are disabled. Fixed
 `git apply --check --recount` accepts correct edit bodies with inaccurate hunk
 line metadata; remaining structural failures enter the bounded local repair
 loop.
+
+Strict `edit-manifest-v1` contracts require an exact JSON gate. Exact unique
+anchors materialize into an immutable unified diff without changing the
+worktree; malformed keys, ambiguous anchors, no-ops, and escaped paths fail
+before artifact approval.
 
 ### Human decisions and recovery
 

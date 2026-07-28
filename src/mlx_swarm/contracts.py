@@ -31,6 +31,7 @@ _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 ARTIFACT_TYPES = {"patch", "test-suite", "review", "report"}
 MUTATING_ARTIFACT_TYPES = {"patch", "test-suite"}
+WORKER_OUTPUT_PROTOCOLS = {"artifact", "edit-manifest-v1"}
 
 ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
     "implementation": {"temperature": 0.15, "top_p": 0.9, "max_tokens": 1800},
@@ -170,6 +171,7 @@ class TaskDef:
     artifact_type: str = "report"
     allowed_paths: tuple[str, ...] = ()
     verification: tuple[str, ...] = ()
+    worker_output_protocol: str = "artifact"
 
     @property
     def mutates_workspace(self) -> bool:
@@ -285,6 +287,7 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
             task_required.update(
                 {"artifactType", "allowedPaths", "verification"}
             )
+            task_optional.add("workerOutputProtocol")
         _exact_keys(t, name, task_required, task_optional)
         tid = _identifier(t["id"], f"{name}.id")
         if tid in task_ids:
@@ -315,6 +318,7 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
         artifact_type = "report"
         allowed_paths: tuple[str, ...] = ()
         verification: tuple[str, ...] = ()
+        worker_output_protocol = "artifact"
         if schema_version == 2:
             artifact_type = _text(
                 t["artifactType"],
@@ -373,6 +377,35 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                     f"{name} review/report artifacts cannot declare "
                     "allowedPaths or verification profiles."
                 )
+            worker_output_protocol = _text(
+                t.get("workerOutputProtocol", "artifact"),
+                f"{name}.workerOutputProtocol",
+            )
+            if worker_output_protocol not in WORKER_OUTPUT_PROTOCOLS:
+                raise ContractError(
+                    f"{name}.workerOutputProtocol must be one of: "
+                    f"{', '.join(sorted(WORKER_OUTPUT_PROTOCOLS))}"
+                )
+            if worker_output_protocol == "edit-manifest-v1":
+                if artifact_type not in MUTATING_ARTIFACT_TYPES:
+                    raise ContractError(
+                        f"{name}.workerOutputProtocol edit-manifest-v1 "
+                        "requires a patch or test-suite artifact."
+                    )
+                if gate is None or gate.output_format != "json":
+                    raise ContractError(
+                        f"{name}.workerOutputProtocol edit-manifest-v1 "
+                        "requires a JSON gate."
+                    )
+                if (
+                    gate.json_required_keys != ("edits",)
+                    or gate.json_allowed_keys != ("edits",)
+                ):
+                    raise ContractError(
+                        f"{name}.workerOutputProtocol edit-manifest-v1 "
+                        "requires jsonRequiredKeys and jsonAllowedKeys to "
+                        "contain exactly edits."
+                    )
         tasks.append(
             TaskDef(
                 id=tid,
@@ -390,6 +423,7 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                 artifact_type=artifact_type,
                 allowed_paths=allowed_paths,
                 verification=verification,
+                worker_output_protocol=worker_output_protocol,
             )
         )
 

@@ -829,6 +829,7 @@ function renderOverview(panel, taskDef, taskState) {
     ["Dependencies", (taskDef.dependsOn || taskState.dependsOn || []).join(", ") || "None"],
     ["Repair attempts", `${taskState.repairAttempts || 0} / ${taskDef.maxRepairAttempts ?? "—"}`],
     ["Artifact type", taskDef.artifactType || taskState.artifactType || "report"],
+    ["Worker output", taskDef.workerOutputProtocol || taskState.workerOutputProtocol || "artifact"],
     ["Allowed paths", (taskDef.allowedPaths || taskState.allowedPaths || []).join(", ") || "None"],
     ["Verification", (taskDef.verification || taskState.verification || []).join(", ") || "None"],
   ].forEach(([label, value]) => grid.append(detailCell(label, value)));

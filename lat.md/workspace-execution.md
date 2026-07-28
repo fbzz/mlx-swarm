@@ -38,11 +38,21 @@ Schema-v2 tasks require:
 - `allowedPaths`: task-specific relative ceilings, each below a configured
   write root.
 - `verification`: configured profile IDs only.
+- `workerOutputProtocol`: `artifact` (direct artifact text) or
+  `edit-manifest-v1` for deterministic exact-anchor patch materialization.
 
 `patch` and `test-suite` are mutating unified Git diffs. `review` is a JSON
 object. `report` is non-mutating text or Markdown. Review and report tasks use
 empty path/profile arrays. A DAG level may contain at most one mutating task,
 while non-mutating tasks remain batchable.
+
+For small local models, `edit-manifest-v1` accepts one strict JSON object with
+an `edits` array. Every entry contains exactly `path`, non-empty exact `old`
+text, and replacement `new` text. Paths pass both allowlists and symlink/runtime
+checks; each old anchor must occur exactly once in the current isolated
+worktree. The runtime applies edits in memory, derives a unified diff, and then
+uses the normal immutable artifact, digest approval, `git apply --check`, and
+verification lifecycle. The worktree is not changed during materialization.
 
 Workers never define a command. Workspace prompts state the output type,
 approved paths, and profile IDs, while treating every dependency artifact as
@@ -77,6 +87,8 @@ Before a mutating artifact becomes visible, validation rejects:
 - binary patches, duplicate sections, rename/copy metadata;
 - symlink and submodule Git modes;
 - patches that fail fixed `git apply --check --index --recount`.
+- edit manifests with unknown keys, ambiguous/missing anchors, no-op edits,
+  non-text files, or more than 64 edits.
 
 Structural failures become deterministic workspace gate violations and may use
 only the existing bounded local repair budget.

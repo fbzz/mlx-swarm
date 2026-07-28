@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import difflib
 import hashlib
 import json
 import os
@@ -327,6 +328,132 @@ def persist_artifact(
     }
     _atomic_json(artifact_dir / "manifest.json", manifest)
     return manifest
+
+
+def materialize_edit_manifest(
+    payload: str,
+    *,
+    task: TaskDef,
+    workspace: dict[str, Any] | None,
+) -> str:
+    """Convert exact, bounded search/replace edits into one unified Git diff."""
+    if task.worker_output_protocol != "edit-manifest-v1":
+        raise WorkspaceError(
+            "Task does not use the edit-manifest-v1 worker protocol."
+        )
+    if task.artifact_type not in MUTATING_ARTIFACT_TYPES:
+        raise WorkspaceError(
+            "Edit manifests are supported only for patch and test-suite tasks."
+        )
+    if workspace is None:
+        raise WorkspaceError("Edit manifests require a workspace snapshot.")
+    try:
+        manifest = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise WorkspaceError("Edit manifest must be exact JSON.") from exc
+    if not isinstance(manifest, dict) or set(manifest) != {"edits"}:
+        raise WorkspaceError(
+            "Edit manifest must contain exactly one top-level edits key."
+        )
+    edits = manifest["edits"]
+    if not isinstance(edits, list) or not 1 <= len(edits) <= 64:
+        raise WorkspaceError("Edit manifest must contain 1 to 64 edits.")
+
+    worktree = Path(workspace["worktreePath"]).resolve()
+    root = Path(workspace["workspaceRoot"]).resolve()
+    runtime_roots = [Path(workspace["worktreesRoot"]).resolve()]
+    originals: dict[str, str] = {}
+    modified: dict[str, str] = {}
+    order: list[str] = []
+    for index, raw_edit in enumerate(edits):
+        if not isinstance(raw_edit, dict) or set(raw_edit) != {
+            "path",
+            "old",
+            "new",
+        }:
+            raise WorkspaceError(
+                f"Edit {index + 1} must contain exactly path, old, and new."
+            )
+        path_value = raw_edit["path"]
+        old = raw_edit["old"]
+        new = raw_edit["new"]
+        if not all(isinstance(value, str) for value in (path_value, old, new)):
+            raise WorkspaceError(
+                f"Edit {index + 1} path, old, and new must be strings."
+            )
+        path = _safe_patch_path(path_value)
+        if not old:
+            raise WorkspaceError(f"Edit {index + 1} old text must not be empty.")
+        if old == new:
+            raise WorkspaceError(f"Edit {index + 1} is a no-op.")
+        if not any(_path_within(path, value) for value in task.allowed_paths):
+            raise WorkspaceError(
+                f"Edit path is outside task.allowedPaths: {path}"
+            )
+        if not any(
+            _path_within(path, value)
+            for value in workspace["writeRoots"]
+        ):
+            raise WorkspaceError(
+                f"Edit path is outside workspace.writeRoots: {path}"
+            )
+        original_path = (root / path).resolve(strict=False)
+        if any(
+            _is_within(original_path, runtime_root)
+            for runtime_root in runtime_roots
+        ):
+            raise WorkspaceError(
+                f"Edit path targets MLX Swarm runtime data: {path}"
+            )
+        candidate = worktree / path
+        _reject_symlink_components(worktree, candidate, path)
+        if not candidate.is_file():
+            raise WorkspaceError(f"Edit path is not a regular file: {path}")
+        if path not in originals:
+            try:
+                content = candidate.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError) as exc:
+                raise WorkspaceError(
+                    f"Edit path is not readable UTF-8 text: {path}"
+                ) from exc
+            if "\x00" in content:
+                raise WorkspaceError(f"Edit path contains binary data: {path}")
+            originals[path] = content
+            modified[path] = content
+            order.append(path)
+        occurrences = modified[path].count(old)
+        if occurrences != 1:
+            raise WorkspaceError(
+                f"Edit {index + 1} old text must match exactly once in "
+                f"{path}; found {occurrences}."
+            )
+        modified[path] = modified[path].replace(old, new, 1)
+
+    sections: list[str] = []
+    for path in order:
+        before = originals[path]
+        after = modified[path]
+        if before == after:
+            continue
+        unified = "".join(
+            difflib.unified_diff(
+                before.splitlines(keepends=True),
+                after.splitlines(keepends=True),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                n=3,
+                lineterm="\n",
+            )
+        )
+        if not unified:
+            raise WorkspaceError(f"Could not materialize edit diff: {path}")
+        sections.append(f"diff --git a/{path} b/{path}\n{unified}")
+    if not sections:
+        raise WorkspaceError("Edit manifest produced no workspace changes.")
+    diff = "".join(sections)
+    if not diff.endswith("\n"):
+        diff += "\n"
+    return diff
 
 
 def load_artifact(session_dir: Path, task_id: str) -> tuple[dict[str, Any], str]:

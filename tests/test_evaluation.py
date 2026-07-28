@@ -12,6 +12,7 @@ import pytest
 
 from mlx_swarm.contracts import (
     ContextSource,
+    OutputGate,
     Plan,
     TaskContext,
     TaskDef,
@@ -466,6 +467,18 @@ def _evaluation_plan(
         artifact_type="patch",
         allowed_paths=allowed_paths,
         verification=("bugsinpy-acceptance",),
+        worker_output_protocol="edit-manifest-v1",
+        generation_override={
+            "temperature": 0,
+            "top_p": 1,
+            "enable_thinking": False,
+            "max_tokens": 400,
+        },
+        gate=OutputGate(
+            output_format="json",
+            json_required_keys=("edits",),
+            json_allowed_keys=("edits",),
+        ),
     )
     return Plan(
         source=tmp_path / "plan.json",

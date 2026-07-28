@@ -214,6 +214,8 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     prompt = Path(created["planPrompt"]).read_text(encoding="utf-8")
     assert "schemaVersion must be 2" in prompt
     assert "artifactType" in prompt
+    assert "workerOutputProtocol" in prompt
+    assert "edit-manifest-v1" in prompt
     assert "verification may contain only these profile IDs: unit" in prompt
     assert "workers never receive or produce command arrays" in prompt
 
