@@ -28,11 +28,23 @@ Optional shared context injected into every task prompt. See [[Prompting]].
   "authoritativeSources": [
     { "label": "API Spec", "content": "def foo(): pass" }
   ],
+  "diagnosis": {
+    "observedFailure": "The required implementation is absent.",
+    "causalHypothesis": "The API function is still a stub.",
+    "validationMethod": "source-trace",
+    "validationEvidence": "The exact API Spec excerpt contains pass.",
+    "falsificationCondition": "Another authoritative path implements it.",
+    "evidenceSources": ["API Spec"]
+  },
   "constraints": ["Must be pure Python"],
   "rejectionCriteria": ["No external deps"],
   "outputProtocol": "Return complete code only."
 }
 ```
+
+`diagnosis` remains optional for externally-authored legacy plans, but is
+mandatory for every new [[Commander]] response. Its evidence-source labels must
+refer to exact entries in `authoritativeSources`.
 
 ## Tasks
 

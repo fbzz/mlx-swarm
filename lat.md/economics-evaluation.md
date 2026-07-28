@@ -51,7 +51,7 @@ most two repairs, and one final frontier review only after a completed local
 run. The evaluation harness can approve typed artifacts only inside disposable
 case workspaces; normal sessions retain their human approval boundary.
 
-Protocol version 3 constructs one deterministic task packet for both arms. It
+Protocol version 4 constructs one deterministic task packet for both arms. It
 contains the objective, failing evidence, fixed acceptance argv, frozen
 repository tree, and exact relevant test/traceback source context. Both arms
 receive the same production write roots. Every mutating plan task must preserve
@@ -64,7 +64,7 @@ source excerpt must be an exact contiguous substring, and a mutating task that
 names a file cannot rely on a rewritten or elided version of that file. This
 prevents source summaries from becoming non-applicable diff context.
 
-Protocol-v3 evaluation plans also require `edit-manifest-v1` mutating workers
+Protocol-v4 evaluation plans also require `edit-manifest-v1` mutating workers
 with deterministic sampling, thinking disabled, and at most 800 generation
 tokens. The worker returns bounded exact old/new anchors; the runtime derives
 the candidate unified diff and runs the same workspace checks. This keeps the
@@ -75,6 +75,28 @@ repair but hallucinated full-file diff syntax.
 Both candidate diffs are scored in fresh oracle workspaces using the same
 frozen verifier. A score of one means the clean executable oracle passed.
 Review verdicts are retained separately and never change this score.
+
+## Zero-frontier local replay gate
+
+After the paired calibration phase, measured work remains locked. The operator
+runs `eval replay-local EVALUATION_ID`, which reuses the accepted calibration
+plans and saved prompts without a frontier call.
+
+The replay copies the exact saved initial local prompts into fresh worktrees.
+Every prompt is SHA-256 checked before execution. The replay ledger records
+`frontierCalls: 0`; no planning or review adapter is reachable from this path.
+
+The default replay strategy is `reasoning-edit`: a local reasoning pass is
+stored as non-authoritative evidence, then a local editing pass emits the
+strict artifact. Direct mode remains available as a control. Every frozen
+calibration case must pass the independent oracle before the measured phase
+can start. Invalid verifier infrastructure, a failed patch, or any missing case
+keeps the measured phase locked.
+
+Verification profiles freeze the active Docker endpoint into `DOCKER_HOST`
+before the executor switches to its isolated runtime `HOME`. Docker context,
+daemon, pinned-container, or verifier-root failures classify the arm as
+`invalid`; candidate assertion/import/test failures remain score zero.
 
 ## Evidence and economics
 

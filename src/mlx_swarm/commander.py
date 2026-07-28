@@ -398,6 +398,21 @@ path in the label and copy one exact contiguous excerpt. Never summarize,
 rewrite, or silently remove lines inside a source excerpt.
 Do not ask local workers to call tools, execute code, or read arbitrary paths.
 
+CAUSAL DIAGNOSIS GATE
+- Before emitting the plan, inspect the supplied failure evidence and trace the
+  relevant source path during this same planning call.
+- context.diagnosis is mandatory. State the observed failure, one falsifiable
+  causal hypothesis, how it was validated, the concrete evidence, and the
+  condition that would prove it wrong.
+- validationMethod is source-trace or approved-verification. Never execute an
+  unapproved command. Use approved-verification only when its receipt/output is
+  available in the request; otherwise perform a source-trace.
+- evidenceSources must name authoritativeSources labels containing exact
+  excerpts that support the diagnosis. Do not claim validation from a source
+  excerpt that does not expose the relevant control or data flow.
+- If the causal hypothesis cannot be supported, do not substitute a speculative
+  repair. Continue inspection within the same call until it can be supported.
+
 PLAN LIMITS
 - schemaVersion must be {schema_version}.
 - planId and task IDs use lowercase letters, digits, dot, underscore, or hyphen.
@@ -417,6 +432,14 @@ TOP-LEVEL SHAPE
   "objective": "string",
   "context": {{
     "objective": "string",
+    "diagnosis": {{
+      "observedFailure": "string",
+      "causalHypothesis": "string",
+      "validationMethod": "source-trace|approved-verification",
+      "validationEvidence": "string",
+      "falsificationCondition": "string",
+      "evidenceSources": ["authoritative source label"]
+    }},
     "authoritativeSources": [{{"label": "string", "content": "string"}}],
     "constraints": ["string"],
     "rejectionCriteria": ["string"],
@@ -711,6 +734,11 @@ class CommanderStore:
                     raise CommanderError(
                         "Workspace-enabled commander requests require "
                         "plan schema version 2."
+                    )
+                if plan.context is None or plan.context.diagnosis is None:
+                    raise CommanderError(
+                        "Commander plans require an evidence-backed "
+                        "context.diagnosis produced during the planning call."
                     )
             finally:
                 if candidate.exists() and candidate.name.endswith(".tmp"):

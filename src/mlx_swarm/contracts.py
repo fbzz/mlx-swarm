@@ -32,6 +32,7 @@ _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ARTIFACT_TYPES = {"patch", "test-suite", "review", "report"}
 MUTATING_ARTIFACT_TYPES = {"patch", "test-suite"}
 WORKER_OUTPUT_PROTOCOLS = {"artifact", "edit-manifest-v1"}
+WORKER_MODES = {"direct", "reasoning-edit"}
 
 ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
     "implementation": {"temperature": 0.15, "top_p": 0.9, "max_tokens": 1800},
@@ -65,6 +66,12 @@ class BatchConfig:
 
 
 @dataclass(frozen=True)
+class WorkerConfig:
+    mode: str = "direct"
+    reasoning_max_tokens: int = 1200
+
+
+@dataclass(frozen=True)
 class VerificationProfile:
     identifier: str
     argv: tuple[str, ...]
@@ -89,6 +96,7 @@ class SwarmConfig:
     enable_thinking: bool = False
     seed: int = 20260727
     workspace: WorkspaceConfig | None = None
+    worker: WorkerConfig = field(default_factory=WorkerConfig)
     # Kept last so positional construction remains compatible with schema v1.
     schema_version: int = 1
 
@@ -99,7 +107,7 @@ def load_config(path: Path) -> SwarmConfig:
     schema_version = _integer(raw.get("schemaVersion", 1), "config.schemaVersion", 1, 100)
     if schema_version not in SUPPORTED_CONFIG_SCHEMA_VERSIONS:
         raise ContractError(f"Unsupported config schema version: {schema_version}")
-    optional = {"enableThinking", "seed"}
+    optional = {"enableThinking", "seed", "worker"}
     if schema_version == 2:
         optional.add("workspace")
     _exact_keys(
@@ -141,6 +149,31 @@ def load_config(path: Path) -> SwarmConfig:
         if schema_version == 2
         else None
     )
+    worker_raw = _object(raw.get("worker", {}), "config.worker")
+    _exact_keys(
+        worker_raw,
+        "config.worker",
+        set(),
+        {"mode", "reasoningMaxTokens"},
+    )
+    worker_mode = _text(
+        worker_raw.get("mode", "direct"),
+        "config.worker.mode",
+    )
+    if worker_mode not in WORKER_MODES:
+        raise ContractError(
+            "config.worker.mode must be one of: "
+            + ", ".join(sorted(WORKER_MODES))
+        )
+    worker = WorkerConfig(
+        mode=worker_mode,
+        reasoning_max_tokens=_integer(
+            worker_raw.get("reasoningMaxTokens", 1200),
+            "config.worker.reasoningMaxTokens",
+            64,
+            8192,
+        ),
+    )
     return SwarmConfig(
         schema_version=schema_version,
         source=path.resolve(),
@@ -150,6 +183,7 @@ def load_config(path: Path) -> SwarmConfig:
         enable_thinking=_boolean(raw.get("enableThinking", False), "config.enableThinking"),
         seed=_integer(raw.get("seed", 20260727), "config.seed", 0, 2**31 - 1),
         workspace=workspace,
+        worker=worker,
     )
 
 
@@ -206,12 +240,23 @@ class ContextSource:
 
 
 @dataclass(frozen=True)
+class PlanDiagnosis:
+    observed_failure: str
+    causal_hypothesis: str
+    validation_method: str
+    validation_evidence: str
+    falsification_condition: str
+    evidence_sources: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class TaskContext:
     objective: str
     authoritative_sources: tuple[ContextSource, ...] = ()
     constraints: tuple[str, ...] = ()
     rejection_criteria: tuple[str, ...] = ()
     output_protocol: str = "Return complete code only — no markdown fences, no prose, no preamble."
+    diagnosis: PlanDiagnosis | None = None
 
 
 @dataclass(frozen=True)
@@ -552,7 +597,18 @@ def _parse_workspace(raw: Any) -> WorkspaceConfig:
 
 def _parse_context(raw: Any, config: SwarmConfig) -> TaskContext:
     ctx = _object(raw, "context")
-    _exact_keys(ctx, "context", {"objective", "authoritativeSources", "constraints", "rejectionCriteria", "outputProtocol"})
+    _exact_keys(
+        ctx,
+        "context",
+        {
+            "objective",
+            "authoritativeSources",
+            "constraints",
+            "rejectionCriteria",
+            "outputProtocol",
+        },
+        {"diagnosis"},
+    )
     sources: list[ContextSource] = []
     for i, s_raw in enumerate(_list(ctx["authoritativeSources"], "context.authoritativeSources")):
         name = f"context.authoritativeSources[{i}]"
@@ -567,12 +623,76 @@ def _parse_context(raw: Any, config: SwarmConfig) -> TaskContext:
                 sha256=hashlib.sha256(content.encode()).hexdigest(),
             )
         )
+    diagnosis = None
+    if "diagnosis" in ctx:
+        raw_diagnosis = _object(ctx["diagnosis"], "context.diagnosis")
+        _exact_keys(
+            raw_diagnosis,
+            "context.diagnosis",
+            {
+                "observedFailure",
+                "causalHypothesis",
+                "validationMethod",
+                "validationEvidence",
+                "falsificationCondition",
+                "evidenceSources",
+            },
+        )
+        validation_method = _text(
+            raw_diagnosis["validationMethod"],
+            "context.diagnosis.validationMethod",
+        )
+        if validation_method not in {
+            "source-trace",
+            "approved-verification",
+        }:
+            raise ContractError(
+                "context.diagnosis.validationMethod must be one of: "
+                "approved-verification, source-trace"
+            )
+        evidence_sources = _unique_text_array(
+            raw_diagnosis["evidenceSources"],
+            "context.diagnosis.evidenceSources",
+        )
+        known_labels = {source.label for source in sources}
+        unknown_sources = set(evidence_sources) - known_labels
+        if unknown_sources:
+            raise ContractError(
+                "context.diagnosis.evidenceSources references unknown "
+                "authoritative source labels: "
+                + ", ".join(sorted(unknown_sources))
+            )
+        if not evidence_sources:
+            raise ContractError(
+                "context.diagnosis.evidenceSources must not be empty."
+            )
+        diagnosis = PlanDiagnosis(
+            observed_failure=_text(
+                raw_diagnosis["observedFailure"],
+                "context.diagnosis.observedFailure",
+            ),
+            causal_hypothesis=_text(
+                raw_diagnosis["causalHypothesis"],
+                "context.diagnosis.causalHypothesis",
+            ),
+            validation_method=validation_method,
+            validation_evidence=_text(
+                raw_diagnosis["validationEvidence"],
+                "context.diagnosis.validationEvidence",
+            ),
+            falsification_condition=_text(
+                raw_diagnosis["falsificationCondition"],
+                "context.diagnosis.falsificationCondition",
+            ),
+            evidence_sources=evidence_sources,
+        )
     return TaskContext(
         objective=_text(ctx["objective"], "context.objective"),
         authoritative_sources=tuple(sources),
         constraints=tuple(_text_array(ctx["constraints"], "context.constraints")),
         rejection_criteria=tuple(_text_array(ctx["rejectionCriteria"], "context.rejectionCriteria")),
         output_protocol=_text(ctx["outputProtocol"], "context.outputProtocol"),
+        diagnosis=diagnosis,
     )
 
 

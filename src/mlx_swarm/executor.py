@@ -6,13 +6,19 @@ from __future__ import annotations
 import fcntl
 import time
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable
 
 from .backend import BatchBackend, MLXBatchBackend
 from .contracts import Plan, SwarmConfig, TaskDef
 from .gates import evaluate_gate, gate_feedback_for_repair, normalize_output
-from .prompting import compose_prompt, compose_repair_prompt
+from .prompting import (
+    compose_editing_prompt,
+    compose_prompt,
+    compose_reasoning_prompt,
+    compose_repair_prompt,
+)
 from .session import Session, _run_id, _utc_now
 from .workspace import (
     WorkspaceError,
@@ -82,6 +88,20 @@ def _execute_plan_unlocked(
         retry_of=retry_of,
         launch_source=launch_source,
     )
+    worker_strategy = {
+        "mode": config.worker.mode,
+        "reasoningMaxTokens": config.worker.reasoning_max_tokens,
+    }
+    existing_strategy = session.state.get("workerStrategy")
+    if (
+        isinstance(existing_strategy, dict)
+        and existing_strategy != worker_strategy
+    ):
+        raise RuntimeError(
+            "Resume worker strategy differs from the snapshotted session."
+        )
+    session.state["workerStrategy"] = worker_strategy
+    session._save()
     if plan.workspace_execution and not session.state.get("workspaceExecution"):
         raise RuntimeError(
             "Schema-v2 workspace plans require a digest-approved worktree snapshot."
@@ -392,10 +412,7 @@ def _execute_initial_chunk(
     for task in tasks:
         session.update_task(task.id, status="running", batchIndex=level_idx)
 
-    prompts = [
-        compose_prompt(plan.context, task, session=session)
-        for task in tasks
-    ]
+    prompts = [_base_task_prompt(plan, session, task) for task in tasks]
     runnable_tasks, runnable_prompts = _filter_prompt_lengths(
         config,
         session,
@@ -405,18 +422,24 @@ def _execute_initial_chunk(
     )
 
     if runnable_tasks:
-        outputs, stats = _generate_or_fail(
+        outputs, stats, stages = _generate_with_worker_strategy(
+            config,
             session,
             backend,
             runnable_tasks,
             runnable_prompts,
+            phase="generation",
         )
         record["statistics"] = stats
+        if stages:
+            record["stages"] = stages
         for task, prompt, output in zip(
             runnable_tasks,
             runnable_prompts,
             outputs,
         ):
+            if session.get_task_status(task.id) == "failed":
+                continue
             _process_task_output(
                 session,
                 task,
@@ -517,11 +540,7 @@ def _repair_rejected_tasks(
 
         for task in candidates:
             task_state = session.state["tasks"][task.id]
-            original_prompt = compose_prompt(
-                plan.context,
-                task,
-                session=session,
-            )
+            original_prompt = _base_task_prompt(plan, session, task)
             feedback = gate_feedback_for_repair(task_state["gateResult"])
             previous_output = task_state["output"] or ""
             repair_prompt = compose_repair_prompt(
@@ -548,18 +567,24 @@ def _repair_rejected_tasks(
             repair_prompts.append(repair_prompt)
 
         if runnable_tasks:
-            outputs, stats = _generate_or_fail(
+            outputs, stats, stages = _generate_with_worker_strategy(
+                config,
                 session,
                 backend,
                 runnable_tasks,
                 repair_prompts,
+                phase=f"repair-{repair_round}",
             )
             repair_record["statistics"] = stats
+            if stages:
+                repair_record["stages"] = stages
             for task, prompt, output in zip(
                 runnable_tasks,
                 repair_prompts,
                 outputs,
             ):
+                if session.get_task_status(task.id) == "failed":
+                    continue
                 _process_task_output(
                     session,
                     task,
@@ -609,6 +634,18 @@ def _filter_prompt_lengths(
     return runnable_tasks, runnable_prompts
 
 
+def _base_task_prompt(
+    plan: Plan,
+    session: Session,
+    task: TaskDef,
+) -> str:
+    """Use an immutable evaluation prompt when present, otherwise compose it."""
+    replay = session.replay_prompt(task.id)
+    if replay is not None:
+        return replay
+    return compose_prompt(plan.context, task, session=session)
+
+
 def _generate_or_fail(
     session: Session,
     backend: BatchBackend,
@@ -627,6 +664,214 @@ def _generate_or_fail(
         for task in tasks:
             session.update_task(task.id, status="failed", error=message)
         return [], {"batchSize": len(tasks), "error": message}
+
+
+def _generate_with_worker_strategy(
+    config: SwarmConfig,
+    session: Session,
+    backend: BatchBackend,
+    tasks: list[TaskDef],
+    prompts: list[str],
+    *,
+    phase: str,
+) -> tuple[list[str], dict[str, Any], list[dict[str, Any]]]:
+    """Generate directly or with a local reasoner followed by a strict editor."""
+    if config.worker.mode == "direct":
+        outputs, statistics = _generate_or_fail(
+            session,
+            backend,
+            tasks,
+            prompts,
+        )
+        return outputs, statistics, []
+
+    reasoning_indices = [
+        index
+        for index, task in enumerate(tasks)
+        if task.mutates_workspace
+    ]
+    direct_indices = [
+        index
+        for index in range(len(tasks))
+        if index not in reasoning_indices
+    ]
+    outputs = [""] * len(tasks)
+    statistics_parts: list[dict[str, Any]] = []
+    stages: list[dict[str, Any]] = []
+
+    if direct_indices:
+        direct_tasks = [tasks[index] for index in direct_indices]
+        direct_prompts = [prompts[index] for index in direct_indices]
+        direct_outputs, direct_statistics = _generate_or_fail(
+            session,
+            backend,
+            direct_tasks,
+            direct_prompts,
+        )
+        for index, output in zip(direct_indices, direct_outputs):
+            outputs[index] = output
+        statistics_parts.append(direct_statistics)
+        stages.append({
+            "name": "direct",
+            "taskIds": [task.id for task in direct_tasks],
+            "statistics": direct_statistics,
+        })
+
+    if reasoning_indices:
+        reasoning_tasks: list[TaskDef] = []
+        reasoning_prompts: list[str] = []
+        for index in reasoning_indices:
+            task = tasks[index]
+            generation_override = dict(task.generation_override)
+            generation_override.update({
+                "temperature": 0.0,
+                "top_p": 1.0,
+                "enable_thinking": True,
+                "max_tokens": config.worker.reasoning_max_tokens,
+            })
+            reasoning_tasks.append(
+                replace(
+                    task,
+                    generation_override=generation_override,
+                )
+            )
+            reasoning_prompts.append(
+                compose_reasoning_prompt(prompts[index])
+            )
+        reasoning_outputs, reasoning_statistics = _generate_or_fail(
+            session,
+            backend,
+            reasoning_tasks,
+            reasoning_prompts,
+        )
+        statistics_parts.append(reasoning_statistics)
+        stages.append({
+            "name": "reasoning",
+            "taskIds": [task.id for task in reasoning_tasks],
+            "statistics": reasoning_statistics,
+        })
+
+        editor_tasks: list[TaskDef] = []
+        editor_prompts: list[str] = []
+        editor_indices: list[int] = []
+        for index, task, original_prompt, reasoning_prompt, reasoning in zip(
+            reasoning_indices,
+            reasoning_tasks,
+            (prompts[value] for value in reasoning_indices),
+            reasoning_prompts,
+            reasoning_outputs,
+        ):
+            session.record_reasoning_attempt(
+                task.id,
+                phase=f"{phase}-reasoning",
+                prompt=reasoning_prompt,
+                output=reasoning,
+                statistics=reasoning_statistics,
+            )
+            editor_prompt = compose_editing_prompt(
+                original_prompt,
+                reasoning,
+            )
+            if len(editor_prompt) > config.batch.max_prompt_characters:
+                session.update_task(
+                    task.id,
+                    status="failed",
+                    error=(
+                        "Reasoning-to-editing prompt exceeds "
+                        f"{config.batch.max_prompt_characters} characters."
+                    ),
+                )
+                continue
+            generation_override = dict(tasks[index].generation_override)
+            generation_override["enable_thinking"] = False
+            editor_tasks.append(
+                replace(
+                    tasks[index],
+                    generation_override=generation_override,
+                )
+            )
+            editor_prompts.append(editor_prompt)
+            editor_indices.append(index)
+
+        if editor_tasks:
+            editor_outputs, editor_statistics = _generate_or_fail(
+                session,
+                backend,
+                editor_tasks,
+                editor_prompts,
+            )
+            for index, output in zip(editor_indices, editor_outputs):
+                outputs[index] = output
+            statistics_parts.append(editor_statistics)
+            stages.append({
+                "name": "editing",
+                "taskIds": [task.id for task in editor_tasks],
+                "statistics": editor_statistics,
+            })
+
+    return outputs, _merge_generation_statistics(statistics_parts), stages
+
+
+def _merge_generation_statistics(
+    values: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Combine multiple local stages without mixing them with frontier usage."""
+    active = [
+        value
+        for value in values
+        if value and value.get("batchSize", 0)
+    ]
+    if not active:
+        errors = [
+            str(value["error"])
+            for value in values
+            if value.get("error")
+        ]
+        result: dict[str, Any] = {"batchSize": 0}
+        if errors:
+            result["error"] = "; ".join(errors)
+        return result
+    return {
+        "loadSeconds": sum(
+            float(value.get("loadSeconds", 0.0))
+            for value in active
+        ),
+        "modelReused": all(
+            bool(value.get("modelReused", False))
+            for value in active
+        ),
+        "generationSeconds": sum(
+            float(value.get("generationSeconds", 0.0))
+            for value in active
+        ),
+        "batchSize": sum(
+            int(value.get("batchSize", 0))
+            for value in active
+        ),
+        "promptTokens": sum(
+            int(value.get("promptTokens", 0))
+            for value in active
+        ),
+        "generationTokens": sum(
+            int(value.get("generationTokens", 0))
+            for value in active
+        ),
+        "generationCalls": sum(
+            int(value.get("generationCalls", 0))
+            or len(value.get("groups", []))
+            or 1
+            for value in active
+        ),
+        "peakMemoryGigabytes": max(
+            float(value.get("peakMemoryGigabytes", 0.0))
+            for value in active
+        ),
+        "groups": [
+            group
+            for value in active
+            for group in value.get("groups", [])
+        ],
+    }
 
 
 def _repair_limit(task: TaskDef, max_repair: int) -> int:

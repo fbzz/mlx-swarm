@@ -96,6 +96,26 @@ def test_load_config_rejects_non_boolean_thinking(tmp_path: Path) -> None:
         load_config(p)
 
 
+def test_load_config_reasoning_edit_worker_is_strict(tmp_path: Path) -> None:
+    config = load_config(_write_config(tmp_path, {
+        "worker": {
+            "mode": "reasoning-edit",
+            "reasoningMaxTokens": 768,
+        },
+    }))
+    assert config.worker.mode == "reasoning-edit"
+    assert config.worker.reasoning_max_tokens == 768
+
+    invalid = _write_config(tmp_path, {
+        "worker": {
+            "mode": "code-wizard",
+            "reasoningMaxTokens": 768,
+        },
+    })
+    with pytest.raises(ContractError, match="worker.mode"):
+        load_config(invalid)
+
+
 # ---------------------------------------------------------------------------
 # Plan
 # ---------------------------------------------------------------------------
@@ -246,6 +266,41 @@ def test_load_plan_rejects_invalid_gate_format(tmp_path: Path) -> None:
     })
     with pytest.raises(ContractError, match="must be one of"):
         load_plan(p, config)
+
+
+def test_plan_diagnosis_must_reference_authoritative_evidence(
+    tmp_path: Path,
+) -> None:
+    config = _config(tmp_path)
+    context = {
+        "objective": "Repair the observed failure",
+        "authoritativeSources": [{
+            "label": "trace",
+            "content": "src/value.py:1 failed",
+        }],
+        "constraints": [],
+        "rejectionCriteria": ["The failure remains."],
+        "outputProtocol": "Return the artifact.",
+        "diagnosis": {
+            "observedFailure": "The value assertion fails.",
+            "causalHypothesis": "src/value.py returns the wrong value.",
+            "validationMethod": "source-trace",
+            "validationEvidence": "The trace identifies src/value.py:1.",
+            "falsificationCondition": "The failing value comes from elsewhere.",
+            "evidenceSources": ["trace"],
+        },
+    }
+    plan = load_plan(
+        _write_plan(tmp_path, {"context": context}),
+        config,
+    )
+    assert plan.context is not None
+    assert plan.context.diagnosis is not None
+    assert plan.context.diagnosis.validation_method == "source-trace"
+
+    context["diagnosis"]["evidenceSources"] = ["invented"]
+    with pytest.raises(ContractError, match="authoritative source"):
+        load_plan(_write_plan(tmp_path, {"context": context}), config)
 
 
 def test_load_plan_task_output_protocol(tmp_path: Path) -> None:

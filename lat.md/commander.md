@@ -15,6 +15,13 @@ config directory. A deterministic prompt describes the objective, constraints,
 Plan schema, typed artifact fields, configured write roots/profile IDs, and
 local runtime limits.
 
+The planning response must include `context.diagnosis`. During that same
+frontier call, the commander traces the observed failure through exact
+authoritative source excerpts or an already-approved verification receipt,
+states one falsifiable causal hypothesis, records its concrete validation
+evidence, and names the condition that would disprove it. Unsupported
+speculation is rejected at import and seals that request as invalid.
+
 Planning transitions through `open → claimed → accepted|invalid`. Claim files
 use exclusive creation so concurrent skill or file-import invocations cannot
 both occupy the response slot. Claims and immutable response artifacts publish

@@ -55,6 +55,30 @@ def _write_workspace(tmp_path: Path) -> tuple[Path, Path]:
         "schemaVersion": 1,
         "planId": "cockpit-plan",
         "objective": "Build and verify a local result",
+        "context": {
+            "objective": "Build and verify a local result",
+            "authoritativeSources": [{
+                "label": "request",
+                "content": "Implement def result and verify it.",
+            }],
+            "constraints": [],
+            "rejectionCriteria": ["def result is absent."],
+            "outputProtocol": "Return the requested artifact.",
+            "diagnosis": {
+                "observedFailure": "The requested result is absent.",
+                "causalHypothesis": (
+                    "The implementation task has not produced def result."
+                ),
+                "validationMethod": "source-trace",
+                "validationEvidence": (
+                    "The request source explicitly requires def result."
+                ),
+                "falsificationCondition": (
+                    "An authoritative source already contains def result."
+                ),
+                "evidenceSources": ["request"],
+            },
+        },
         "tasks": [
             {
                 "id": "implement",

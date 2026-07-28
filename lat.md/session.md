@@ -82,6 +82,10 @@ Methods for reading and updating session state.
 - **record_generation_attempt**: Persist the exact prompt, raw output,
   normalized output, gate result, statistics, and digests in an immutable
   per-task attempt file.
+- **record_reasoning_attempt**: Persist a local reasoning stage separately and
+  mark it non-authoritative.
+- **replay_prompt**: Load a saved evaluation prompt only after verifying its
+  session-confined path and SHA-256.
 - **export_results**: Export completed artifacts and compact failure metadata.
 - **attach_commander**: Snapshot the planning receipt, digest approval, and optional revision lineage.
 - **attach_workspace**: Persist the immutable execution contract, Git lineage,

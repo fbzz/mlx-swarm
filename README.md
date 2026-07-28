@@ -257,9 +257,39 @@ mlx-swarm --config examples/swarm.json eval prepare \
 mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
   --phase pilot --profile benchmarks/bugsinpy-v1/profile.json --preliminary
 
+mlx-swarm --config LOCAL_MODEL_CONFIG eval replay-local EVALUATION_ID \
+  --worker-mode reasoning-edit --reasoning-max-tokens 1200
+
 mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
   --phase measured --profile benchmarks/bugsinpy-v1/profile.json --preliminary
 ```
+
+`eval replay-local` performs no frontier planning or review. It copies each
+calibration task's exact saved initial prompt into a fresh isolated worktree,
+checks the saved prompt digest, reuses the accepted plan, and evaluates the
+new local candidate with the independent oracle. The measured phase unlocks
+only when every frozen calibration case scores `1`. A failed or invalid replay
+keeps it locked, so a weak 4B worker cannot trigger six new frontier pairs.
+
+The default `direct` worker makes one local generation per attempt. For small
+models that identify a repair but struggle to emit an exact artifact, enable a
+fully local reasoning-to-editing pipeline:
+
+```json
+{
+  "worker": {
+    "mode": "reasoning-edit",
+    "reasoningMaxTokens": 1200
+  }
+}
+```
+
+Only mutating `patch` and `test-suite` tasks use two stages. The first pass
+reasons over the frozen artifact prompt; the second receives that reasoning as
+untrusted JSON-string-encoded evidence and must emit only the strict artifact.
+Both stages count toward `localUsage`; neither is a frontier call. The replay
+ledger records `frontierCalls: 0`, the model fingerprint, worker strategy,
+saved-plan digest, saved-prompt digest, oracle result, time, and local tokens.
 
 If preparation is interrupted before `evaluation.json` seals the suite, resume
 the same evaluation and reuse its completed case runtimes:
@@ -272,7 +302,8 @@ mlx-swarm --config examples/swarm.json eval prepare \
 
 Execution is one case at a time, pass@1, and resumable. The measured phase
 remains locked until the calibration pairs prove preparation, isolation,
-Codex usage capture, storage enforcement, and immutable result serialization.
+Codex usage capture, storage enforcement, immutable result serialization, and
+the separate zero-frontier local replay gate.
 Preparation also requires a clean MLX Swarm source checkout so the recorded
 commit identifies the exact harness. The metadata checkout, upstream project
 mirrors, and fixed-validation tree are removed before either model arm starts.
@@ -314,6 +345,11 @@ Raw evidence remains under `.swarm/evaluations/<evaluationId>/`; the public
 export omits prompts, raw model responses, fixed patches, and local absolute
 paths. A missing `turn.completed` usage event invalidates that measurement
 instead of becoming zero. Frontier and local tokens are never combined.
+The active Docker endpoint is resolved from the operator's Docker context and
+frozen into each sanitized verification profile because verifier processes use
+an isolated `HOME`. Docker/context/container failures are classified as
+`invalid` measurements; ordinary candidate test, import, and assertion
+failures remain executable score `0`.
 
 ### Use an existing plan
 
@@ -480,6 +516,10 @@ adds operator authority for paths and fixed verification commands:
   "model": {"repository": "mlx-community/Qwen3-4B-4bit"},
   "batch": {"maxWorkers": 4},
   "artifacts": ".swarm/runs",
+  "worker": {
+    "mode": "reasoning-edit",
+    "reasoningMaxTokens": 1200
+  },
   "workspace": {
     "writeRoots": ["src", "tests"],
     "verificationProfiles": {
@@ -602,6 +642,8 @@ mlx-swarm --config CONFIG commander claim-plan REQUEST_ID
 mlx-swarm --config CONFIG commander import-plan REQUEST_ID RESPONSE --claim-id ID
 mlx-swarm --config CONFIG commander claim-review SESSION_DIR
 mlx-swarm --config CONFIG commander import-review SESSION_DIR RESPONSE --claim-id ID
+mlx-swarm --config CONFIG eval replay-local EVALUATION_ID \
+  [--worker-mode direct|reasoning-edit] [--reasoning-max-tokens N]
 mlx-swarm skill install [--skills-dir DIR] [--force]
 ```
 
@@ -616,6 +658,7 @@ mlx-swarm skill install [--skills-dir DIR] [--force]
 | `workspace` | Preview execution authority, inspect lineage, or remove a terminal worktree |
 | `ui` | Launch the localhost-only operator cockpit |
 | `commander` | Create, inspect, claim, and import frontier planning/review handoffs |
+| `eval replay-local` | Reuse frozen calibration plans/prompts with zero frontier calls and enforce the measured-work gate |
 | `skill install` | Install the bundled `mlx-swarm-commander` Codex skill |
 
 `swarm` remains a deprecated CLI alias for the 0.2 release. The former

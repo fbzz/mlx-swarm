@@ -23,6 +23,7 @@ from .evaluation import (
     load_evaluation_profile,
     preliminary_evaluation_profile,
     profile_payload,
+    run_local_replay_calibration,
     update_readme_economics,
 )
 from .executor import execute_plan
@@ -295,6 +296,24 @@ def _parser() -> argparse.ArgumentParser:
         help="Inspect an evaluation ledger and paired progress.",
     )
     evaluation_status.add_argument("evaluation_id")
+    evaluation_replay = evaluation_sub.add_parser(
+        "replay-local",
+        help=(
+            "Replay frozen calibration plans locally with zero frontier calls "
+            "and update the measured-work promotion gate."
+        ),
+    )
+    evaluation_replay.add_argument("evaluation_id")
+    evaluation_replay.add_argument(
+        "--worker-mode",
+        choices=("direct", "reasoning-edit"),
+        default="reasoning-edit",
+    )
+    evaluation_replay.add_argument(
+        "--reasoning-max-tokens",
+        type=_positive_int,
+        default=1200,
+    )
     evaluation_report = evaluation_sub.add_parser(
         "report",
         help="Export sanitized evidence and update the README tables.",
@@ -375,6 +394,13 @@ def _non_negative_int(value: str) -> int:
     return parsed
 
 
+def _positive_int(value: str) -> int:
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be positive")
+    return parsed
+
+
 def _port(value: str) -> int:
     parsed = int(value)
     if not 0 <= parsed <= 65_535:
@@ -431,6 +457,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             if args.evaluation_command == "status":
                 _print(evaluation_store.detail(args.evaluation_id))
+                return 0
+            if args.evaluation_command == "replay-local":
+                _print(
+                    run_local_replay_calibration(
+                        config,
+                        evaluation_store,
+                        args.evaluation_id,
+                        worker_mode=args.worker_mode,
+                        reasoning_max_tokens=args.reasoning_max_tokens,
+                    )
+                )
                 return 0
             if args.evaluation_command == "run":
                 profile = load_evaluation_profile(args.profile)

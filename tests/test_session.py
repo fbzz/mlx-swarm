@@ -3,8 +3,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
+
+import pytest
 
 from mlx_swarm.contracts import Plan, TaskDef, load_config, load_plan
 from mlx_swarm.session import Session
@@ -83,6 +86,27 @@ def test_session_add_batch_record(tmp_path: Path) -> None:
     session.add_batch_record({"levelIndex": 0, "phase": "generation"})
     assert len(session.state["batches"]) == 1
     assert session.state["batches"][0]["levelIndex"] == 0
+
+
+def test_session_replay_prompt_is_digest_bound(tmp_path: Path) -> None:
+    session = Session(tmp_path / "s1", _make_plan())
+    prompt = "EXACT SAVED PROMPT"
+    path = session.dir / "prompt-replay" / "a.txt"
+    path.parent.mkdir()
+    path.write_text(prompt, encoding="utf-8")
+    session.state["promptReplay"] = {
+        "a": {
+            "path": "prompt-replay/a.txt",
+            "sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+        },
+    }
+    session._save()
+
+    assert session.replay_prompt("a") == prompt
+    assert session.replay_prompt("b") is None
+    path.write_text("tampered", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="digest changed"):
+        session.replay_prompt("a")
 
 
 def test_session_set_status(tmp_path: Path) -> None:

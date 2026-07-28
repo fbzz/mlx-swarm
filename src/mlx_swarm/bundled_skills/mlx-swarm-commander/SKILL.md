@@ -26,6 +26,12 @@ validation, approval, execution, or claim logic in ad hoc scripts.
    the operator-visible unified diff. `artifact` retains direct unified-diff
    output. Review and report tasks are non-mutating. Never invent or emit
    command arrays.
+   During this same planning call, inspect the supplied failure evidence and
+   trace the relevant source path. Populate the mandatory `context.diagnosis`
+   with one falsifiable causal hypothesis, its validation method and evidence,
+   the exact authoritative-source labels supporting it, and a falsification
+   condition. Use only `source-trace` or an already approved verification
+   receipt; never run an unapproved command or promote a speculative diagnosis.
 5. Save the response beside the prompt as
    `frontier-plan.response.json`.
 6. Import it once using the returned claim:

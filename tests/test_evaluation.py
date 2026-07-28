@@ -30,6 +30,7 @@ from mlx_swarm.evaluation import (
     build_task_packet,
     container_path,
     copy_fixed_test_support,
+    docker_connection_environment,
     docker_runtime_argv,
     empty_local_usage,
     ensure_pair_contract,
@@ -41,6 +42,7 @@ from mlx_swarm.evaluation import (
     inspect_container,
     is_dependency_or_project_install,
     load_evaluation_profile,
+    local_replay_promotion_gate,
     make_arm_result,
     mlx_swarm_source_revision,
     normalize_setup_parallelism,
@@ -1598,16 +1600,80 @@ def test_dependency_install_commands_are_not_worker_controlled(
     assert is_dependency_or_project_install(argv) is expected
 
 
-def test_oracle_dependency_failure_is_not_a_scored_bug() -> None:
+def test_only_verifier_infrastructure_failure_invalidates_measurement() -> None:
     assert oracle_infrastructure_failure({
         "evidence": (
-            "ImportError while importing test module\n"
-            "ModuleNotFoundError: No module named 'python_toolbox'"
+            "Failed to connect to the Docker API at unix:///missing.sock"
         ),
     }) is not None
     assert oracle_infrastructure_failure({
+        "evidence": "ModuleNotFoundError: No module named 'candidate_import'",
+    }) is None
+    assert oracle_infrastructure_failure({
         "evidence": "FAILED tests/test_bug.py::test_value - AssertionError",
     }) is None
+
+
+def test_docker_context_is_frozen_for_sanitized_verifier(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in ("DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    calls: list[list[str]] = []
+
+    def fake_run(
+        argv: list[str],
+        **_kwargs: Any,
+    ) -> CommandResult:
+        calls.append(argv)
+        return CommandResult(
+            argv=tuple(argv),
+            returncode=0,
+            stdout=json.dumps([{
+                "Endpoints": {
+                    "docker": {
+                        "Host": "unix:///operator/context/docker.sock",
+                    },
+                },
+            }]),
+            stderr="",
+            elapsed_seconds=0.01,
+        )
+
+    monkeypatch.setattr("mlx_swarm.evaluation.run_command", fake_run)
+    assert docker_connection_environment(tmp_path) == {
+        "DOCKER_HOST": "unix:///operator/context/docker.sock",
+    }
+    assert calls == [["docker", "context", "inspect"]]
+
+
+def test_local_replay_gate_requires_every_calibration_case() -> None:
+    required = ["black-11", "fastapi-6"]
+    one_pass = [{
+        "caseId": "black-11",
+        "status": "completed",
+        "score": 1,
+    }, {
+        "caseId": "fastapi-6",
+        "status": "failed",
+        "score": 0,
+    }]
+    assert (
+        local_replay_promotion_gate(required, one_pass)["measuredEligible"]
+        is False
+    )
+    both_pass = [
+        {
+            "caseId": case_id,
+            "status": "completed",
+            "score": 1,
+        }
+        for case_id in required
+    ]
+    gate = local_replay_promotion_gate(required, both_pass)
+    assert gate["status"] == "passed"
+    assert gate["passedCases"] == required
 
 
 def test_evaluation_write_roots_exclude_tests_docs_dependencies_and_hidden(

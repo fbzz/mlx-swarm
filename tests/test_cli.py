@@ -33,6 +33,28 @@ def _write_plan(tmp_path: Path) -> Path:
         "schemaVersion": 1,
         "planId": "cli-test",
         "objective": "Test",
+        "context": {
+            "objective": "Test",
+            "authoritativeSources": [{
+                "label": "request",
+                "content": "The requested greeting is hello.",
+            }],
+            "constraints": [],
+            "rejectionCriteria": ["The greeting is missing."],
+            "outputProtocol": "Return the greeting.",
+            "diagnosis": {
+                "observedFailure": "No greeting has been produced.",
+                "causalHypothesis": "The greeting task has not run.",
+                "validationMethod": "source-trace",
+                "validationEvidence": (
+                    "The request source requires a hello greeting."
+                ),
+                "falsificationCondition": (
+                    "A greeting is already present in the task output."
+                ),
+                "evidenceSources": ["request"],
+            },
+        },
         "tasks": [{"id": "t1", "role": "general", "prompt": "Say hello"}],
     }
     p = tmp_path / "plan.json"
@@ -555,3 +577,42 @@ def test_cli_evaluation_prepare_can_resume_unsealed_study(
         profile,
         resume_evaluation_id="interrupted-study",
     )
+
+
+def test_cli_evaluation_local_replay_selects_local_worker_strategy(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    store = MagicMock()
+    replay = {
+        "evaluationId": "study-1",
+        "frontierCalls": 0,
+        "promotionGate": {"status": "failed"},
+    }
+    with (
+        patch("mlx_swarm.cli.EvaluationStore", return_value=store),
+        patch(
+            "mlx_swarm.cli.run_local_replay_calibration",
+            return_value=replay,
+        ) as run_replay,
+    ):
+        assert main([
+            "--config",
+            str(config_path),
+            "eval",
+            "replay-local",
+            "study-1",
+            "--worker-mode",
+            "reasoning-edit",
+            "--reasoning-max-tokens",
+            "768",
+        ]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["frontierCalls"] == 0
+    run_replay.assert_called_once()
+    assert run_replay.call_args.kwargs == {
+        "worker_mode": "reasoning-edit",
+        "reasoning_max_tokens": 768,
+    }

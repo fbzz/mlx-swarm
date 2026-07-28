@@ -253,6 +253,12 @@ narrowed local plan authority, reject rewritten workspace source excerpts, and
 mark historical pre-protocol reports invalid rather than interpreting their
 score gap as worker quality.
 
+Protocol-v4 tests freeze the active Docker endpoint, separate verifier
+infrastructure invalidation from candidate test failures, require all frozen
+local calibration replays before measured work, preserve exact saved prompt
+digests, and verify that reasoning-to-editing stages remain local and separately
+auditable.
+
 ### Inspect
 Inspect command returns session summary.
 
@@ -286,6 +292,8 @@ can be released only before a raw response is recorded.
 ### Strict plan and review imports
 One optional outer JSON fence is accepted; malformed contracts persist errors
 and seal their phase without an automatic frontier retry.
+Commander plans without a same-call evidence-backed causal diagnosis are
+rejected and sealed.
 
 ### Digest approval
 Canonical plan SHA-256 mismatch prevents launch.

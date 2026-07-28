@@ -54,6 +54,22 @@ def _plan(plan_id: str = "commander-plan") -> dict:
             "constraints": ["Stay local."],
             "rejectionCriteria": ["Missing RESULT."],
             "outputProtocol": "Return only the artifact.",
+            "diagnosis": {
+                "observedFailure": "The requested RESULT artifact is absent.",
+                "causalHypothesis": (
+                    "No bounded implementation task has produced RESULT."
+                ),
+                "validationMethod": "source-trace",
+                "validationEvidence": (
+                    "The authoritative contract explicitly requires RESULT "
+                    "and the task output is the only production surface."
+                ),
+                "falsificationCondition": (
+                    "A source path outside the task output already produces "
+                    "the required RESULT."
+                ),
+                "evidenceSources": ["contract"],
+            },
         },
         "tasks": [
             {
@@ -131,6 +147,32 @@ def _plan_v2() -> dict:
         "schemaVersion": 2,
         "planId": "workspace-command",
         "objective": "Change the approved value",
+        "context": {
+            "objective": "Change the approved value",
+            "authoritativeSources": [{
+                "label": "workspace-source",
+                "content": "src/value.py currently contains VALUE = 1.",
+            }],
+            "constraints": ["Modify only src/value.py."],
+            "rejectionCriteria": ["VALUE remains 1."],
+            "outputProtocol": "Return an edit manifest.",
+            "diagnosis": {
+                "observedFailure": "The approved value is still 1.",
+                "causalHypothesis": (
+                    "src/value.py defines the stale value directly."
+                ),
+                "validationMethod": "source-trace",
+                "validationEvidence": (
+                    "The authoritative source shows VALUE = 1 in "
+                    "src/value.py."
+                ),
+                "falsificationCondition": (
+                    "The runtime value is supplied by another authoritative "
+                    "source."
+                ),
+                "evidenceSources": ["workspace-source"],
+            },
+        },
         "tasks": [{
             "id": "change",
             "role": "implementation",
@@ -198,6 +240,28 @@ def test_request_prompt_is_fixed_to_config_workspace(tmp_path: Path) -> None:
 
     with pytest.raises(CommanderError, match="already exists"):
         store.create_request("again", request_id="request-fixed")
+
+
+def test_commander_rejects_unvalidated_causal_hypothesis(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    created = store.create_request("Produce a bounded artifact")
+    request_id = created["request"]["requestId"]
+    claim = store.claim_plan(request_id)
+    response = tmp_path / "missing-diagnosis.json"
+    plan = _plan()
+    del plan["context"]["diagnosis"]
+    response.write_text(json.dumps(plan), encoding="utf-8")
+
+    with pytest.raises(CommanderError, match="context.diagnosis"):
+        store.import_plan(
+            request_id,
+            response,
+            claim_id=claim["claimId"],
+        )
+    detail = store.request_detail(request_id)
+    assert detail["request"]["status"] == "plan_invalid"
 
 
 def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(

@@ -13,10 +13,13 @@ The executor in [[src/mlx_swarm/executor.py#execute_plan]] orchestrates the full
    b. Filter out already-completed tasks and chunk the rest by `maxWorkers`.
    c. Mark runnable tasks as "running".
    d. Compose prompts using [[Prompting|compose_prompt]] with successful dependency outputs.
-   e. Validate prompt lengths against `maxPromptCharacters`.
-   f. Call the persistent [[Backend]].
-   g. Process outputs: evaluate [[Gates]], normalize, update session.
-   h. **Repair loop**: For rejected tasks within both task and CLI repair caps, compose repair prompts with [[Gates#Gate Feedback]].
+   e. For a digest-bound evaluation replay, substitute the exact saved initial
+      prompt instead of recomposing it.
+   f. Validate prompt lengths against `maxPromptCharacters`.
+   g. Call the persistent [[Backend]] directly, or run a local reasoning pass
+      followed by a strict editing pass for mutating tasks when configured.
+   h. Process outputs: evaluate [[Gates]], normalize, update session.
+   i. **Repair loop**: For rejected tasks within both task and CLI repair caps, compose repair prompts with [[Gates#Gate Feedback]].
 4. **Final status**: "completed" if all pass, "failed" if execution failed, "partial" otherwise.
 5. **Frontier handoff**: Persist one compact `frontier-result.json` for final frontier review.
 
@@ -53,6 +56,19 @@ After initial generation, rejected tasks with remaining task-level and global `-
 5. Repeat until all pass or budget exhausted.
 
 See [[src/mlx_swarm/executor.py#_process_task_output]].
+
+## Reasoning to editing
+
+With `worker.mode=reasoning-edit`, patch and test-suite generations use two
+local stages that remain entirely inside local usage.
+
+The reasoning task enables the model's thinking template with a bounded local
+token allowance. Its output is saved in an immutable
+`reasoning-attempts` record and is explicitly non-authoritative. The editing
+task disables thinking, embeds the reasoning as JSON-string-encoded untrusted
+evidence, and requires only the task's strict artifact. Stage statistics are
+aggregated once into local tokens, generation calls, timing, and model loads.
+Review/report tasks retain the direct path.
 
 ## Output Processing
 

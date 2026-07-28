@@ -10,14 +10,16 @@ When a plan includes a [[Plans|context object]], the prompt is assembled from th
 
 1. **AUTHORITY**: Warning that the contract is authoritative and worker output is untrusted.
 2. **OBJECTIVE**: The context objective.
-3. **AUTHORITATIVE SOURCE**: One section per source, with label, origin, and sha256.
-4. **GLOBAL CONSTRAINTS**: Numbered list of constraints.
-5. **AUTOMATIC REJECTION CONDITIONS**: Numbered list of rejection criteria.
-6. **DEPENDENCY OUTPUT**: For each `dependsOn` task, the normalized output of that task (if completed).
-7. **WORKER IDENTITY**: The task id and role.
-8. **ROLE-SPECIFIC TASK**: The task's prompt text.
-9. **DETERMINISTIC VALIDATION**: Exact gate checks the worker must satisfy.
-10. **OUTPUT PROTOCOL**: Task-specific instructions, falling back to shared context.
+3. **VALIDATED COMMANDER DIAGNOSIS**: The evidence-backed observed failure,
+   falsifiable causal hypothesis, validation, and evidence-source labels.
+4. **AUTHORITATIVE SOURCE**: One section per source, with label, origin, and sha256.
+5. **GLOBAL CONSTRAINTS**: Numbered list of constraints.
+6. **AUTOMATIC REJECTION CONDITIONS**: Numbered list of rejection criteria.
+7. **DEPENDENCY OUTPUT**: For each `dependsOn` task, the normalized output of that task (if completed).
+8. **WORKER IDENTITY**: The task id and role.
+9. **ROLE-SPECIFIC TASK**: The task's prompt text.
+10. **DETERMINISTIC VALIDATION**: Exact gate checks the worker must satisfy.
+11. **OUTPUT PROTOCOL**: Task-specific instructions, falling back to shared context.
 
 ## Without Context
 
@@ -50,3 +52,13 @@ repair feedback explicitly reports that repetition and requires a materially
 different artifact.
 
 See [[src/mlx_swarm/prompting.py#compose_repair_prompt]].
+
+## Local reasoning and editing prompts
+
+`compose_reasoning_prompt` requests diagnosis and implementation reasoning but
+forbids an artifact. `compose_editing_prompt` then requests only the artifact.
+
+The editing prompt appends local reasoning as one JSON string labeled
+non-authoritative, disables prose/XML/Markdown output, and restores the
+original artifact protocol. Evaluation prompt replay uses the saved original
+prompt byte-for-byte as the base for both stages.

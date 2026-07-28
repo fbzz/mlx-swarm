@@ -31,11 +31,18 @@ from .commander import (
     CommanderStore,
     canonical_json_sha256,
 )
-from .contracts import Plan, SwarmConfig, load_config, load_plan
+from .contracts import (
+    Plan,
+    SwarmConfig,
+    WorkerConfig,
+    load_config,
+    load_plan,
+)
 from .session import Session, _run_id
 from .workspace import (
     WorkspaceError,
     discover_git_root,
+    execution_preview,
     final_workspace_diff,
     load_artifact,
     load_workspace_snapshot,
@@ -48,7 +55,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 1
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 3
+FAIR_EVALUATION_PROTOCOL_VERSION = 4
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -167,6 +174,7 @@ class CommandResult:
     stderr: str
     elapsed_seconds: float
     timed_out: bool = False
+    infrastructure_error: str | None = None
 
 
 def utc_now() -> str:
@@ -1376,6 +1384,9 @@ def apply_protocol_audit(
             "exact contiguous workspace source excerpts",
             "Git recount support for semantically valid diff hunks",
             "immutable prompt and output evidence for every local attempt",
+            "Docker context is frozen into verifier profiles",
+            "verifier infrastructure failures are invalid measurements",
+            "measured work requires a two-case zero-frontier local replay gate",
         ],
         "issues": (
             []
@@ -2090,14 +2101,33 @@ class EvaluationStore:
             )
         if phase == "pilot":
             # Calibration unlocks measured work only when evidence itself is
-            # valid. Pilot model scores never gate the measured phase.
+            # valid. A separate local replay gate must then prove every local
+            # worker case before any measured frontier spend is allowed.
             state["pilotStatus"] = "completed"
-            state["measuredStatus"] = "pending"
-            state["status"] = "pilot_completed"
+            state["measuredStatus"] = "locked_local_replay"
+            state["status"] = "pilot_completed_local_replay_required"
         else:
             if state.get("pilotStatus") != "completed":
                 raise EvaluationError(
                     "Measured phase remains locked until pilot completion."
+                )
+            environment = _read_json(evaluation_dir / "environment.json")
+            if (
+                environment.get("evaluationProtocolVersion")
+                != FAIR_EVALUATION_PROTOCOL_VERSION
+            ):
+                raise EvaluationError(
+                    "Measured phase remains locked because the frozen study "
+                    "predates the current evaluation protocol."
+                )
+            replay_gate = state.get("localReplayGate")
+            if (
+                not isinstance(replay_gate, dict)
+                or replay_gate.get("status") != "passed"
+            ):
+                raise EvaluationError(
+                    "Measured phase remains locked until the local replay "
+                    "calibration gate passes."
                 )
             state["measuredStatus"] = "completed"
             state["status"] = "completed"
@@ -2339,10 +2369,28 @@ class EvaluationRunner:
                 "Benchmark container differs from the prepared environment."
             )
         state = detail["evaluation"]
-        if phase == "measured" and state.get("pilotStatus") != "completed":
-            raise EvaluationError(
-                "Measured work is locked until the six-case pilot completes."
-            )
+        if phase == "measured":
+            if state.get("pilotStatus") != "completed":
+                raise EvaluationError(
+                    "Measured work is locked until calibration completes."
+                )
+            if (
+                detail["environment"].get("evaluationProtocolVersion")
+                != FAIR_EVALUATION_PROTOCOL_VERSION
+            ):
+                raise EvaluationError(
+                    "Measured work is locked because the frozen study predates "
+                    "the current evaluation protocol."
+                )
+            replay_gate = state.get("localReplayGate")
+            if (
+                not isinstance(replay_gate, dict)
+                or replay_gate.get("status") != "passed"
+            ):
+                raise EvaluationError(
+                    "Measured work is locked until every frozen local "
+                    "calibration replay passes its independent oracle."
+                )
         evaluation_dir = self.store._dir(evaluation_id)
         suite = validate_suite(detail["suite"], self.profile)
         existing = {
@@ -2940,15 +2988,19 @@ class EvaluationRunner:
             elapsed >= self.profile.frontier.arm_timeout_seconds
             or oracle.get("timedOut")
         )
+        infrastructure_error = oracle_infrastructure_failure(oracle)
         completed = bool(
             diff
             and structural_error is None
             and not codex_result.timed_out
             and codex_result.returncode == 0
             and not deadline_expired
+            and infrastructure_error is None
         )
         status = (
-            "timed_out"
+            "invalid"
+            if infrastructure_error is not None
+            else "timed_out"
             if codex_result.timed_out or deadline_expired
             else "completed"
             if completed
@@ -3201,6 +3253,37 @@ class EvaluationRunner:
             repository,
             allowed_paths=approved_write_roots,
         )
+        if local_result.infrastructure_error is not None:
+            return make_arm_result(
+                case=case,
+                arm="mlx-swarm",
+                status="invalid",
+                completed=False,
+                score=0,
+                elapsed_seconds=time.perf_counter() - started,
+                phase_seconds={
+                    "planning": plan_codex.elapsed_seconds,
+                    "local": local_seconds,
+                    "review": 0.0,
+                    "oracle": 0.0,
+                },
+                frontier_usage=usage_with_phases([
+                    ("planning", plan_usage),
+                ]),
+                local_usage=local_usage,
+                repairs=repairs,
+                model_loads=int(local_usage.get("modelLoads", 0)),
+                review_verdict=None,
+                patch=patch,
+                oracle={
+                    "passed": False,
+                    "exitCode": None,
+                    "evidence": (
+                        "Verifier infrastructure failed: "
+                        + local_result.infrastructure_error
+                    ),
+                },
+            )
         review_usage = None
         review_verdict = None
         review_seconds = 0.0
@@ -3285,11 +3368,16 @@ class EvaluationRunner:
             and not local_result.timed_out
             and not oracle.get("timedOut")
         )
+        infrastructure_error = oracle_infrastructure_failure(oracle)
+        if infrastructure_error is not None:
+            completed = False
         deadline_expired = (
             time.perf_counter() >= deadline or bool(oracle.get("timedOut"))
         )
         status = (
-            "timed_out"
+            "invalid"
+            if infrastructure_error is not None
+            else "timed_out"
             if local_result.timed_out or review_timed_out or deadline_expired
             else "completed"
             if completed
@@ -3346,11 +3434,445 @@ class EvaluationRunner:
                 "Independent oracle could not apply candidate patch: "
                 + (apply_result.stderr or apply_result.stdout)
             )
-        return run_case_verifier(
+        try:
+            return run_case_verifier(
+                Path(runtime["verifierManifest"]),
+                repository,
+                timeout_seconds=max(0.0, deadline - time.monotonic()),
+            )
+        except EvaluationError as exc:
+            return {
+                "passed": False,
+                "exitCode": None,
+                "evidence": f"INFRASTRUCTURE_ERROR: {exc}",
+                "elapsedSeconds": 0.0,
+                "timedOut": False,
+            }
+
+
+def run_local_replay_calibration(
+    config: SwarmConfig,
+    store: EvaluationStore,
+    evaluation_id: str,
+    *,
+    worker_mode: str,
+    reasoning_max_tokens: int,
+) -> dict[str, Any]:
+    """Replay frozen pilot plans locally without invoking a frontier adapter."""
+    if worker_mode not in {"direct", "reasoning-edit"}:
+        raise EvaluationError("Unsupported local replay worker mode.")
+    if not 64 <= reasoning_max_tokens <= 8192:
+        raise EvaluationError(
+            "Local replay reasoningMaxTokens must be between 64 and 8192."
+        )
+    detail = store.detail(evaluation_id)
+    state = detail["evaluation"]
+    if state.get("pilotStatus") != "completed":
+        raise EvaluationError(
+            "Local replay requires a completed frozen calibration phase."
+        )
+    evaluation_dir = store._dir(evaluation_id)
+    profile = load_evaluation_profile(
+        evaluation_dir / "profile.snapshot.json"
+    )
+    suite = validate_suite(detail["suite"], profile)
+    pilot_cases = [
+        case for case in suite["cases"] if case["phase"] == "pilot"
+    ]
+    if not pilot_cases:
+        raise EvaluationError("Frozen evaluation has no calibration cases.")
+    source_revision = mlx_swarm_source_revision()
+    if source_revision["dirty"]:
+        raise EvaluationError(
+            "Local replay requires a clean MLX Swarm source revision."
+        )
+
+    replay_id = _run_id().lower()
+    replay_root = evaluation_dir / "local-replays" / replay_id
+    replay_root.mkdir(parents=True, exist_ok=False)
+    replay_config_source = replace(
+        config,
+        worker=WorkerConfig(
+            mode=worker_mode,
+            reasoning_max_tokens=reasoning_max_tokens,
+        ),
+    )
+    runner = EvaluationRunner(replay_config_source, store, profile)
+    results: list[dict[str, Any]] = []
+
+    for case in pilot_cases:
+        case_id = case["caseId"]
+        case_root = evaluation_dir / "cases" / case_id
+        runtime = _read_json(case_root / "runtime.json")
+        source_plan = (
+            case_root
+            / "arms"
+            / "mlx-swarm"
+            / "artifacts"
+            / "_commander"
+            / "requests"
+            / f"eval-{case_id}"
+            / "plan.validated.json"
+        )
+        if not source_plan.is_file():
+            raise EvaluationError(
+                f"Frozen commander plan is missing for {case_id}."
+            )
+        case_replay_root = replay_root / case_id
+        repository = fresh_arm_repository(
+            Path(runtime["baseSnapshot"]),
+            case_replay_root / "repo",
+        )
+        approved_write_roots = evaluation_write_roots(repository)
+        config_path = repository / ".mlx-swarm-local-replay.json"
+        artifacts_root = case_replay_root / "artifacts"
+        write_evaluation_config(
+            replay_config_source,
+            config_path,
+            artifacts_root,
             Path(runtime["verifierManifest"]),
             repository,
-            timeout_seconds=max(0.0, deadline - time.monotonic()),
+            write_roots=approved_write_roots,
         )
+        replay_config = load_config(config_path)
+        plan = load_plan(source_plan, replay_config)
+        validate_evaluation_plan(
+            plan,
+            repository,
+            approved_write_roots,
+        )
+        _atomic_json(case_replay_root / "plan.snapshot.json", plan.raw)
+
+        source_prompts = frozen_prompt_evidence(case_root)
+        required_prompt_tasks = sorted(task.id for task in plan.tasks)
+        if sorted(item["taskId"] for item in source_prompts) != (
+            required_prompt_tasks
+        ):
+            raise EvaluationError(
+                f"Frozen initial prompt evidence is incomplete for {case_id}."
+            )
+        preview = execution_preview(replay_config, plan)
+        run_id = _run_id()
+        session_dir = artifacts_root / plan.plan_id / run_id
+        snapshot = prepare_worktree(
+            replay_config,
+            plan,
+            session_id=run_id,
+            expected_execution_digest=preview["executionDigest"],
+        )
+        session = Session(
+            session_dir,
+            plan,
+            session_id=run_id,
+            launch_source="evaluation-local-replay",
+        )
+        session.set_sources(
+            config_source=config_path,
+            plan_source=source_plan,
+        )
+        session.state["maxRepair"] = profile.max_repair
+        session.state["localReplay"] = {
+            "replayId": replay_id,
+            "sourceEvaluationId": evaluation_id,
+            "sourcePlan": str(source_plan),
+            "sourcePromptEvidence": source_prompts,
+            "frontierCalls": 0,
+        }
+        install_frozen_prompt_replay(session, source_prompts)
+        session.attach_workspace(
+            snapshot,
+            execution_approval={
+                "schemaVersion": 1,
+                "planSha256": canonical_json_sha256(plan.raw),
+                "executionDigest": preview["executionDigest"],
+                "workspaceRoot": preview["workspaceRoot"],
+                "baseSha": preview["baseSha"],
+                "approvedAt": utc_now(),
+                "source": "evaluation-local-replay",
+            },
+        )
+
+        started = time.perf_counter()
+        local_result = run_swarm_with_synthetic_operator(
+            replay_config,
+            source_plan,
+            session_dir,
+            profile.max_repair,
+            timeout=profile.frontier.local_timeout_seconds,
+        )
+        elapsed = time.perf_counter() - started
+        session = Session.load(session_dir, replay_config)
+        usage = session.local_usage()
+        workspace = load_workspace_snapshot(session_dir)
+        diff, _ = final_workspace_diff(workspace)
+        structural_error = validate_candidate_diff(
+            diff,
+            case,
+            repository,
+            allowed_paths=approved_write_roots,
+        )
+        if local_result.infrastructure_error is not None:
+            status = "invalid"
+            oracle = {
+                "passed": False,
+                "exitCode": None,
+                "evidence": local_result.infrastructure_error,
+            }
+        elif structural_error is None and diff:
+            oracle = runner._score_candidate(
+                case,
+                runtime,
+                diff,
+                case_replay_root,
+                timeout_seconds=max(
+                    1,
+                    profile.frontier.local_timeout_seconds - elapsed,
+                ),
+            )
+            infrastructure = oracle_infrastructure_failure(oracle)
+            status = (
+                "invalid"
+                if infrastructure is not None
+                else "completed"
+                if oracle["passed"]
+                else "failed"
+            )
+            if infrastructure is not None:
+                oracle["evidence"] = infrastructure
+        else:
+            status = "failed"
+            oracle = {
+                "passed": False,
+                "exitCode": None,
+                "evidence": (
+                    replay_failure_evidence(session)
+                    or structural_error
+                    or "No candidate patch produced."
+                ),
+            }
+        result = {
+            "schemaVersion": 1,
+            "replayId": replay_id,
+            "evaluationId": evaluation_id,
+            "caseId": case_id,
+            "status": status,
+            "score": 1 if oracle["passed"] else 0,
+            "workerMode": worker_mode,
+            "reasoningMaxTokens": reasoning_max_tokens,
+            "frontierCalls": 0,
+            "sourcePlan": str(source_plan),
+            "sourcePlanSha256": canonical_json_sha256(plan.raw),
+            "sourcePromptEvidence": source_prompts,
+            "sessionDir": str(session_dir),
+            "elapsedSeconds": elapsed,
+            "localUsage": usage,
+            "taskEvidence": {
+                task_id: {
+                    "status": task_state.get("status"),
+                    "error": task_state.get("error"),
+                    "gateResult": task_state.get("gateResult"),
+                    "artifact": task_state.get("artifact"),
+                    "verificationResults": task_state.get(
+                        "verificationResults",
+                        [],
+                    ),
+                    "generationAttempts": task_state.get(
+                        "generationAttempts",
+                        [],
+                    ),
+                    "reasoningAttempts": task_state.get(
+                        "reasoningAttempts",
+                        [],
+                    ),
+                }
+                for task_id, task_state in session.state.get(
+                    "tasks",
+                    {},
+                ).items()
+            },
+            "oracle": {
+                "passed": bool(oracle["passed"]),
+                "exitCode": oracle.get("exitCode"),
+                "evidence": str(oracle.get("evidence", ""))[:MAX_LOG_BYTES],
+            },
+            "recordedAt": utc_now(),
+        }
+        _exclusive_json(case_replay_root / "result.json", result)
+        results.append(result)
+
+    required_cases = sorted(case["caseId"] for case in pilot_cases)
+    promotion_gate = local_replay_promotion_gate(
+        required_cases,
+        results,
+    )
+    passed_cases = promotion_gate["passedCases"]
+    gate_passed = promotion_gate["status"] == "passed"
+    replay = {
+        "schemaVersion": 1,
+        "replayId": replay_id,
+        "evaluationId": evaluation_id,
+        "workerMode": worker_mode,
+        "reasoningMaxTokens": reasoning_max_tokens,
+        "frontierCalls": 0,
+        "mlxSwarmCommit": source_revision["commit"],
+        "model": {
+            "repository": replay_config_source.model.repository,
+            "revision": replay_config_source.model.revision,
+            "localPath": replay_config_source.model.local_path,
+        },
+        "requiredCases": required_cases,
+        "passedCases": passed_cases,
+        "results": results,
+        "promotionGate": promotion_gate,
+        "recordedAt": utc_now(),
+    }
+    _exclusive_json(replay_root / "replay.json", replay)
+
+    state_path = evaluation_dir / "evaluation.json"
+    current_state = _read_json(state_path)
+    current_state["localReplayGate"] = {
+        "status": "passed" if gate_passed else "failed",
+        "replayId": replay_id,
+        "workerMode": worker_mode,
+        "requiredCases": required_cases,
+        "passedCases": passed_cases,
+        "recordedAt": replay["recordedAt"],
+    }
+    current_state["measuredStatus"] = (
+        "pending" if gate_passed else "locked_local_replay"
+    )
+    current_state["status"] = (
+        "pilot_completed"
+        if gate_passed
+        else "pilot_completed_local_replay_failed"
+    )
+    current_state["updatedAt"] = utc_now()
+    _atomic_json(state_path, current_state)
+    return replay
+
+
+def local_replay_promotion_gate(
+    required_cases: Sequence[str],
+    results: Sequence[dict[str, Any]],
+) -> dict[str, Any]:
+    """Require every distinct frozen calibration case to pass its oracle."""
+    required = sorted(set(required_cases))
+    passed = sorted({
+        str(result.get("caseId"))
+        for result in results
+        if (
+            result.get("status") == "completed"
+            and result.get("score") == 1
+            and result.get("caseId") in required
+        )
+    })
+    gate_passed = bool(required) and passed == required
+    return {
+        "status": "passed" if gate_passed else "failed",
+        "measuredEligible": gate_passed,
+        "requiredCases": required,
+        "passedCases": passed,
+        "reason": (
+            "Every frozen calibration replay passed the independent oracle."
+            if gate_passed
+            else "Measured work remains locked until every frozen "
+            "calibration replay passes the independent oracle."
+        ),
+    }
+
+
+def frozen_prompt_evidence(case_root: Path) -> list[dict[str, str]]:
+    """Locate immutable initial local prompts without changing their contents."""
+    patterns = sorted(
+        (
+            case_root
+            / "arms"
+            / "mlx-swarm"
+            / "artifacts"
+        ).glob("*/*/attempts/*/attempt-001.json")
+    )
+    evidence: list[dict[str, str]] = []
+    for path in patterns:
+        try:
+            attempt = _read_json(path)
+        except (EvaluationError, OSError):
+            continue
+        prompt_digest = attempt.get("promptSha256")
+        if isinstance(prompt_digest, str) and _SHA256.fullmatch(
+            prompt_digest
+        ):
+            evidence.append({
+                "taskId": str(attempt.get("taskId", "")),
+                "promptSha256": prompt_digest,
+                "path": str(path),
+            })
+    return evidence
+
+
+def install_frozen_prompt_replay(
+    session: Session,
+    evidence: Sequence[dict[str, str]],
+) -> None:
+    """Copy exact saved initial prompts into a digest-bound replay session."""
+    prompt_root = session.dir / "prompt-replay"
+    prompt_root.mkdir(parents=True, exist_ok=True)
+    replay: dict[str, dict[str, str]] = {}
+    for item in evidence:
+        task_id = _identifier(item["taskId"], "promptReplay.taskId")
+        if task_id in replay:
+            raise EvaluationError(
+                f"Duplicate frozen prompt evidence for task {task_id}."
+            )
+        attempt_path = Path(item["path"]).resolve()
+        attempt = _read_json(attempt_path)
+        prompt = attempt.get("prompt")
+        if not isinstance(prompt, str):
+            raise EvaluationError(
+                f"Frozen prompt evidence has no prompt for {task_id}."
+            )
+        digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if digest != item["promptSha256"]:
+            raise EvaluationError(
+                f"Frozen prompt evidence digest changed for {task_id}."
+            )
+        relative = Path("prompt-replay") / f"{task_id}.txt"
+        _exclusive_text(session.dir / relative, prompt)
+        replay[task_id] = {
+            "path": str(relative),
+            "sha256": digest,
+            "sourceAttempt": str(attempt_path),
+        }
+    session.state["promptReplay"] = replay
+    session._save()
+
+
+def replay_failure_evidence(session: Session) -> str:
+    """Return the most specific local failure without exposing rejected raw text."""
+    messages: list[str] = []
+    for task in session.state.get("tasks", {}).values():
+        error = task.get("error")
+        if isinstance(error, str) and error:
+            messages.append(error)
+        for violation in task.get("gateResult", {}).get("violations", []):
+            message = violation.get("message")
+            if isinstance(message, str) and message:
+                messages.append(message)
+        for verification in task.get("verificationResults", []):
+            if not isinstance(verification, dict):
+                continue
+            relative = verification.get("output")
+            if not isinstance(relative, str) or not relative:
+                continue
+            output_path = (session.dir / relative).resolve()
+            if not _is_within(output_path, session.dir) or not output_path.is_file():
+                continue
+            output = output_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).strip()
+            if output:
+                messages.append(output[-8_000:])
+    return "; ".join(dict.fromkeys(messages))[:MAX_LOG_BYTES]
 
 
 @contextmanager
@@ -3494,6 +4016,7 @@ def run_swarm_with_synthetic_operator(
     deadline = time.monotonic() + timeout
     decided: set[str] = set()
     timed_out = False
+    infrastructure_error: str | None = None
     while process.poll() is None:
         if time.monotonic() >= deadline:
             timed_out = True
@@ -3525,6 +4048,25 @@ def run_swarm_with_synthetic_operator(
                     status == "verification_failed"
                     and f"reject:{task_id}" not in decided
                 ):
+                    infrastructure_error = task_verification_infrastructure_error(
+                        session_dir,
+                        task,
+                    )
+                    if infrastructure_error is not None:
+                        manifest, _ = load_artifact(session_dir, task_id)
+                        submit_artifact_decision(
+                            session_dir,
+                            task_id,
+                            action="reject",
+                            artifact_sha256=manifest["sha256"],
+                            source="evaluation-harness",
+                            reason=(
+                                "Verifier infrastructure failed; measurement "
+                                "is invalid."
+                            ),
+                        )
+                        decided.add(f"reject:{task_id}")
+                        continue
                     manifest, _ = load_artifact(session_dir, task_id)
                     submit_artifact_decision(
                         session_dir,
@@ -3551,7 +4093,29 @@ def run_swarm_with_synthetic_operator(
         stderr=stderr[:MAX_LOG_BYTES].decode("utf-8", "replace"),
         elapsed_seconds=time.perf_counter() - started,
         timed_out=timed_out,
+        infrastructure_error=infrastructure_error,
     )
+
+
+def task_verification_infrastructure_error(
+    session_dir: Path,
+    task: dict[str, Any],
+) -> str | None:
+    """Return deterministic infrastructure evidence from the latest verifier."""
+    results = task.get("verificationResults")
+    if not isinstance(results, list) or not results:
+        return None
+    latest = results[-1]
+    if not isinstance(latest, dict):
+        return None
+    relative_output = latest.get("output")
+    if not isinstance(relative_output, str) or not relative_output:
+        return None
+    path = (session_dir / relative_output).resolve()
+    if not _is_within(path, session_dir.resolve()) or not path.is_file():
+        return "Verifier evidence path is missing or escapes the session."
+    evidence = path.read_text(encoding="utf-8", errors="replace")
+    return oracle_infrastructure_failure({"evidence": evidence})
 
 
 def run_case_verifier(
@@ -3702,16 +4266,22 @@ def oracle_infrastructure_failure(
     """Identify preparation failures that cannot be repaired by source edits."""
     evidence = str(result.get("evidence") or "").lower()
     markers = (
-        "modulenotfounderror: no module named",
-        "importerror while importing test module",
-        "error: not found:",
-        "found no collectors",
+        "infrastructure_error:",
+        "failed to connect to the docker api",
+        "cannot connect to the docker daemon",
+        "permission denied while trying to connect to the docker api",
+        "pinned benchmark container is unavailable",
+        "docker image digest mismatch",
+        "active docker context is unavailable",
+        "verifier evaluation root is missing",
+        "verifier environment is missing",
+        "benchmark virtual environment has no python",
     )
     marker = next((value for value in markers if value in evidence), None)
     if marker is None:
         return None
     return (
-        "Buggy oracle has an unsupported preparation or dependency failure: "
+        "Verifier infrastructure failed independently of the candidate: "
         f"{marker}"
     )
 
@@ -4560,6 +5130,7 @@ def write_evaluation_config(
     *,
     write_roots: Sequence[str] | None = None,
 ) -> None:
+    docker_environment = docker_connection_environment(path.parent)
     model: dict[str, Any] = {"repository": source.model.repository}
     if source.model.revision:
         model["revision"] = source.model.revision
@@ -4576,6 +5147,10 @@ def write_evaluation_config(
         "artifacts": str(artifacts_root.resolve()),
         "enableThinking": source.enable_thinking,
         "seed": source.seed,
+        "worker": {
+            "mode": source.worker.mode,
+            "reasoningMaxTokens": source.worker.reasoning_max_tokens,
+        },
         "workspace": {
             "writeRoots": list(
                 write_roots
@@ -4599,12 +5174,51 @@ def write_evaluation_config(
                         "LANG",
                         "LC_ALL",
                     ],
-                    "environment": {},
+                    # Verification runs with a deliberately isolated HOME.
+                    # Resolve the trusted operator's Docker context now so a
+                    # nested pinned verifier does not silently fall back to
+                    # /var/run/docker.sock.
+                    "environment": docker_environment,
                 }
             },
         },
     }
     _atomic_json(path, payload)
+
+
+def docker_connection_environment(cwd: Path) -> dict[str, str]:
+    """Freeze the active Docker endpoint for sanitized verifier subprocesses."""
+    result: dict[str, str] = {}
+    for name in ("DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"):
+        value = os.environ.get(name)
+        if value:
+            result[name] = value
+    if "DOCKER_HOST" in result:
+        return result
+
+    inspected = run_command(
+        ["docker", "context", "inspect"],
+        cwd=cwd,
+        timeout=30,
+    )
+    if inspected.timed_out or inspected.returncode != 0:
+        raise EvaluationError(
+            "Active Docker context is unavailable: "
+            + (inspected.stderr or inspected.stdout).strip()
+        )
+    try:
+        contexts = json.loads(inspected.stdout)
+        endpoint = contexts[0]["Endpoints"]["docker"]["Host"]
+    except (KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+        raise EvaluationError(
+            "Active Docker context did not report a usable endpoint."
+        ) from exc
+    if not isinstance(endpoint, str) or not endpoint.strip():
+        raise EvaluationError(
+            "Active Docker context did not report a usable endpoint."
+        )
+    result["DOCKER_HOST"] = endpoint.strip()
+    return result
 
 
 def _evaluation_path_within(path: str, root: str) -> bool:
@@ -5343,6 +5957,10 @@ def environment_fingerprint(
             "revision": config.model.revision,
             "path": model_path,
             "fingerprint": model_fingerprint,
+        },
+        "localWorker": {
+            "mode": config.worker.mode,
+            "reasoningMaxTokens": config.worker.reasoning_max_tokens,
         },
         "profileSha256": canonical_json_sha256(profile_payload(profile)),
     }
@@ -6332,7 +6950,7 @@ def _module_main(argv: Sequence[str] | None = None) -> int:
         try:
             result = run_case_verifier(args.manifest.resolve(), Path.cwd())
         except EvaluationError as exc:
-            print(str(exc), file=sys.stderr)
+            print(f"INFRASTRUCTURE_ERROR: {exc}", file=sys.stderr)
             return 2
         print(json.dumps(result, ensure_ascii=False))
         return 0 if result["passed"] else 1

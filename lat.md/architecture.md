@@ -55,6 +55,9 @@ Core trade-offs shaping the framework's behavior.
 
 - **Strict contracts**: Config and plans are validated with exact-key checking — unknown fields are rejected. This catches typos early and prevents silent misconfiguration. See [[Config]] and [[Plans]].
 - **Bounded batched generation**: Tasks at the same dependency level are chunked by `maxWorkers`; compatible sampling configurations share MLX batches. See [[Backend]].
+- **Optional local reasoning-to-editing**: Mutating tasks may spend a bounded
+  local reasoning pass before a separate strict artifact pass; both remain in
+  local usage and never invoke the frontier. See [[Executor]].
 - **Deterministic local gates**: Gate evaluation uses regex, Python syntax, and structured JSON validation. The frontier performs one final review rather than judging every wave. See [[Gates]].
 - **Session persistence**: Every state change is immediately persisted to session.json, enabling resume after crashes. See [[Session]].
 - **Immutable run history**: True resume preserves completed work; failed or exhausted work is retried as a new session with lineage. See [[UI#Run Lifecycle]].

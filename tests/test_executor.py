@@ -16,10 +16,11 @@ from mlx_swarm.contracts import (
     Plan,
     SwarmConfig,
     TaskDef,
+    WorkerConfig,
     load_config,
     load_plan,
 )
-from mlx_swarm.executor import execute_plan
+from mlx_swarm.executor import _generate_with_worker_strategy, execute_plan
 from mlx_swarm.session import Session
 
 
@@ -297,3 +298,55 @@ def test_frontier_packet_omits_rejected_output(tmp_path: Path) -> None:
     assert packet["tasks"]["task"]["status"] == "rejected"
     assert packet["tasks"]["task"]["output"] is None
     assert packet["localUsage"]["generationCalls"] == 1
+
+
+def test_reasoning_edit_worker_uses_two_local_stages_and_records_reasoning(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="change",
+        role="implementation",
+        prompt="Fix the target.",
+        artifact_type="patch",
+        allowed_paths=("src/value.py",),
+    )
+    plan = _plan(tmp_path, (task,), "two-stage")
+    session = Session(tmp_path / "session", plan)
+    config = _config(tmp_path)
+    config = SwarmConfig(
+        source=config.source,
+        model=config.model,
+        batch=config.batch,
+        artifacts_dir=config.artifacts_dir,
+        worker=WorkerConfig(
+            mode="reasoning-edit",
+            reasoning_max_tokens=512,
+        ),
+    )
+    backend = FakeBackend([
+        ["The direct assignment in src/value.py is the causal site."],
+        ['{"schemaVersion":1,"edits":[]}'],
+    ])
+
+    outputs, statistics, stages = _generate_with_worker_strategy(
+        config,
+        session,
+        backend,
+        [task],
+        ["STRICT ARTIFACT PROMPT"],
+        phase="generation",
+    )
+
+    assert outputs == ['{"schemaVersion":1,"edits":[]}']
+    assert [stage["name"] for stage in stages] == ["reasoning", "editing"]
+    assert statistics["batchSize"] == 2
+    assert statistics["generationCalls"] == 2
+    assert backend.calls[0][0][0].generation_override["enable_thinking"] is True
+    assert backend.calls[0][0][0].generation_override["max_tokens"] == 512
+    assert backend.calls[1][0][0].generation_override["enable_thinking"] is False
+    assert "LOCAL REASONING EVIDENCE" in backend.calls[1][1][0]
+    reasoning = session.state["tasks"]["change"]["reasoningAttempts"]
+    assert len(reasoning) == 1
+    record = json.loads((session.dir / reasoning[0]["path"]).read_text())
+    assert record["authoritative"] is False
+    assert record["output"].startswith("The direct assignment")

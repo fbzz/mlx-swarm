@@ -25,6 +25,10 @@ JSON structure for the config file.
   "artifacts": ".swarm/runs",
   "enableThinking": false,
   "seed": 20260727,
+  "worker": {
+    "mode": "reasoning-edit",
+    "reasoningMaxTokens": 1200
+  },
   "workspace": {
     "writeRoots": ["src", "tests"],
     "verificationProfiles": {
@@ -55,6 +59,11 @@ All config fields with types, defaults, and constraints.
 - **artifacts** (required, string): Directory for session artifacts. Relative to config file.
 - **enableThinking** (optional, strict bool, default false): Configure the model chat template's thinking mode. Completed thinking blocks are never propagated as task artifacts.
 - **seed** (optional, int, default 20260727): Random seed for reproducibility. 0–2^31-1.
+- **worker.mode** (optional, default `direct`): `direct` performs one local
+  artifact generation. `reasoning-edit` performs a local reasoning pass and a
+  separate strict editing pass for mutating tasks only.
+- **worker.reasoningMaxTokens** (optional, int, default 1200): Local reasoning
+  pass limit, 64–8192. These tokens remain in `localUsage`.
 - **workspace.writeRoots** (schema v2, required, non-empty array): Unique POSIX
   relative path ceilings. Absolute paths, traversal, backslashes, NUL, and
   `.git` are rejected.

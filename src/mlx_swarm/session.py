@@ -175,6 +175,33 @@ class Session:
     def get_task_status(self, task_id: str) -> str:
         return self.state["tasks"].get(task_id, {}).get("status", "pending")
 
+    def replay_prompt(self, task_id: str) -> str | None:
+        """Load one digest-bound frozen prompt used by evaluation replays."""
+        replay = self.state.get("promptReplay")
+        if not isinstance(replay, dict):
+            return None
+        entry = replay.get(task_id)
+        if not isinstance(entry, dict):
+            return None
+        relative = entry.get("path")
+        expected = entry.get("sha256")
+        if not isinstance(relative, str) or not isinstance(expected, str):
+            raise RuntimeError(f"Frozen prompt metadata is invalid for {task_id}.")
+        path = (self.dir / relative).resolve()
+        try:
+            path.relative_to(self.dir)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"Frozen prompt path escapes the session for {task_id}."
+            ) from exc
+        if not path.is_file():
+            raise RuntimeError(f"Frozen prompt is missing for {task_id}.")
+        prompt = path.read_text(encoding="utf-8")
+        actual = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        if actual != expected:
+            raise RuntimeError(f"Frozen prompt digest changed for {task_id}.")
+        return prompt
+
     def add_batch_record(self, batch: dict[str, Any]) -> None:
         self.state["batches"].append(batch)
         self._save()
@@ -230,6 +257,56 @@ class Session:
         }
         task_state = self.state["tasks"][task_id]
         task_state.setdefault("generationAttempts", []).append(summary)
+        self._save()
+        return summary
+
+    def record_reasoning_attempt(
+        self,
+        task_id: str,
+        *,
+        phase: str,
+        prompt: str,
+        output: str,
+        statistics: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Persist one non-authoritative local reasoning pass."""
+        if task_id not in self.state["tasks"]:
+            raise KeyError(f"Unknown task: {task_id}")
+        attempt_root = self.dir / "reasoning-attempts" / task_id
+        attempt_root.mkdir(parents=True, exist_ok=True)
+        ordinal = len(list(attempt_root.glob("attempt-*.json"))) + 1
+        relative_path = (
+            Path("reasoning-attempts")
+            / task_id
+            / f"attempt-{ordinal:03d}.json"
+        )
+        prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        output_digest = hashlib.sha256(output.encode("utf-8")).hexdigest()
+        record = {
+            "schemaVersion": 1,
+            "taskId": task_id,
+            "attempt": ordinal,
+            "phase": phase,
+            "promptSha256": prompt_digest,
+            "outputSha256": output_digest,
+            "prompt": prompt,
+            "output": output,
+            "statistics": statistics,
+            "authoritative": False,
+            "recordedAt": _utc_now(),
+        }
+        _exclusive_json(self.dir / relative_path, record)
+        summary = {
+            "attempt": ordinal,
+            "phase": phase,
+            "path": str(relative_path),
+            "promptSha256": prompt_digest,
+            "outputSha256": output_digest,
+        }
+        self.state["tasks"][task_id].setdefault(
+            "reasoningAttempts",
+            [],
+        ).append(summary)
         self._save()
         return summary
 
@@ -496,7 +573,11 @@ class Session:
             for stats in statistics:
                 if not stats or stats.get("batchSize", 0) == 0:
                     continue
-                generation_calls += len(stats.get("groups", [])) or 1
+                generation_calls += (
+                    int(stats.get("generationCalls", 0))
+                    or len(stats.get("groups", []))
+                    or 1
+                )
                 prompt_tokens += int(stats.get("promptTokens", 0))
                 generation_tokens += int(stats.get("generationTokens", 0))
                 if float(stats.get("loadSeconds", 0.0)) > 0:
