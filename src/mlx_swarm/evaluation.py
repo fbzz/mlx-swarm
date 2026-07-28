@@ -31,7 +31,7 @@ from .commander import (
     CommanderStore,
     canonical_json_sha256,
 )
-from .contracts import SwarmConfig, load_config
+from .contracts import Plan, SwarmConfig, load_config, load_plan
 from .session import Session, _run_id
 from .workspace import (
     WorkspaceError,
@@ -48,11 +48,14 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 1
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
+FAIR_EVALUATION_PROTOCOL_VERSION = 2
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
 README_END = "<!-- END MLX-SWARM-ECONOMICS -->"
 MAX_LOG_BYTES = 1_000_000
+MAX_TASK_PACKET_TREE_CHARS = 20_000
+MAX_TASK_PACKET_SOURCE_CHARS = 60_000
 BENCHMARK_BUILD_JOBS = 4
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,95}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -1357,6 +1360,55 @@ def mark_preliminary_summary(
     return summary
 
 
+def apply_protocol_audit(
+    summary: dict[str, Any],
+    environment: dict[str, Any],
+) -> dict[str, Any]:
+    """Prevent pre-fix or asymmetric studies from being reported as paired evidence."""
+    observed = environment.get("evaluationProtocolVersion")
+    valid = observed == FAIR_EVALUATION_PROTOCOL_VERSION
+    summary["protocolAudit"] = {
+        "status": "valid" if valid else "invalid",
+        "observedVersion": observed,
+        "requiredVersion": FAIR_EVALUATION_PROTOCOL_VERSION,
+        "invariants": [
+            "one immutable task packet and write-root contract for both arms",
+            "exact contiguous workspace source excerpts",
+            "Git recount support for semantically valid diff hunks",
+            "immutable prompt and output evidence for every local attempt",
+        ],
+        "issues": (
+            []
+            if valid
+            else [
+                (
+                    "This study predates the symmetric write-root, source-"
+                    "packet, source-fidelity, patch-recount, and per-attempt "
+                    "evidence contract."
+                )
+            ]
+        ),
+    }
+    if not valid:
+        summary["claim"] = {
+            "status": "protocol_invalid",
+            "text": (
+                "The recorded rows are diagnostic history, not a fair paired "
+                "economics comparison. A new evaluation must be prepared and "
+                "run under the current protocol."
+            ),
+        }
+        summary["decisionGate"] = {
+            "status": "rerun_fair_protocol",
+            "text": (
+                "Do not use this study to judge worker acceptance or token "
+                "economics; rerun the preliminary suite under the current "
+                "symmetric protocol."
+            ),
+        }
+    return summary
+
+
 def bootstrap_mean_interval(
     values: Sequence[int | float],
     *,
@@ -1395,6 +1447,27 @@ def render_readme_economics(summary: dict[str, Any]) -> str:
         f"{summary['claim']['text']}",
         "",
     ]
+    protocol_audit = summary.get("protocolAudit")
+    if isinstance(protocol_audit, dict):
+        protocol_status = protocol_audit.get("status", "unknown")
+        if protocol_status == "invalid":
+            lines.extend([
+                (
+                    "**Protocol audit:** `invalid` — The tables below are "
+                    "retained to diagnose the old run, but they are not a "
+                    "valid paired comparison."
+                ),
+                "",
+            ])
+        elif protocol_status == "valid":
+            lines.extend([
+                (
+                    "**Protocol audit:** `valid` — Both arms used identical "
+                    "write roots; local file context was verified verbatim; "
+                    "all local generation attempts were retained."
+                ),
+                "",
+            ])
     if preliminary:
         lines.extend([
             (
@@ -1984,6 +2057,10 @@ class EvaluationStore:
                 suite,
                 _read_json(evaluation_dir / "environment.json"),
             )
+            apply_protocol_audit(
+                summary,
+                _read_json(evaluation_dir / "environment.json"),
+            )
             _atomic_json(evaluation_dir / "summary.json", summary)
         return self.detail(evaluation_id)
 
@@ -2030,6 +2107,7 @@ class EvaluationStore:
                 raise EvaluationError(
                     "Measured phase must be complete before exporting a report."
                 )
+        apply_protocol_audit(summary, detail["environment"])
         export_dir = export_dir.resolve()
         if not check and export_dir.exists() and any(export_dir.iterdir()):
             raise EvaluationError("Report export directory must be empty.")
@@ -2719,8 +2797,22 @@ class EvaluationRunner:
             Path(runtime["baseSnapshot"]),
             arm_root / "repo",
         )
+        pair_contract = ensure_pair_contract(
+            case,
+            runtime,
+            maximum_characters=(
+                self.profile.selection.max_context_characters
+            ),
+        )
+        approved_write_roots = list(
+            pair_contract["approvedWriteRoots"]
+        )
+        if evaluation_write_roots(repository) != approved_write_roots:
+            raise EvaluationError(
+                "Frontier arm repository differs from the frozen pair contract."
+            )
         base_sha = _git_text(repository, ["rev-parse", "HEAD"])
-        task_packet = build_task_packet(case, runtime)
+        task_packet = pair_contract["taskPacket"]
         evidence_root = arm_root / "evidence"
         evidence_root.mkdir(parents=True, exist_ok=True)
         last_message = evidence_root / "last-message.txt"
@@ -2755,6 +2847,7 @@ class EvaluationRunner:
             diff,
             case,
             repository,
+            allowed_paths=approved_write_roots,
         )
         remaining = self.profile.frontier.arm_timeout_seconds - (
             time.perf_counter() - started
@@ -2831,6 +2924,20 @@ class EvaluationRunner:
             Path(runtime["baseSnapshot"]),
             arm_root / "repo",
         )
+        pair_contract = ensure_pair_contract(
+            case,
+            runtime,
+            maximum_characters=(
+                self.profile.selection.max_context_characters
+            ),
+        )
+        approved_write_roots = list(
+            pair_contract["approvedWriteRoots"]
+        )
+        if evaluation_write_roots(repository) != approved_write_roots:
+            raise EvaluationError(
+                "MLX Swarm arm repository differs from the frozen pair contract."
+            )
         base_sha = _git_text(repository, ["rev-parse", "HEAD"])
         config_path = repository / ".mlx-swarm-eval.json"
         artifacts_root = arm_root / "artifacts"
@@ -2840,16 +2947,28 @@ class EvaluationRunner:
             artifacts_root,
             Path(runtime["verifierManifest"]),
             repository,
+            write_roots=approved_write_roots,
         )
         eval_config = load_config(config_path)
         store = CommanderStore(eval_config)
-        task_packet = build_task_packet(case, runtime)
+        task_packet = pair_contract["taskPacket"]
+        roots_text = ", ".join(approved_write_roots)
         request = store.create_request(
             case["objective"],
             [
                 "Modify production code only; never modify tests or benchmark evidence.",
                 "Use the bugsinpy-acceptance verification profile for every mutating artifact.",
                 "Return a schema-v2 typed workspace plan.",
+                (
+                    "For paired-arm symmetry, every mutating task must set "
+                    f"allowedPaths to exactly these roots: {roots_text}."
+                ),
+                (
+                    "Any context copied from a workspace file must be one "
+                    "exact contiguous excerpt. Put its repository-relative "
+                    "path in the source label; never summarize, rewrite, or "
+                    "silently omit lines inside an excerpt."
+                ),
                 *split_constraint_text(task_packet),
             ],
             request_id=f"eval-{case['caseId']}",
@@ -2915,6 +3034,15 @@ class EvaluationRunner:
             prompt_tokens=plan_usage.get("promptTokens"),
             completion_tokens=plan_usage.get("completionTokens"),
             total_tokens=plan_usage.get("totalTokens"),
+        )
+        candidate_plan = load_plan(
+            Path(imported["plan"]["source"]),
+            eval_config,
+        )
+        validate_evaluation_plan(
+            candidate_plan,
+            repository,
+            approved_write_roots,
         )
         plan_digest = imported["plan"]["digest"]
         execution = imported["executionPreview"]
@@ -2992,7 +3120,12 @@ class EvaluationRunner:
         workspace = load_workspace_snapshot(session_dir)
         diff, _ = final_workspace_diff(workspace)
         patch = persist_candidate_patch(evidence_root, diff)
-        structural_error = validate_candidate_diff(diff, case, repository)
+        structural_error = validate_candidate_diff(
+            diff,
+            case,
+            repository,
+            allowed_paths=approved_write_roots,
+        )
         review_usage = None
         review_verdict = None
         review_seconds = 0.0
@@ -3829,30 +3962,237 @@ def sanitized_case_environment(
 def build_task_packet(
     case: dict[str, Any],
     runtime: dict[str, Any],
+    approved_write_roots: Sequence[str],
+    *,
+    maximum_characters: int = 120_000,
 ) -> str:
-    return (
+    roots = "\n".join(f"- {path}" for path in approved_write_roots)
+    tree, sources = deterministic_case_context(case, runtime)
+    packet = (
         f"CASE: {case['caseId']}\n"
         f"PROJECT: {case['project']}\n"
         f"OBJECTIVE: {case['objective']}\n"
         "BOUNDARY: Modify production code only. Do not modify tests, Git "
         "metadata, dependencies, or benchmark evidence.\n"
+        "APPROVED WRITE ROOTS (identical for both paired arms):\n"
+        f"{roots}\n"
         "ACCEPTANCE COMMANDS (fixed argv, never a shell):\n"
         f"{json.dumps(case['verificationArgv'], sort_keys=True)}\n"
+        "FROZEN REPOSITORY TREE:\n"
+        f"{tree}\n"
+        "FROZEN RELEVANT TEST AND TRACEBACK SOURCE CONTEXT:\n"
+        f"{sources}\n"
         "INITIAL FAILURE EVIDENCE:\n"
         f"{runtime['failureEvidence'][:40_000]}"
     )
+    if len(packet) <= maximum_characters:
+        return packet
+    marker = "\n...[task packet truncated deterministically]"
+    return packet[:maximum_characters - len(marker)] + marker
+
+
+def ensure_pair_contract(
+    case: dict[str, Any],
+    runtime: dict[str, Any],
+    *,
+    maximum_characters: int,
+) -> dict[str, Any]:
+    """Freeze the one exact authority/evidence packet consumed by both arms."""
+    base = Path(str(runtime["baseSnapshot"])).resolve()
+    if not base.is_dir():
+        raise EvaluationError("Pair contract base snapshot is unavailable.")
+    roots = evaluation_write_roots(base)
+    task_packet = build_task_packet(
+        case,
+        runtime,
+        roots,
+        maximum_characters=maximum_characters,
+    )
+    payload = {
+        "schemaVersion": 1,
+        "evaluationProtocolVersion": FAIR_EVALUATION_PROTOCOL_VERSION,
+        "caseId": case["caseId"],
+        "baseSha": _git_text(base, ["rev-parse", "HEAD"]),
+        "approvedWriteRoots": roots,
+        "taskPacketSha256": hashlib.sha256(
+            task_packet.encode("utf-8")
+        ).hexdigest(),
+        "taskPacket": task_packet,
+    }
+    path = base.parent / "pair-contract.json"
+    if path.is_file():
+        existing = _read_json(path)
+        if existing != payload:
+            raise EvaluationError(
+                "Frozen paired-arm contract differs from current case evidence."
+            )
+        return existing
+    _exclusive_json(path, payload)
+    return payload
+
+
+def deterministic_case_context(
+    case: dict[str, Any],
+    runtime: dict[str, Any],
+) -> tuple[str, str]:
+    """Build the identical, non-future evidence packet supplied to both arms."""
+    base_value = runtime.get("baseSnapshot")
+    if not isinstance(base_value, str):
+        return "(unavailable)", "(unavailable)"
+    base = Path(base_value).resolve()
+    if not base.is_dir():
+        return "(unavailable)", "(unavailable)"
+    files = [
+        child
+        for child in sorted(base.rglob("*"))
+        if (
+            child.is_file()
+            and not child.is_symlink()
+            and ".git" not in child.relative_to(base).parts
+        )
+    ]
+    relative = [child.relative_to(base).as_posix() for child in files]
+    tree = "\n".join(relative)
+    if len(tree) > MAX_TASK_PACKET_TREE_CHARS:
+        tree = (
+            tree[:MAX_TASK_PACKET_TREE_CHARS]
+            + "\n...[tree truncated deterministically]"
+        )
+
+    requested = {
+        str(value)
+        for value in case.get("testFiles", [])
+        if isinstance(value, str)
+    }
+    failure = str(runtime.get("failureEvidence", ""))
+    requested.update(path for path in relative if path in failure)
+    blocks: list[str] = []
+    used = 0
+    by_relative = dict(zip(relative, files))
+    for path in sorted(requested):
+        child = by_relative.get(path)
+        if child is None:
+            continue
+        try:
+            content = child.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        header = f"FILE {path}\n"
+        footer = f"\nEND FILE {path}\n"
+        remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
+        if remaining <= len(header) + len(footer):
+            break
+        body = content[:remaining - len(header) - len(footer)]
+        block = header + body + footer
+        blocks.append(block)
+        used += len(block)
+        if len(body) < len(content):
+            blocks.append("...[source context truncated deterministically]\n")
+            break
+    return tree or "(empty)", "".join(blocks) or "(none referenced)"
 
 
 def frontier_alone_prompt(task_packet: str) -> str:
     return (
         "You are the frontier-alone baseline in a paired code-repair study.\n"
         "Solve the task directly in the current disposable Git repository. "
-        "Inspect files and run tests as needed. Modify production code only. "
+        "Inspect files and run tests as needed. Modify only paths below the "
+        "approved write roots in the task packet. "
         "Do not commit. Do not access the network or any path outside this "
         "repository. Finish only when the working tree contains your final "
         "candidate patch.\n\n"
         f"{task_packet}"
     )
+
+
+def validate_evaluation_plan(
+    plan: Plan,
+    repository: Path,
+    approved_write_roots: Sequence[str],
+) -> None:
+    """Enforce the local arm's half of the paired fairness contract."""
+    if not plan.workspace_execution:
+        raise EvaluationError(
+            "Evaluation plans must use schema-v2 workspace execution."
+        )
+    expected_roots = tuple(sorted(approved_write_roots))
+    mutating = [task for task in plan.tasks if task.mutates_workspace]
+    if not mutating:
+        raise EvaluationError(
+            "Evaluation plan must contain at least one mutating task."
+        )
+    for task in mutating:
+        if tuple(sorted(task.allowed_paths)) != expected_roots:
+            raise EvaluationError(
+                f"Evaluation task {task.id} must use the exact paired-arm "
+                "write roots; narrowing or widening path authority is not "
+                "permitted."
+            )
+        if task.verification != ("bugsinpy-acceptance",):
+            raise EvaluationError(
+                f"Evaluation task {task.id} must use exactly the frozen "
+                "bugsinpy-acceptance verification profile."
+            )
+
+    if plan.context is None:
+        raise EvaluationError(
+            "Evaluation plans must provide authoritative worker context."
+        )
+    files = {
+        child.relative_to(repository).as_posix(): child
+        for child in repository.rglob("*")
+        if (
+            child.is_file()
+            and not child.is_symlink()
+            and ".git" not in child.relative_to(repository).parts
+        )
+    }
+    verified_sources: set[str] = set()
+    for source in plan.context.authoritative_sources:
+        declared: list[str] = []
+        prefix = "VERBATIM FILE:"
+        if source.label.startswith(prefix):
+            path = source.label[len(prefix):].strip()
+            if path not in files:
+                raise EvaluationError(
+                    f"Authoritative source declares an unknown file: {path}"
+                )
+            declared = [path]
+        else:
+            declared = [
+                path
+                for path in files
+                if path in source.label
+            ]
+        for path in declared:
+            try:
+                actual = files[path].read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError) as exc:
+                raise EvaluationError(
+                    f"Authoritative source is not readable UTF-8: {path}"
+                ) from exc
+            if source.content not in actual:
+                raise EvaluationError(
+                    "Authoritative workspace source is not an exact "
+                    f"contiguous excerpt: {path}"
+                )
+            verified_sources.add(path)
+
+    if not verified_sources:
+        raise EvaluationError(
+            "Evaluation plan contains no verifiable workspace source excerpt."
+        )
+    for task in mutating:
+        mentioned = {
+            path for path in files if path in task.prompt
+        }
+        unverified = sorted(mentioned - verified_sources)
+        if unverified:
+            raise EvaluationError(
+                f"Evaluation task {task.id} references source without an "
+                "exact authoritative excerpt: "
+                + ", ".join(unverified)
+            )
 
 
 def split_constraint_text(
@@ -4067,6 +4407,8 @@ def validate_candidate_diff(
     diff: str,
     case: dict[str, Any],
     repository: Path,
+    *,
+    allowed_paths: Sequence[str] | None = None,
 ) -> str | None:
     if not diff:
         return "Candidate patch is empty."
@@ -4076,10 +4418,28 @@ def validate_candidate_diff(
         return str(exc)
     if any(_is_non_production_path(path) for path in metadata["paths"]):
         return "Candidate patch modifies tests or non-production evidence."
+    approved = tuple(
+        allowed_paths
+        if allowed_paths is not None
+        else evaluation_write_roots(repository)
+    )
+    outside = [
+        path
+        for path in metadata["paths"]
+        if not any(
+            _evaluation_path_within(path, root)
+            for root in approved
+        )
+    ]
+    if outside:
+        return (
+            "Candidate patch is outside the paired-arm approved write roots: "
+            + ", ".join(outside)
+        )
     if metadata["changedFiles"] > 20:
         return "Candidate patch changes more than 20 files."
     result = run_command(
-        ["git", "apply", "--check", "-"],
+        ["git", "apply", "--check", "--recount", "-"],
         cwd=repository,
         timeout=60,
         input_text=diff,
@@ -4089,7 +4449,7 @@ def validate_candidate_diff(
         # it against HEAD by reversing first; independent scoring performs the
         # authoritative clean-apply check.
         reverse = run_command(
-            ["git", "apply", "--reverse", "--check", "-"],
+            ["git", "apply", "--reverse", "--check", "--recount", "-"],
             cwd=repository,
             timeout=60,
             input_text=diff,
@@ -4106,6 +4466,8 @@ def write_evaluation_config(
     artifacts_root: Path,
     verifier_manifest: Path,
     repository: Path,
+    *,
+    write_roots: Sequence[str] | None = None,
 ) -> None:
     model: dict[str, Any] = {"repository": source.model.repository}
     if source.model.revision:
@@ -4124,7 +4486,11 @@ def write_evaluation_config(
         "enableThinking": source.enable_thinking,
         "seed": source.seed,
         "workspace": {
-            "writeRoots": evaluation_write_roots(repository),
+            "writeRoots": list(
+                write_roots
+                if write_roots is not None
+                else evaluation_write_roots(repository)
+            ),
             "verificationProfiles": {
                 "bugsinpy-acceptance": {
                     "argv": [
@@ -4148,6 +4514,15 @@ def write_evaluation_config(
         },
     }
     _atomic_json(path, payload)
+
+
+def _evaluation_path_within(path: str, root: str) -> bool:
+    path_parts = Path(path).parts
+    root_parts = Path(root).parts
+    return (
+        len(path_parts) >= len(root_parts)
+        and path_parts[:len(root_parts)] == root_parts
+    )
 
 
 def evaluation_write_roots(repository: Path) -> list[str]:
@@ -4744,6 +5119,9 @@ def study_context(
         "reasoningEffort": environment.get("reasoningEffort"),
         "codexVersion": environment.get("codexVersion"),
         "mlxSwarmCommit": environment.get("mlxSwarmCommit"),
+        "evaluationProtocolVersion": environment.get(
+            "evaluationProtocolVersion"
+        ),
         "localModel": environment.get("localModel"),
         "hardware": environment.get("hardware"),
         "runtime": environment.get("runtime"),
@@ -4845,6 +5223,7 @@ def environment_fingerprint(
             packages[name] = None
     return {
         "schemaVersion": EVALUATION_SCHEMA_VERSION,
+        "evaluationProtocolVersion": FAIR_EVALUATION_PROTOCOL_VERSION,
         "recordedAt": utc_now(),
         "platform": platform.platform(),
         "machine": platform.machine(),

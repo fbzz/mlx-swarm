@@ -268,6 +268,59 @@ def test_patch_apply_and_allowlisted_verification(tmp_path: Path) -> None:
     assert (repo / "src" / "value.py").read_text() == "VALUE = 1\n"
 
 
+def test_git_recount_accepts_correct_edit_with_bad_worker_hunk_metadata(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(config, plan)
+    snapshot = prepare_worktree(
+        config,
+        plan,
+        session_id="recount-hunk",
+        expected_execution_digest=preview["executionDigest"],
+    )
+    malformed_metadata = (
+        "diff --git a/src/value.py b/src/value.py\n"
+        "--- a/src/value.py\n"
+        "+++ b/src/value.py\n"
+        "@@ -99,7 +99,7 @@\n"
+        "-VALUE = 1\n"
+        "+VALUE = 2\n"
+    )
+    worktree = Path(snapshot["worktreePath"])
+    without_recount = subprocess.run(
+        [
+            "git",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "-C",
+            str(worktree),
+            "apply",
+            "--check",
+            "-",
+        ],
+        input=malformed_metadata,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    assert without_recount.returncode != 0
+
+    session_dir = config.artifacts_dir / plan.plan_id / "recount-hunk"
+    session_dir.mkdir(parents=True)
+    persist_artifact(
+        session_dir,
+        plan.tasks[0],
+        malformed_metadata,
+        snapshot,
+    )
+    apply_artifact(session_dir, plan.tasks[0], snapshot)
+    assert (worktree / "src" / "value.py").read_text() == "VALUE = 2\n"
+
+
 def test_verification_uses_exact_argv_no_shell_and_sanitized_environment(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -40,7 +40,13 @@ For each task in `dependsOn`, only a successfully completed normalized output is
 When a task fails its gate, `compose_repair_prompt` appends:
 - The original prompt
 - REPAIR FEEDBACK section with gate violations
-- The previous rejected output (truncated to 4000 chars)
+- The previous rejected output, truncated to 4000 chars and encoded as one JSON
+  string so embedded fences remain untrusted data rather than nested prompt
+  delimiters
 - Instructions to return only corrected output
+
+If a deterministic repair exactly repeats the rejected response, the next
+repair feedback explicitly reports that repetition and requires a materially
+different artifact.
 
 See [[src/mlx_swarm/prompting.py#compose_repair_prompt]].

@@ -47,6 +47,19 @@ most two repairs, and one final frontier review only after a completed local
 run. The evaluation harness can approve typed artifacts only inside disposable
 case workspaces; normal sessions retain their human approval boundary.
 
+Protocol version 2 constructs one deterministic task packet for both arms. It
+contains the objective, failing evidence, fixed acceptance argv, frozen
+repository tree, and exact relevant test/traceback source context. Both arms
+receive the same production write roots. Every mutating plan task must preserve
+that complete root set instead of narrowing local authority.
+The harness writes this authority once as immutable `pair-contract.json`, then
+both arm runners verify and consume the same packet and SHA-256.
+
+Workspace-derived plan context is validated against the buggy checkout. A
+source excerpt must be an exact contiguous substring, and a mutating task that
+names a file cannot rely on a rewritten or elided version of that file. This
+prevents source summaries from becoming non-applicable diff context.
+
 Both candidate diffs are scored in fresh oracle workspaces using the same
 frozen verifier. A score of one means the clean executable oracle passed.
 Review verdicts are retained separately and never change this score.
@@ -60,6 +73,12 @@ Each result includes wall-clock phase timing, all `turn.completed` usage,
 local tokens, repair and model-load counts, patch digest, changed-file count,
 and oracle evidence. Missing frontier usage makes an arm measurement invalid;
 it is never converted to zero.
+
+Every local generation and repair also writes an immutable attempt record with
+the exact prompt, raw response, normalized response, gate result, statistics,
+and digests. Historical studies without the current protocol version are
+rendered as `protocol_invalid`: their rows remain useful diagnostics but cannot
+support paired acceptance or token-economics conclusions.
 
 `mlx-swarm eval report` writes a sanitized immutable export below
 `benchmarks/results/<evaluationId>/` and deterministically renders the README

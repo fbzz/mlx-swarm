@@ -1,10 +1,12 @@
 ## Preliminary measured economics
 
-**Study status:** `preliminary` — Measured scores, time, and tokens are directional. The 30-pair product claim gate was not evaluated.
+**Study status:** `protocol_invalid` — The recorded rows are diagnostic history, not a fair paired economics comparison. A new evaluation must be prepared and run under the current protocol.
+
+**Protocol audit:** `invalid` — The tables below are retained to diagnose the old run, but they are not a valid paired comparison.
 
 **Preliminary 6-pair study.** This is a directional decision gate, not the planned 30-pair claim study. The strong “saves frontier tokens without reducing acceptance” claim is disabled regardless of the observed deltas.
 
-**Decision gate:** `stop_and_improve_workers` — Acceptance is materially behind (0/6 vs 6/6). Improve local worker patch quality before running the 30-pair study.
+**Decision gate:** `rerun_fair_protocol` — Do not use this study to judge worker acceptance or token economics; rerun the preliminary suite under the current symmetric protocol.
 
 Pinned protocol: `BugsInPy@11c5f1eea954a42132cfd06bf257766a7963e0fd` · `gpt-5.6-sol` (high) · local `local/qwen35-4b-opus-uncensored-6bit@e017ecf449428c52171387b7dee317e4803708940b8f50ea1c1ef0d25529cd3d` · seed `20260728`.
 

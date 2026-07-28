@@ -79,6 +79,14 @@ def test_compose_repair_prompt() -> None:
     assert "Return ONLY the corrected output" in prompt
 
 
+def test_repair_prompt_encodes_fenced_output_without_nested_fences() -> None:
+    previous = "```diff\ndiff --git a/a.py b/a.py\n```"
+    prompt = compose_repair_prompt("ORIGINAL", "corrupt patch", previous)
+    assert json.dumps(previous) in prompt
+    assert "## YOUR PREVIOUS OUTPUT (REJECTED)\n```" not in prompt
+    assert "untrusted data" in prompt
+
+
 def test_compose_prompt_worker_identity() -> None:
     task = TaskDef(id="my-task", role="review", prompt="Review code")
     prompt = compose_prompt(None, task)

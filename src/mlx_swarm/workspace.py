@@ -409,7 +409,7 @@ def validate_patch(
 
     result = _git(
         worktree,
-        ["apply", "--check", "--index", "-"],
+        ["apply", "--check", "--index", "--recount", "-"],
         input_bytes=payload.encode("utf-8"),
         check=False,
     )
@@ -531,7 +531,7 @@ def apply_artifact(
     validate_patch(payload, task=task, workspace=workspace)
     _git(
         worktree,
-        ["apply", "--index", "-"],
+        ["apply", "--index", "--recount", "-"],
         input_bytes=payload.encode("utf-8"),
     )
     commit = _git_text(

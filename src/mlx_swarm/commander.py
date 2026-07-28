@@ -385,6 +385,9 @@ APPROVED WORKSPACE ROOT
 
 Inspect only files below the approved workspace root. Put any material source
 text needed by workers into context.authoritativeSources as inline content.
+When a source comes from a workspace file, include its repository-relative
+path in the label and copy one exact contiguous excerpt. Never summarize,
+rewrite, or silently remove lines inside a source excerpt.
 Do not ask local workers to call tools, execute code, or read arbitrary paths.
 
 PLAN LIMITS

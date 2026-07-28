@@ -411,8 +411,19 @@ def _execute_initial_chunk(
             runnable_prompts,
         )
         record["statistics"] = stats
-        for task, output in zip(runnable_tasks, outputs):
-            _process_task_output(session, task, output)
+        for task, prompt, output in zip(
+            runnable_tasks,
+            runnable_prompts,
+            outputs,
+        ):
+            _process_task_output(
+                session,
+                task,
+                output,
+                prompt=prompt,
+                phase="generation",
+                statistics=stats,
+            )
     else:
         record["statistics"] = {"batchSize": 0}
 
@@ -543,8 +554,19 @@ def _repair_rejected_tasks(
                 repair_prompts,
             )
             repair_record["statistics"] = stats
-            for task, output in zip(runnable_tasks, outputs):
-                _process_task_output(session, task, output)
+            for task, prompt, output in zip(
+                runnable_tasks,
+                repair_prompts,
+                outputs,
+            ):
+                _process_task_output(
+                    session,
+                    task,
+                    output,
+                    prompt=prompt,
+                    phase=f"repair-{repair_round}",
+                    statistics=stats,
+                )
         else:
             repair_record["statistics"] = {"batchSize": 0}
 
@@ -619,8 +641,17 @@ def _process_task_output(
     session: Session,
     task: TaskDef,
     output: str,
+    *,
+    prompt: str,
+    phase: str,
+    statistics: dict[str, Any],
 ) -> None:
     """Evaluate the gate, normalize output, and update session state."""
+    previous_output = session.state["tasks"][task.id].get("output")
+    repeated_output = (
+        isinstance(previous_output, str)
+        and previous_output == output
+    )
     gate_result = evaluate_gate(output, task.gate)
     normalized, _ = normalize_output(output, task.gate)
     artifact = None
@@ -639,6 +670,15 @@ def _process_task_output(
                 "kind": "workspace",
                 "message": str(exc),
             })
+    if repeated_output and not gate_result["passed"]:
+        gate_result.setdefault("violations", []).append({
+            "id": "repeated-output",
+            "kind": "repair",
+            "message": (
+                "The response exactly repeated the previous rejected output. "
+                "Return a materially corrected artifact."
+            ),
+        })
     status = "completed" if gate_result["passed"] else "rejected"
     if (
         gate_result["passed"]
@@ -647,6 +687,16 @@ def _process_task_output(
     ):
         status = "awaiting_approval"
 
+    session.record_generation_attempt(
+        task.id,
+        phase=phase,
+        prompt=prompt,
+        output=output,
+        normalized_output=normalized,
+        gate_result=gate_result,
+        statistics=statistics,
+        repeated_output=repeated_output,
+    )
     session.update_task(
         task.id,
         status=status,

@@ -76,10 +76,16 @@ Before a mutating artifact becomes visible, validation rejects:
 - runtime artifact/worktree targets and symlink traversal;
 - binary patches, duplicate sections, rename/copy metadata;
 - symlink and submodule Git modes;
-- patches that fail fixed `git apply --check --index`.
+- patches that fail fixed `git apply --check --index --recount`.
 
 Structural failures become deterministic workspace gate violations and may use
 only the existing bounded local repair budget.
+
+`--recount` ignores worker-authored hunk line counts and recomputes them from
+the actual hunk body. It does not relax path, context, content, binary,
+symlink, or metadata checks and does not invent an edit. Apply uses the same
+mode, so a diff accepted during preview cannot fail merely because a small
+model guessed the hunk line numbers incorrectly.
 
 A valid diff becomes `awaiting_approval`. Apply or Reject writes an immutable
 digest-bound decision. Evidence is fsynced to a temporary inode and
@@ -87,8 +93,8 @@ atomically hard-linked to its final path, so readers never observe partial JSON
 and concurrent decisions cannot overwrite one another.
 
 Apply rechecks worktree HEAD and cleanliness, validates the diff again, runs
-`git apply --index`, and creates one unsigned, hook-free commit with a fixed
-local identity. Reject before apply seals the task as
+`git apply --index --recount`, and creates one unsigned, hook-free commit with
+a fixed local identity. Reject before apply seals the task as
 `rejected_by_operator` and blocks descendants.
 
 ## Verification

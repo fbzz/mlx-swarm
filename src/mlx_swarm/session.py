@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -176,6 +178,60 @@ class Session:
     def add_batch_record(self, batch: dict[str, Any]) -> None:
         self.state["batches"].append(batch)
         self._save()
+
+    def record_generation_attempt(
+        self,
+        task_id: str,
+        *,
+        phase: str,
+        prompt: str,
+        output: str,
+        normalized_output: str,
+        gate_result: dict[str, Any],
+        statistics: dict[str, Any],
+        repeated_output: bool,
+    ) -> dict[str, Any]:
+        """Persist one immutable prompt/output attempt for local audit."""
+        if task_id not in self.state["tasks"]:
+            raise KeyError(f"Unknown task: {task_id}")
+        attempt_root = self.dir / "attempts" / task_id
+        attempt_root.mkdir(parents=True, exist_ok=True)
+        ordinal = len(list(attempt_root.glob("attempt-*.json"))) + 1
+        relative_path = (
+            Path("attempts") / task_id / f"attempt-{ordinal:03d}.json"
+        )
+        prompt_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+        output_digest = hashlib.sha256(output.encode("utf-8")).hexdigest()
+        record = {
+            "schemaVersion": 1,
+            "taskId": task_id,
+            "attempt": ordinal,
+            "phase": phase,
+            "promptSha256": prompt_digest,
+            "outputSha256": output_digest,
+            "prompt": prompt,
+            "output": output,
+            "normalizedOutput": normalized_output,
+            "gateResult": gate_result,
+            "statistics": statistics,
+            "repeatedOutput": repeated_output,
+            "recordedAt": _utc_now(),
+        }
+        path = self.dir / relative_path
+        _exclusive_json(path, record)
+        summary = {
+            "attempt": ordinal,
+            "phase": phase,
+            "path": str(relative_path),
+            "promptSha256": prompt_digest,
+            "outputSha256": output_digest,
+            "gatePassed": bool(gate_result.get("passed")),
+            "repeatedOutput": repeated_output,
+        }
+        task_state = self.state["tasks"][task_id]
+        task_state.setdefault("generationAttempts", []).append(summary)
+        self._save()
+        return summary
 
     def set_status(self, status: str) -> None:
         self.state["status"] = status
@@ -462,6 +518,7 @@ def _initial_task_state(task: TaskDef) -> dict[str, Any]:
         "normalizedOutput": None,
         "gateResult": None,
         "repairAttempts": 0,
+        "generationAttempts": [],
         "batchIndex": None,
     }
 
@@ -473,3 +530,22 @@ def _atomic_json(path: Path, value: Any) -> None:
         encoding="utf-8",
     )
     temporary.replace(path)
+
+
+def _exclusive_json(path: Path, value: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+        )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.link(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)

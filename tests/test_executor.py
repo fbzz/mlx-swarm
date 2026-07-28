@@ -118,6 +118,52 @@ def test_global_repair_cap_zero_disables_repairs(tmp_path: Path) -> None:
     assert session.get_task_status("task") == "rejected"
 
 
+def test_generation_attempts_are_immutable_and_repeated_repair_changes_feedback(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=2,
+    )
+    backend = FakeBackend([
+        ["bad output"],
+        ["bad output"],
+        ["different but still bad"],
+    ])
+
+    session = execute_plan(
+        _config(tmp_path),
+        _plan(tmp_path, (task,), "attempt-audit"),
+        backend=backend,
+    )
+
+    attempts = session.state["tasks"]["task"]["generationAttempts"]
+    assert len(attempts) == 3
+    assert attempts[0]["repeatedOutput"] is False
+    assert attempts[1]["repeatedOutput"] is True
+    assert "exactly repeated" in backend.calls[2][1][0]
+    records = [
+        json.loads((session.dir / attempt["path"]).read_text())
+        for attempt in attempts
+    ]
+    assert [record["phase"] for record in records] == [
+        "generation",
+        "repair-1",
+        "repair-2",
+    ]
+    assert [record["output"] for record in records] == [
+        "bad output",
+        "bad output",
+        "different but still bad",
+    ]
+    assert records[1]["promptSha256"] == attempts[1]["promptSha256"]
+
+
 def test_wide_level_is_chunked_to_max_workers(tmp_path: Path) -> None:
     tasks = tuple(
         TaskDef(id=f"task-{index}", role="general", prompt="work")

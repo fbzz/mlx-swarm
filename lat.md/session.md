@@ -50,6 +50,17 @@ JSON shape persisted to session.json on disk.
       "normalizedOutput": "cleaned output",
       "gateResult": { "passed": true, "violations": [] },
       "repairAttempts": 0,
+      "generationAttempts": [
+        {
+          "attempt": 1,
+          "phase": "generation",
+          "path": "attempts/task-id/attempt-001.json",
+          "promptSha256": "...",
+          "outputSha256": "...",
+          "gatePassed": true,
+          "repeatedOutput": false
+        }
+      ],
       "batchIndex": 0
     }
   },
@@ -68,6 +79,9 @@ Methods for reading and updating session state.
 - **get_task_output**: Get normalized output only from a completed task.
 - **get_task_status**: Check current status.
 - **add_batch_record**: Record batch execution statistics.
+- **record_generation_attempt**: Persist the exact prompt, raw output,
+  normalized output, gate result, statistics, and digests in an immutable
+  per-task attempt file.
 - **export_results**: Export completed artifacts and compact failure metadata.
 - **attach_commander**: Snapshot the planning receipt, digest approval, and optional revision lineage.
 - **attach_workspace**: Persist the immutable execution contract, Git lineage,

@@ -132,7 +132,8 @@ Completed dependency output is injected with untrusted-data warning.
 Uncompleted dependency shows placeholder message.
 
 ### Repair prompt
-Repair prompt includes original prompt, gate feedback, and previous output.
+Repair prompt includes original prompt, gate feedback, and JSON-encoded
+previous output without nested Markdown delimiters.
 
 ### Worker identity
 Prompt always includes worker id and role section.
@@ -172,6 +173,11 @@ State survives save/load cycle.
 New sessions retain the validated plan, while legacy sessions without a snapshot
 continue to load from their original plan source.
 
+### Immutable generation attempts
+Initial generations and repairs persist exact prompt/output evidence and
+identify repeated deterministic responses without exposing rejected text in
+the frontier result.
+
 ## Executor
 
 End-to-end local orchestration tests use a fake backend. See [[src/mlx_swarm/executor.py]].
@@ -181,6 +187,10 @@ Rejected parents block descendants and rejected text is never injected.
 
 ### Global repair cap
 `max_repair=0` disables repair even if the task permits attempts.
+
+### Repeated repair feedback
+An identical rejected repair is recorded and changes the next feedback instead
+of reproducing an identical deterministic prompt.
 
 ### Wide-level chunking
 Dependency levels wider than maxWorkers execute in bounded chunks.
@@ -230,6 +240,12 @@ leakage prevention, Codex JSONL usage capture, missing-usage invalidation,
 symmetric oracle scoring, storage gates, immutable/resumable ledgers, seeded
 bootstrap intervals, the strict claim gate, sanitized exports, deterministic
 README rendering, and read-only cockpit API serialization.
+
+Fairness regressions additionally require one immutable paired-arm contract
+with a shared write-root set and task packet, reject contract drift, reject
+narrowed local plan authority, reject rewritten workspace source excerpts, and
+mark historical pre-protocol reports invalid rather than interpreting their
+score gap as worker quality.
 
 ### Inspect
 Inspect command returns session summary.
@@ -336,7 +352,9 @@ Traversal, binary metadata, unapproved paths, symlink traversal, submodule
 modes, stale lineage, and repository-local external Git drivers are rejected.
 
 Global/system Git drivers and inherited `GIT_*` overrides are disabled. Fixed
-`git apply --check` failures enter the bounded local repair loop.
+`git apply --check --recount` accepts correct edit bodies with inaccurate hunk
+line metadata; remaining structural failures enter the bounded local repair
+loop.
 
 ### Human decisions and recovery
 

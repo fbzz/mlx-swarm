@@ -222,6 +222,17 @@ the configured local MLX model with at most two repairs, a 45-minute ceiling
 per arm, seed `20260728`, a 20 GiB storage ceiling, and a 15 GiB free-space
 reserve.
 
+Fair-protocol evaluations additionally freeze one shared task packet and one
+shared set of production write roots for both arms. The packet contains the
+objective, failing evidence, acceptance argv, repository tree, and exact
+relevant test/traceback source. Frontier plans may not narrow the local arm’s
+path authority, and every workspace excerpt given to a local agent must match
+one contiguous region of the buggy checkout. Git may safely recount incorrect
+hunk line metadata, but it never changes the proposed additions or removals.
+Every local prompt and raw response is retained in an immutable attempt record.
+The exact shared authority and packet digest are retained as
+`pair-contract.json` beside the frozen case.
+
 The profile pins `codex-cli 0.145.0`. Install that exact official CLI in the
 ignored benchmark tooling directory and put it first on `PATH` for every
 prepare, run, status, and report command:
@@ -668,11 +679,13 @@ cross-machine benchmark.
 <!-- BEGIN MLX-SWARM-ECONOMICS -->
 ## Preliminary measured economics
 
-**Study status:** `preliminary` — Measured scores, time, and tokens are directional. The 30-pair product claim gate was not evaluated.
+**Study status:** `protocol_invalid` — The recorded rows are diagnostic history, not a fair paired economics comparison. A new evaluation must be prepared and run under the current protocol.
+
+**Protocol audit:** `invalid` — The tables below are retained to diagnose the old run, but they are not a valid paired comparison.
 
 **Preliminary 6-pair study.** This is a directional decision gate, not the planned 30-pair claim study. The strong “saves frontier tokens without reducing acceptance” claim is disabled regardless of the observed deltas.
 
-**Decision gate:** `stop_and_improve_workers` — Acceptance is materially behind (0/6 vs 6/6). Improve local agent patch quality before running the 30-pair study.
+**Decision gate:** `rerun_fair_protocol` — Do not use this study to judge worker acceptance or token economics; rerun the preliminary suite under the current symmetric protocol.
 
 Pinned protocol: `BugsInPy@11c5f1eea954a42132cfd06bf257766a7963e0fd` · `gpt-5.6-sol` (high) · local `local/qwen35-4b-opus-uncensored-6bit@e017ecf449428c52171387b7dee317e4803708940b8f50ea1c1ef0d25529cd3d` · seed `20260728`.
 

@@ -47,8 +47,8 @@
     "allUsageValid": true
   },
   "claim": {
-    "status": "preliminary",
-    "text": "Measured scores, time, and tokens are directional. The 30-pair product claim gate was not evaluated."
+    "status": "protocol_invalid",
+    "text": "The recorded rows are diagnostic history, not a fair paired economics comparison. A new evaluation must be prepared and run under the current protocol."
   },
   "rows": [
     {
@@ -764,8 +764,8 @@
   "studyType": "preliminary_6_pair",
   "sourceEvaluationId": "bugsinpy-v1-20260728t162359z",
   "decisionGate": {
-    "status": "stop_and_improve_workers",
-    "text": "Acceptance is materially behind (0/6 vs 6/6). Improve local worker patch quality before running the 30-pair study."
+    "status": "rerun_fair_protocol",
+    "text": "Do not use this study to judge worker acceptance or token economics; rerun the preliminary suite under the current symmetric protocol."
   },
   "preparation": {
     "caseCount": 8,
@@ -783,6 +783,7 @@
     "reasoningEffort": "high",
     "codexVersion": "codex-cli 0.145.0",
     "mlxSwarmCommit": "2f741c0f4f195272c65feef12939db1096c36717",
+    "evaluationProtocolVersion": null,
     "localModel": {
       "repository": "local/qwen35-4b-opus-uncensored-6bit",
       "revision": "local",
@@ -814,5 +815,19 @@
         "platform": "linux/amd64"
       }
     }
+  },
+  "protocolAudit": {
+    "status": "invalid",
+    "observedVersion": null,
+    "requiredVersion": 2,
+    "invariants": [
+      "one immutable task packet and write-root contract for both arms",
+      "exact contiguous workspace source excerpts",
+      "Git recount support for semantically valid diff hunks",
+      "immutable prompt and output evidence for every local attempt"
+    ],
+    "issues": [
+      "This study predates the symmetric write-root, source-packet, source-fidelity, patch-recount, and per-attempt evidence contract."
+    ]
   }
 }

@@ -3,24 +3,35 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from mlx_swarm.contracts import load_config
+from mlx_swarm.contracts import (
+    ContextSource,
+    Plan,
+    TaskContext,
+    TaskDef,
+    load_config,
+)
 from mlx_swarm.evaluation import (
+    FAIR_EVALUATION_PROTOCOL_VERSION,
     _remove_timed_out_docker_container,
     CommandResult,
     EvaluationError,
     EvaluationStore,
     aggregate_results,
+    apply_protocol_audit,
     bootstrap_mean_interval,
+    build_task_packet,
     container_path,
     copy_fixed_test_support,
     docker_runtime_argv,
     empty_local_usage,
+    ensure_pair_contract,
     evaluation_write_roots,
     evaluation_case,
     exclusive_case_lock,
@@ -49,6 +60,8 @@ from mlx_swarm.evaluation import (
     update_readme_economics,
     usage_with_phases,
     validate_arm_result,
+    validate_candidate_diff,
+    validate_evaluation_plan,
     validate_repository_symlinks,
     validate_resolved_dependencies,
 )
@@ -304,6 +317,252 @@ def test_codex_version_pin_and_constraint_chunking(
     chunks = split_constraint_text(packet)
     assert "".join(chunks) == packet
     assert all(0 < len(chunk) <= 4_000 for chunk in chunks)
+
+
+def test_task_packet_exposes_identical_write_roots_to_both_arms() -> None:
+    case = {
+        "caseId": "alpha-1",
+        "project": "alpha",
+        "objective": "Repair alpha",
+        "verificationArgv": [["pytest", "-q"]],
+    }
+    packet = build_task_packet(
+        case,
+        {"failureEvidence": "failed"},
+        ["alpha", "shared.py"],
+    )
+    assert "APPROVED WRITE ROOTS (identical for both paired arms)" in packet
+    assert "- alpha" in packet
+    assert "- shared.py" in packet
+
+
+def test_task_packet_context_is_deterministic_and_uses_only_buggy_tree(
+    tmp_path: Path,
+) -> None:
+    base = tmp_path / "base"
+    (base / "src").mkdir(parents=True)
+    (base / "tests").mkdir()
+    (base / "src" / "target.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    (base / "tests" / "test_target.py").write_text(
+        "def test_value():\n    assert VALUE == 2\n",
+        encoding="utf-8",
+    )
+    (base / "unrelated.py").write_text(
+        "SECRET_FUTURE_VALUE = 3\n",
+        encoding="utf-8",
+    )
+    case = {
+        "caseId": "alpha-1",
+        "project": "alpha",
+        "objective": "Repair alpha",
+        "verificationArgv": [["pytest", "-q"]],
+        "testFiles": ["tests/test_target.py"],
+    }
+    runtime = {
+        "baseSnapshot": str(base),
+        "failureEvidence": "src/target.py:1 assertion failed",
+    }
+    first = build_task_packet(case, runtime, ["src", "unrelated.py"])
+    second = build_task_packet(case, runtime, ["src", "unrelated.py"])
+    assert first == second
+    assert "src/target.py" in first
+    assert "tests/test_target.py" in first
+    assert "VALUE = 1" in first
+    assert "assert VALUE == 2" in first
+    # The complete tree is shared, but unrelated production contents are not
+    # promoted into the bounded relevant-source section.
+    relevant = first.split(
+        "FROZEN RELEVANT TEST AND TRACEBACK SOURCE CONTEXT:\n",
+        1,
+    )[1].split("INITIAL FAILURE EVIDENCE:", 1)[0]
+    assert "SECRET_FUTURE_VALUE" not in relevant
+
+
+def test_pair_contract_freezes_one_exact_packet_for_both_arms(
+    tmp_path: Path,
+) -> None:
+    case_root = tmp_path / "case"
+    base = case_root / "base"
+    (base / "src").mkdir(parents=True)
+    (base / "tests").mkdir()
+    (base / "src" / "target.py").write_text("VALUE = 1\n")
+    (base / "tests" / "test_target.py").write_text(
+        "def test_value():\n    assert VALUE == 2\n"
+    )
+    for argv in (
+        ["git", "init", "-q"],
+        ["git", "config", "user.name", "Benchmark"],
+        ["git", "config", "user.email", "benchmark@example.invalid"],
+        ["git", "add", "."],
+        ["git", "commit", "-qm", "base"],
+    ):
+        assert run_command(argv, cwd=base, timeout=30).returncode == 0
+    case = {
+        "caseId": "alpha-1",
+        "project": "alpha",
+        "objective": "Repair alpha",
+        "verificationArgv": [["pytest", "-q"]],
+        "testFiles": ["tests/test_target.py"],
+    }
+    runtime = {
+        "baseSnapshot": str(base),
+        "failureEvidence": "src/target.py:1 assertion failed",
+    }
+    first = ensure_pair_contract(
+        case,
+        runtime,
+        maximum_characters=120_000,
+    )
+    second = ensure_pair_contract(
+        case,
+        runtime,
+        maximum_characters=120_000,
+    )
+    assert first == second
+    assert first["approvedWriteRoots"] == ["src"]
+    assert (
+        first["taskPacketSha256"]
+        == hashlib.sha256(
+            first["taskPacket"].encode()
+        ).hexdigest()
+    )
+    assert (case_root / "pair-contract.json").is_file()
+
+    (base / "src" / "target.py").write_text("VALUE = 99\n")
+    with pytest.raises(EvaluationError, match="differs"):
+        ensure_pair_contract(
+            case,
+            runtime,
+            maximum_characters=120_000,
+        )
+
+
+def _evaluation_plan(
+    tmp_path: Path,
+    *,
+    allowed_paths: tuple[str, ...],
+    source_content: str,
+) -> Plan:
+    context = TaskContext(
+        objective="Repair value",
+        authoritative_sources=(
+            ContextSource(
+                label="VERBATIM FILE: src/value.py",
+                content=source_content,
+                sha256="unused",
+            ),
+        ),
+        constraints=("Production only",),
+        rejection_criteria=("No tests",),
+        output_protocol="Return one diff.",
+    )
+    task = TaskDef(
+        id="repair",
+        role="implementation",
+        prompt="Repair src/value.py.",
+        artifact_type="patch",
+        allowed_paths=allowed_paths,
+        verification=("bugsinpy-acceptance",),
+    )
+    return Plan(
+        source=tmp_path / "plan.json",
+        plan_id="fair-plan",
+        objective="Repair value",
+        context=context,
+        tasks=(task,),
+        raw={},
+        schema_version=2,
+    )
+
+
+def test_evaluation_plan_requires_symmetric_roots_and_verbatim_sources(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    (repository / "src").mkdir(parents=True)
+    (repository / "src" / "value.py").write_text(
+        "VALUE = 1\nOTHER = 2\n",
+        encoding="utf-8",
+    )
+    valid = _evaluation_plan(
+        tmp_path,
+        allowed_paths=("src",),
+        source_content="VALUE = 1\n",
+    )
+    validate_evaluation_plan(valid, repository, ["src"])
+
+    narrowed = _evaluation_plan(
+        tmp_path,
+        allowed_paths=("src/value.py",),
+        source_content="VALUE = 1\n",
+    )
+    with pytest.raises(EvaluationError, match="exact paired-arm write roots"):
+        validate_evaluation_plan(narrowed, repository, ["src"])
+
+    rewritten = _evaluation_plan(
+        tmp_path,
+        allowed_paths=("src",),
+        source_content="VALUE = 1\n# omitted lines\n",
+    )
+    with pytest.raises(EvaluationError, match="exact contiguous excerpt"):
+        validate_evaluation_plan(rewritten, repository, ["src"])
+
+
+def test_candidate_diff_cannot_escape_shared_arm_roots(tmp_path: Path) -> None:
+    repository = tmp_path / "repo"
+    repository.mkdir()
+    assert run_command(
+        ["git", "init", "-q"],
+        cwd=repository,
+        timeout=30,
+    ).returncode == 0
+    (repository / "src").mkdir()
+    (repository / "tests").mkdir()
+    (repository / "src" / "value.py").write_text("VALUE = 1\n")
+    (repository / "tests" / "helper.py").write_text("VALUE = 1\n")
+    patch = (
+        "diff --git a/tests/helper.py b/tests/helper.py\n"
+        "--- a/tests/helper.py\n"
+        "+++ b/tests/helper.py\n"
+        "@@ -1 +1 @@\n"
+        "-VALUE = 1\n"
+        "+VALUE = 2\n"
+    )
+    error = validate_candidate_diff(
+        patch,
+        {"caseId": "alpha-1"},
+        repository,
+        allowed_paths=["src"],
+    )
+    assert error is not None
+    assert "non-production" in error or "approved write roots" in error
+
+
+def test_protocol_audit_invalidates_old_results_and_accepts_current() -> None:
+    old = {
+        "claim": {"status": "preliminary", "text": "directional"},
+        "decisionGate": {"status": "stop_and_improve_workers"},
+    }
+    apply_protocol_audit(old, {})
+    assert old["claim"]["status"] == "protocol_invalid"
+    assert old["decisionGate"]["status"] == "rerun_fair_protocol"
+
+    current = {
+        "claim": {"status": "preliminary", "text": "directional"},
+    }
+    apply_protocol_audit(
+        current,
+        {
+            "evaluationProtocolVersion": (
+                FAIR_EVALUATION_PROTOCOL_VERSION
+            )
+        },
+    )
+    assert current["protocolAudit"]["status"] == "valid"
+    assert current["claim"]["status"] == "preliminary"
 
 
 def test_fresh_arm_repository_refreshes_copied_git_index(
