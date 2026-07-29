@@ -316,6 +316,10 @@ checks the saved prompt digest, reuses the accepted plan, and evaluates the
 new local candidate with the independent oracle. The measured phase unlocks
 only when every frozen calibration case scores `1`. A failed or invalid replay
 keeps it locked, so a weak 4B worker cannot trigger six new frontier pairs.
+If the sealed pilot itself contains invalid frontier evidence, replay remains
+available for zero-frontier diagnosis: missing accepted plans are recorded as
+score-zero cases, and that lineage stays ineligible for measured execution
+regardless of its replay outcome.
 
 To test a newly constrained delegation strategy without changing that frozen
 gate, supply capability-adapted plans:

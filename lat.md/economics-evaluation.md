@@ -146,6 +146,10 @@ plans and saved prompts without a frontier call.
 The replay copies the exact saved initial local prompts into fresh worktrees.
 Every prompt is SHA-256 checked before execution. The replay ledger records
 `frontierCalls: 0`; no planning or review adapter is reachable from this path.
+A sealed pilot with invalid frontier evidence remains replayable for diagnosis:
+each missing accepted plan becomes an explicit score-zero case. That diagnostic
+replay can never repair the invalid pilot or unlock measured frontier spend,
+even if every available local plan passes.
 
 The default replay strategy is `reasoning-edit`: a local reasoning pass is
 stored as non-authoritative evidence, then a local editing pass emits the

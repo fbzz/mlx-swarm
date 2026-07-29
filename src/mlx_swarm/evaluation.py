@@ -4462,9 +4462,10 @@ def run_local_replay_calibration(
         )
     detail = store.detail(evaluation_id)
     state = detail["evaluation"]
-    if state.get("pilotStatus") != "completed":
+    pilot_status = state.get("pilotStatus")
+    if not replayable_pilot_status(pilot_status):
         raise EvaluationError(
-            "Local replay requires a completed frozen calibration phase."
+            "Local replay requires a sealed frozen calibration phase."
         )
     evaluation_dir = store._dir(evaluation_id)
     diagnostic_only = adapted_plan_dir is not None
@@ -4806,25 +4807,64 @@ def run_local_replay_calibration(
     if not diagnostic_only:
         state_path = evaluation_dir / "evaluation.json"
         current_state = _read_json(state_path)
-        current_state["localReplayGate"] = {
-            "status": "passed" if gate_passed else "failed",
-            "replayId": replay_id,
-            "workerMode": worker_mode,
-            "requiredCases": required_cases,
-            "passedCases": passed_cases,
-            "recordedAt": replay["recordedAt"],
-        }
-        current_state["measuredStatus"] = (
-            "pending" if gate_passed else "locked_local_replay"
-        )
-        current_state["status"] = (
-            "pilot_completed"
-            if gate_passed
-            else "pilot_completed_local_replay_failed"
+        update_local_replay_state(
+            current_state,
+            gate_passed=gate_passed,
+            replay_id=replay_id,
+            worker_mode=worker_mode,
+            required_cases=required_cases,
+            passed_cases=passed_cases,
+            recorded_at=replay["recordedAt"],
         )
         current_state["updatedAt"] = utc_now()
         _atomic_json(state_path, current_state)
     return replay
+
+
+def replayable_pilot_status(value: Any) -> bool:
+    """Allow diagnostics after either a valid or invalid sealed pilot."""
+    return value in {"completed", "invalid"}
+
+
+def update_local_replay_state(
+    state: dict[str, Any],
+    *,
+    gate_passed: bool,
+    replay_id: str,
+    worker_mode: str,
+    required_cases: Sequence[str],
+    passed_cases: Sequence[str],
+    recorded_at: str,
+) -> None:
+    """Record replay evidence without letting an invalid pilot unlock spend."""
+    pilot_status = state.get("pilotStatus")
+    measured_eligible = gate_passed and pilot_status == "completed"
+    state["localReplayGate"] = {
+        "status": "passed" if gate_passed else "failed",
+        "measuredEligible": measured_eligible,
+        "pilotStatus": pilot_status,
+        "replayId": replay_id,
+        "workerMode": worker_mode,
+        "requiredCases": list(required_cases),
+        "passedCases": list(passed_cases),
+        "recordedAt": recorded_at,
+    }
+    if pilot_status == "invalid":
+        state["measuredStatus"] = "locked_invalid_pilot"
+        state["status"] = (
+            "pilot_invalid_local_replay_passed"
+            if gate_passed
+            else "pilot_invalid_local_replay_failed"
+        )
+        return
+    state["measuredStatus"] = (
+        "pending" if measured_eligible else "locked_local_replay"
+    )
+    state["status"] = (
+        "pilot_completed"
+        if measured_eligible
+        else "pilot_completed_local_replay_failed"
+    )
 
 
 def local_replay_promotion_gate(

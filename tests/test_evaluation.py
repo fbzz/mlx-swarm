@@ -76,6 +76,7 @@ from mlx_swarm.evaluation import (
     preliminary_study_subset,
     preliminary_evaluation_profile,
     profile_payload,
+    replayable_pilot_status,
     remove_sensitive_preparation_sources,
     render_readme_economics,
     retained_session_candidate_diff,
@@ -86,6 +87,7 @@ from mlx_swarm.evaluation import (
     split_constraint_text,
     strip_one_json_fence,
     update_readme_economics,
+    update_local_replay_state,
     usage_with_phases,
     validate_arm_result,
     validate_candidate_diff,
@@ -2270,6 +2272,39 @@ def test_local_replay_gate_requires_every_calibration_case() -> None:
     gate = local_replay_promotion_gate(required, both_pass)
     assert gate["status"] == "passed"
     assert gate["passedCases"] == required
+
+
+def test_invalid_sealed_pilot_is_replayable_but_never_unlocks_measured() -> None:
+    assert replayable_pilot_status("completed") is True
+    assert replayable_pilot_status("invalid") is True
+    assert replayable_pilot_status("pending") is False
+
+    state = {
+        "pilotStatus": "invalid",
+        "measuredStatus": "locked",
+        "status": "pilot_invalid",
+    }
+    update_local_replay_state(
+        state,
+        gate_passed=True,
+        replay_id="replay-1",
+        worker_mode="direct",
+        required_cases=["black-11", "fastapi-6"],
+        passed_cases=["black-11", "fastapi-6"],
+        recorded_at="now",
+    )
+    assert state["localReplayGate"] == {
+        "status": "passed",
+        "measuredEligible": False,
+        "pilotStatus": "invalid",
+        "replayId": "replay-1",
+        "workerMode": "direct",
+        "requiredCases": ["black-11", "fastapi-6"],
+        "passedCases": ["black-11", "fastapi-6"],
+        "recordedAt": "now",
+    }
+    assert state["measuredStatus"] == "locked_invalid_pilot"
+    assert state["status"] == "pilot_invalid_local_replay_passed"
 
 
 def test_capability_adapted_replay_never_unlocks_measured_work() -> None:
