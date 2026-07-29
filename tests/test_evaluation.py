@@ -1043,6 +1043,24 @@ def test_missing_codex_usage_is_explicitly_unavailable() -> None:
     assert combined["totalTokens"] is None
 
 
+def test_completed_codex_turn_without_usage_marks_stream_incomplete() -> None:
+    usage = parse_codex_usage_jsonl("\n".join([
+        json.dumps({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+            },
+        }),
+        json.dumps({"type": "turn.completed"}),
+    ]))
+
+    assert usage["turns"] == 1
+    assert usage["totalTokens"] == 15
+    assert usage["malformedLines"] == 1
+
+
 def test_arm_result_contract_rejects_unknown_fields_and_mixed_usage() -> None:
     result = _result("alpha-1", "frontier-alone", total_tokens=500)
     assert validate_arm_result(result)["score"] == 1

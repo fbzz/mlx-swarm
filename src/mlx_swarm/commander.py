@@ -78,9 +78,10 @@ class FrontierReceipt:
     usage: FrontierUsage
     provider: str | None = None
     model: str | None = None
+    input_artifact_sha256: str | None = None
 
     def to_json(self) -> dict[str, Any]:
-        return {
+        value = {
             "schemaVersion": COMMANDER_SCHEMA_VERSION,
             "phase": self.phase,
             "adapter": self.adapter,
@@ -89,8 +90,12 @@ class FrontierReceipt:
             "artifactSha256": self.artifact_sha256,
             "acceptedAt": self.accepted_at,
             "acceptedResponses": 1,
+            "attemptedResponses": 1,
             "usage": self.usage.to_json(),
         }
+        if self.input_artifact_sha256 is not None:
+            value["inputArtifactSha256"] = self.input_artifact_sha256
+        return value
 
 
 @dataclass(frozen=True)
@@ -104,6 +109,9 @@ class PlanApproval:
     execution_digest: str | None = None
     workspace_root: str | None = None
     base_sha: str | None = None
+    approval_mode: str | None = None
+    workspace_target: str | None = None
+    execution_policy_sha256: str | None = None
 
     def to_json(self) -> dict[str, Any]:
         value = {
@@ -119,6 +127,14 @@ class PlanApproval:
                 "workspaceRoot": self.workspace_root,
                 "baseSha": self.base_sha,
             })
+            if self.approval_mode is not None:
+                value["approvalMode"] = self.approval_mode
+            if self.workspace_target is not None:
+                value["workspaceTarget"] = self.workspace_target
+            if self.execution_policy_sha256 is not None:
+                value["executionPolicySha256"] = (
+                    self.execution_policy_sha256
+                )
         return value
 
 
@@ -448,6 +464,13 @@ PLAN LIMITS
 - use deterministic gates wherever artifact shape can be checked.
 - no task generationOverride.max_tokens may exceed \
 {config.worker.capabilities.max_generation_tokens}.
+- For patch or test-suite tasks using edit-manifest-v1, set max_tokens to at
+  most {min(800, config.worker.capabilities.max_generation_tokens)}. These
+  workers render exact edits; they do not need a long reasoning allowance.
+- For review tasks, set max_tokens to at most \
+{min(1000, config.worker.capabilities.max_generation_tokens)}.
+- For report tasks, set max_tokens to at most \
+{min(1800, config.worker.capabilities.max_generation_tokens)}.
 {workspace_contract}
 
 TOP-LEVEL SHAPE
@@ -489,7 +512,7 @@ TOP-LEVEL SHAPE
       "generationOverride": {{
         "temperature": 0.0,
         "top_p": 1.0,
-        "max_tokens": {min(1200, config.worker.capabilities.max_generation_tokens)}
+        "max_tokens": {min(800, config.worker.capabilities.max_generation_tokens)}
       }},
       "gate": {{
         "requiredPatterns": [{{"id": "rule-id", "pattern": "regex"}}],
@@ -706,22 +729,59 @@ class CommanderStore:
                 ],
             }
         execution_preview = None
+        execution_previews = None
         execution_error = None
         if plan_payload is not None and plan.workspace_execution:
-            from .workspace import WorkspaceError, execution_preview as preview
+            from .workspace import (
+                WorkspaceError,
+                execution_preview as preview,
+                execution_previews as previews,
+            )
 
-            try:
-                execution_preview = preview(self.config, plan)
-            except WorkspaceError as exc:
-                execution_error = str(exc)
+            approval = request.get("approval")
+            if request.get("status") == "launched" and isinstance(
+                approval,
+                dict,
+            ):
+                mode = approval.get("approvalMode", "supervised")
+                target = approval.get("workspaceTarget", "worktree")
+                execution_preview = {
+                    "ready": True,
+                    "executionDigest": approval.get("executionDigest"),
+                    "workspaceRoot": approval.get("workspaceRoot"),
+                    "baseSha": approval.get("baseSha"),
+                    "executionPolicySha256": approval.get(
+                        "executionPolicySha256"
+                    ),
+                    "executionPolicy": {
+                        "schemaVersion": 1,
+                        "approvalMode": mode,
+                        "workspaceTarget": target,
+                        "onVerificationFailure": "pause",
+                    },
+                    "historical": True,
+                }
+                execution_previews = {
+                    str(mode): {str(target): execution_preview}
+                }
+            else:
+                try:
+                    execution_preview = preview(self.config, plan)
+                    execution_previews = previews(self.config, plan)
+                except WorkspaceError as exc:
+                    execution_error = str(exc)
         return {
             "request": request,
             "plan": plan_payload,
             "planningReceipt": _optional_json(
                 request_dir / "frontier-plan-receipt.json"
             ),
+            "planningAttemptReceipt": _optional_json(
+                request_dir / "frontier-plan-attempt-receipt.json"
+            ),
             "validationError": _optional_json(request_dir / "plan.error.json"),
             "executionPreview": execution_preview,
+            "executionPreviews": execution_previews,
             "executionError": execution_error,
             "planPrompt": str(request_dir / "plan-prompt.txt"),
             "handoff": {
@@ -796,6 +856,34 @@ class CommanderStore:
             raise CommanderError("Planning response has already been recorded.")
         claim = _required_json(request_dir / "frontier-plan.claim.json")
         self._require_claim(claim, claim_id, "plan")
+        validated_plan_path = request_dir / "plan.validated.json"
+        planning_receipt_path = (
+            request_dir / "frontier-plan-receipt.json"
+        )
+        existing_plan = _optional_json(validated_plan_path)
+        existing_receipt = _optional_json(planning_receipt_path)
+        if existing_receipt is not None:
+            if existing_plan is None:
+                raise CommanderError(
+                    "Frontier planning receipt exists without its plan."
+                )
+            plan_digest = canonical_json_sha256(existing_plan)
+            existing_receipt = validate_frontier_receipt(
+                existing_receipt,
+                expected_phase="plan",
+                expected_artifact_sha256=plan_digest,
+            )
+            request["status"] = "plan_ready"
+            request["planDigest"] = plan_digest
+            request["planPhase"] = {
+                **request["planPhase"],
+                "status": "accepted",
+                "acceptedAt": existing_receipt["acceptedAt"],
+                "artifactSha256": plan_digest,
+            }
+            request["updatedAt"] = utc_now()
+            _atomic_json(request_dir / "request.json", request)
+            return self.request_detail(request_id)
         usage = frontier_usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -808,10 +896,14 @@ class CommanderStore:
             "adapter",
             100,
         )
-        response = _read_bounded_text(response_path)
-        _exclusive_text(request_dir / "frontier-plan.raw.txt", response)
+        response = ""
+        raw_response_path = request_dir / "frontier-plan.raw.txt"
         request["updatedAt"] = utc_now()
         try:
+            response = _capture_frontier_response(
+                raw_response_path,
+                response_path,
+            )
             raw_plan = parse_json_response(response)
             if not isinstance(raw_plan, dict):
                 raise CommanderError("Frontier plan response must be a JSON object.")
@@ -846,6 +938,23 @@ class CommanderStore:
                 if candidate.exists() and candidate.name.endswith(".tmp"):
                     candidate.unlink()
         except (CommanderError, ContractError, OSError, ValueError) as exc:
+            if (
+                not raw_response_path.exists()
+                and not raw_response_path.is_symlink()
+            ):
+                _exclusive_text(raw_response_path, response)
+            attempt = _invalid_frontier_attempt_receipt(
+                phase="plan",
+                adapter=normalized_adapter,
+                provider=normalized_provider,
+                model=normalized_model,
+                response=response,
+                usage=usage,
+            )
+            _atomic_json(
+                request_dir / "frontier-plan-attempt-receipt.json",
+                attempt,
+            )
             error = {
                 "schemaVersion": COMMANDER_SCHEMA_VERSION,
                 "phase": "plan",
@@ -865,7 +974,16 @@ class CommanderStore:
             ) from exc
         canonical_plan = plan.raw
         plan_digest = canonical_json_sha256(canonical_plan)
-        _atomic_json(request_dir / "plan.validated.json", canonical_plan)
+        if (
+            existing_plan is not None
+            and existing_plan != canonical_plan
+        ):
+            raise CommanderError(
+                "The imported plan differs from the durable validated plan "
+                "recorded before interruption."
+            )
+        if existing_plan is None:
+            _atomic_json(validated_plan_path, canonical_plan)
         receipt = FrontierReceipt(
             phase="plan",
             adapter=normalized_adapter,
@@ -875,7 +993,7 @@ class CommanderStore:
             accepted_at=utc_now(),
             usage=usage,
         ).to_json()
-        _atomic_json(request_dir / "frontier-plan-receipt.json", receipt)
+        _atomic_json(planning_receipt_path, receipt)
         request["status"] = "plan_ready"
         request["planDigest"] = plan_digest
         request["planPhase"] = {
@@ -895,6 +1013,8 @@ class CommanderStore:
         *,
         source: str = "cockpit",
         execution_digest: str | None = None,
+        approval_mode: str = "supervised",
+        workspace_target: str = "worktree",
     ) -> tuple[Plan, Path, PlanApproval, dict[str, Any], dict[str, Any]]:
         request_dir, request = self._load_request(request_id)
         if request["status"] != "plan_ready":
@@ -915,7 +1035,12 @@ class CommanderStore:
             from .workspace import WorkspaceError, execution_preview
 
             try:
-                preview = execution_preview(self.config, plan)
+                preview = execution_preview(
+                    self.config,
+                    plan,
+                    approval_mode=approval_mode,
+                    workspace_target=workspace_target,
+                )
             except WorkspaceError as exc:
                 raise CommanderError(str(exc)) from exc
             if execution_digest != preview["executionDigest"]:
@@ -932,6 +1057,17 @@ class CommanderStore:
             execution_digest=execution_digest,
             workspace_root=workspace_root,
             base_sha=base_sha,
+            approval_mode=(
+                approval_mode if plan.workspace_execution else None
+            ),
+            workspace_target=(
+                workspace_target if plan.workspace_execution else None
+            ),
+            execution_policy_sha256=(
+                preview["executionPolicySha256"]
+                if plan.workspace_execution
+                else None
+            ),
         )
         receipt = _required_json(request_dir / "frontier-plan-receipt.json")
         return plan, plan_path, approval, receipt, request
@@ -974,14 +1110,22 @@ class CommanderStore:
             )
         result_path = session_dir / "frontier-result.json"
         result = _required_json(result_path)
+        result_digest = canonical_json_sha256(result)
         prompt_path = session_dir / "frontier-review-prompt.txt"
-        if not prompt_path.exists():
-            _atomic_text(prompt_path, build_review_prompt(result))
+        expected_prompt = build_review_prompt(result)
+        if prompt_path.exists():
+            if prompt_path.read_text(encoding="utf-8") != expected_prompt:
+                raise CommanderError(
+                    "Existing review prompt differs from frontier-result.json."
+                )
+        else:
+            _atomic_text(prompt_path, expected_prompt)
         claim = self._create_claim(
             session_dir / "frontier-review.claim.json",
             phase="review",
             owner_id=f"{state['planId']}/{state['sessionId']}",
             adapter=adapter,
+            input_artifact_sha256=result_digest,
         )
         state["reviewStatus"] = "review_claimed"
         state["reviewClaim"] = {
@@ -996,6 +1140,7 @@ class CommanderStore:
             "sessionId": state["sessionId"],
             "promptPath": str(prompt_path),
             "frontierResult": str(result_path),
+            "inputArtifactSha256": result_digest,
         }
 
     def release_review_claim(self, session_dir: Path, claim_id: str) -> None:
@@ -1030,10 +1175,46 @@ class CommanderStore:
             raise CommanderError(
                 "Only completed local runs are eligible for frontier review."
             )
-        if (session_dir / "frontier-review.json").exists():
-            raise CommanderError("Frontier review has already been accepted.")
         claim = _required_json(session_dir / "frontier-review.claim.json")
         self._require_claim(claim, claim_id, "review")
+        review_path = session_dir / "frontier-review.json"
+        receipt_path = session_dir / "frontier-review-receipt.json"
+        existing_review = _optional_json(review_path)
+        existing_receipt = _optional_json(receipt_path)
+        if existing_receipt is not None:
+            if existing_review is None:
+                raise CommanderError(
+                    "Frontier review receipt exists without its artifact."
+                )
+            review_input = _required_json(
+                session_dir / "frontier-result.json"
+            )
+            input_digest = canonical_json_sha256(review_input)
+            review_digest = canonical_json_sha256(existing_review)
+            existing_receipt = validate_frontier_receipt(
+                existing_receipt,
+                expected_phase="review",
+                expected_artifact_sha256=review_digest,
+                expected_input_artifact_sha256=input_digest,
+            )
+            recovered_review = parse_frontier_review(
+                existing_review,
+                expected_plan_id=state["planId"],
+                expected_session_id=state["sessionId"],
+            )
+            state["reviewStatus"] = recovered_review.verdict
+            state["frontierReview"] = "frontier-review.json"
+            state["frontierReviewReceipt"] = (
+                "frontier-review-receipt.json"
+            )
+            state.pop("reviewError", None)
+            _atomic_json(session_dir / "session.json", state)
+            usage_payload = write_frontier_usage(session_dir)
+            return {
+                "review": existing_review,
+                "receipt": existing_receipt,
+                "frontierUsage": usage_payload,
+            }
         usage = frontier_usage(
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
@@ -1046,16 +1227,63 @@ class CommanderStore:
             "adapter",
             100,
         )
-        response = _read_bounded_text(response_path)
-        _exclusive_text(session_dir / "frontier-review.raw.txt", response)
+        response = ""
+        raw_response_path = session_dir / "frontier-review.raw.txt"
+        claimed_input_digest = claim.get("inputArtifactSha256")
+        review_input_digest = (
+            claimed_input_digest
+            if isinstance(claimed_input_digest, str)
+            else None
+        )
         try:
+            response = _capture_frontier_response(
+                raw_response_path,
+                response_path,
+            )
+            review_input = _required_json(
+                session_dir / "frontier-result.json"
+            )
+            review_input_digest = canonical_json_sha256(review_input)
+            if claim.get("inputArtifactSha256") != review_input_digest:
+                raise CommanderError(
+                    "frontier-result.json changed after the review claim."
+                )
             raw_review = parse_json_response(response)
             review = parse_frontier_review(
                 raw_review,
                 expected_plan_id=state["planId"],
                 expected_session_id=state["sessionId"],
             )
+            review_payload = review.to_json()
+            if (
+                existing_review is not None
+                and existing_review != review_payload
+            ):
+                raise CommanderError(
+                    "The imported review differs from the durable review "
+                    "artifact recorded before interruption."
+                )
         except (CommanderError, ValueError) as exc:
+            if (
+                not raw_response_path.exists()
+                and not raw_response_path.is_symlink()
+            ):
+                _exclusive_text(raw_response_path, response)
+            attempt = _invalid_frontier_attempt_receipt(
+                phase="review",
+                adapter=normalized_adapter,
+                provider=normalized_provider,
+                model=normalized_model,
+                response=response,
+                usage=usage,
+                input_artifact_sha256=(
+                    claimed_input_digest or review_input_digest
+                ),
+            )
+            _atomic_json(
+                session_dir / "frontier-review-attempt-receipt.json",
+                attempt,
+            )
             error = {
                 "schemaVersion": COMMANDER_SCHEMA_VERSION,
                 "phase": "review",
@@ -1066,12 +1294,13 @@ class CommanderStore:
             state["reviewStatus"] = "review_error"
             state["reviewError"] = error
             _atomic_json(session_dir / "session.json", state)
+            write_frontier_usage(session_dir)
             raise CommanderError(
                 f"Frontier review is invalid and this phase is sealed: {exc}"
             ) from exc
-        review_payload = review.to_json()
         review_digest = canonical_json_sha256(review_payload)
-        _atomic_json(session_dir / "frontier-review.json", review_payload)
+        if existing_review is None:
+            _atomic_json(review_path, review_payload)
         receipt = FrontierReceipt(
             phase="review",
             adapter=normalized_adapter,
@@ -1080,8 +1309,9 @@ class CommanderStore:
             artifact_sha256=review_digest,
             accepted_at=utc_now(),
             usage=usage,
+            input_artifact_sha256=review_input_digest,
         ).to_json()
-        _atomic_json(session_dir / "frontier-review-receipt.json", receipt)
+        _atomic_json(receipt_path, receipt)
         state["reviewStatus"] = review.verdict
         state["frontierReview"] = "frontier-review.json"
         state["frontierReviewReceipt"] = "frontier-review-receipt.json"
@@ -1098,6 +1328,7 @@ class CommanderStore:
 
     def review_detail(self, session_dir: Path) -> dict[str, Any]:
         session_dir, state = self._load_session(session_dir)
+        frontier_usage_payload = write_frontier_usage(session_dir)
         return {
             "reviewStatus": state.get(
                 "reviewStatus",
@@ -1111,9 +1342,10 @@ class CommanderStore:
             "reviewReceipt": _optional_json(
                 session_dir / "frontier-review-receipt.json"
             ),
-            "frontierUsage": _optional_json(
-                session_dir / "frontier-usage.json"
+            "reviewAttemptReceipt": _optional_json(
+                session_dir / "frontier-review-attempt-receipt.json"
             ),
+            "frontierUsage": frontier_usage_payload,
             "reviewError": _optional_json(
                 session_dir / "frontier-review.error.json"
             ),
@@ -1278,6 +1510,7 @@ class CommanderStore:
         phase: str,
         owner_id: str,
         adapter: str,
+        input_artifact_sha256: str | None = None,
     ) -> dict[str, Any]:
         adapter = _text(adapter, "adapter", 100)
         claim = {
@@ -1288,6 +1521,11 @@ class CommanderStore:
             "adapter": adapter,
             "claimedAt": utc_now(),
         }
+        if input_artifact_sha256 is not None:
+            claim["inputArtifactSha256"] = _sha256(
+                input_artifact_sha256,
+                "inputArtifactSha256",
+            )
         _exclusive_text(
             path,
             json.dumps(claim, ensure_ascii=False, indent=2) + "\n",
@@ -1313,18 +1551,78 @@ def write_frontier_usage(session_dir: Path) -> dict[str, Any]:
     plan_receipt = _optional_json(
         session_dir / "frontier-plan-receipt.json"
     )
+    if plan_receipt is not None:
+        plan_path = session_dir / "plan.snapshot.json"
+        expected_plan_digest = canonical_json_sha256(
+            _required_json(plan_path)
+        )
+        plan_receipt = validate_frontier_receipt(
+            plan_receipt,
+            expected_phase="plan",
+            expected_artifact_sha256=expected_plan_digest,
+        )
     review_receipt = _optional_json(
         session_dir / "frontier-review-receipt.json"
     )
+    review_is_attempt = False
+    if review_receipt is None:
+        review_receipt = _optional_json(
+            session_dir / "frontier-review-attempt-receipt.json"
+        )
+        review_is_attempt = review_receipt is not None
+    if review_receipt is not None:
+        expected_review_digest = None
+        expected_response_digest = None
+        if not review_is_attempt:
+            review_path = session_dir / "frontier-review.json"
+            expected_review_digest = canonical_json_sha256(
+                _required_json(review_path)
+            )
+        expected_input_digest = None
+        if review_is_attempt:
+            claim = _required_json(
+                session_dir / "frontier-review.claim.json"
+            )
+            expected_input_digest = claim.get(
+                "inputArtifactSha256"
+            )
+            raw_response = _read_bounded_text(
+                session_dir / "frontier-review.raw.txt"
+            )
+            expected_response_digest = hashlib.sha256(
+                raw_response.encode("utf-8")
+            ).hexdigest()
+        else:
+            result_path = session_dir / "frontier-result.json"
+            expected_input_digest = canonical_json_sha256(
+                _required_json(result_path)
+            )
+        review_receipt = validate_frontier_receipt(
+            review_receipt,
+            expected_phase="review",
+            expected_artifact_sha256=expected_review_digest,
+            expected_input_artifact_sha256=expected_input_digest,
+            expected_response_sha256=expected_response_digest,
+            expected_outcome=(
+                "invalid" if review_is_attempt else "accepted"
+            ),
+        )
     planning = _usage_phase(plan_receipt, pending=False)
     review = _usage_phase(review_receipt, pending=review_receipt is None)
-    phases = [phase for phase in (planning, review) if phase["acceptedResponses"]]
+    phases = [
+        phase
+        for phase in (planning, review)
+        if phase["attemptedResponses"]
+    ]
     all_reported = bool(phases) and all(
         phase["usageStatus"] == "reported" for phase in phases
     )
     totals = {
         "acceptedResponses": sum(
             phase["acceptedResponses"] for phase in (planning, review)
+        ),
+        "attemptedResponses": sum(
+            phase["attemptedResponses"] for phase in (planning, review)
         ),
         "usageStatus": "reported" if all_reported else "unavailable",
         "promptTokens": (
@@ -1353,6 +1651,154 @@ def write_frontier_usage(session_dir: Path) -> dict[str, Any]:
     return payload
 
 
+def validate_frontier_receipt(
+    raw: Any,
+    *,
+    expected_phase: str,
+    expected_artifact_sha256: str | None = None,
+    expected_input_artifact_sha256: str | None = None,
+    expected_response_sha256: str | None = None,
+    expected_outcome: str = "accepted",
+) -> dict[str, Any]:
+    """Strictly validate immutable accepted or invalid frontier evidence."""
+    receipt = _object(raw, "frontierReceipt")
+    if expected_outcome == "accepted":
+        required = {
+            "schemaVersion",
+            "phase",
+            "adapter",
+            "provider",
+            "model",
+            "artifactSha256",
+            "acceptedAt",
+            "acceptedResponses",
+            "attemptedResponses",
+            "usage",
+        }
+        optional = {"inputArtifactSha256"}
+    elif expected_outcome == "invalid":
+        required = {
+            "schemaVersion",
+            "phase",
+            "outcome",
+            "adapter",
+            "provider",
+            "model",
+            "responseSha256",
+            "recordedAt",
+            "acceptedResponses",
+            "attemptedResponses",
+            "usage",
+        }
+        optional = {"inputArtifactSha256"}
+    else:
+        raise CommanderError("Unsupported frontier receipt outcome.")
+    _exact_keys(receipt, "frontierReceipt", required, optional)
+    if receipt.get("schemaVersion") != COMMANDER_SCHEMA_VERSION:
+        raise CommanderError("Unsupported frontier receipt schema version.")
+    if receipt.get("phase") != expected_phase:
+        raise CommanderError("Frontier receipt phase is invalid.")
+    _text(receipt.get("adapter"), "frontierReceipt.adapter", 100)
+    _optional_text(
+        receipt.get("provider"),
+        "frontierReceipt.provider",
+        200,
+    )
+    _optional_text(receipt.get("model"), "frontierReceipt.model", 300)
+    expected_counts = (
+        (1, 1) if expected_outcome == "accepted" else (0, 1)
+    )
+    counts = (
+        receipt.get("acceptedResponses"),
+        receipt.get("attemptedResponses"),
+    )
+    if counts != expected_counts:
+        raise CommanderError("Frontier receipt response counts are invalid.")
+    if expected_outcome == "accepted":
+        artifact_digest = _sha256(
+            receipt.get("artifactSha256"),
+            "frontierReceipt.artifactSha256",
+        )
+        _text(
+            receipt.get("acceptedAt"),
+            "frontierReceipt.acceptedAt",
+            100,
+        )
+        if (
+            expected_artifact_sha256 is not None
+            and artifact_digest != expected_artifact_sha256
+        ):
+            raise CommanderError(
+                "Frontier receipt artifact digest does not match its artifact."
+            )
+    else:
+        if receipt.get("outcome") != "invalid":
+            raise CommanderError("Frontier attempt outcome is invalid.")
+        response_digest = _sha256(
+            receipt.get("responseSha256"),
+            "frontierReceipt.responseSha256",
+        )
+        if (
+            expected_response_sha256 is not None
+            and response_digest != expected_response_sha256
+        ):
+            raise CommanderError(
+                "Frontier attempt response digest does not match its raw "
+                "evidence."
+            )
+        _text(
+            receipt.get("recordedAt"),
+            "frontierReceipt.recordedAt",
+            100,
+        )
+    input_digest = receipt.get("inputArtifactSha256")
+    if input_digest is not None:
+        input_digest = _sha256(
+            input_digest,
+            "frontierReceipt.inputArtifactSha256",
+        )
+    if (
+        expected_input_artifact_sha256 is not None
+        and input_digest != expected_input_artifact_sha256
+    ):
+        raise CommanderError(
+            "Frontier receipt input digest does not match its artifact."
+        )
+    usage_raw = _object(receipt.get("usage"), "frontierReceipt.usage")
+    _exact_keys(
+        usage_raw,
+        "frontierReceipt.usage",
+        {
+            "usageStatus",
+            "promptTokens",
+            "completionTokens",
+            "totalTokens",
+        },
+    )
+    usage_status = usage_raw.get("usageStatus")
+    if usage_status not in USAGE_STATUSES:
+        raise CommanderError("Frontier receipt usage status is invalid.")
+    if usage_status == "unavailable":
+        if any(
+            usage_raw.get(key) is not None
+            for key in (
+                "promptTokens",
+                "completionTokens",
+                "totalTokens",
+            )
+        ):
+            raise CommanderError(
+                "Unavailable frontier usage cannot contain token values."
+            )
+    else:
+        frontier_usage(
+            prompt_tokens=usage_raw.get("promptTokens"),
+            completion_tokens=usage_raw.get("completionTokens"),
+            total_tokens=usage_raw.get("totalTokens"),
+        )
+    return receipt
+
+
 def _usage_phase(
     receipt: dict[str, Any] | None,
     *,
@@ -1361,6 +1807,7 @@ def _usage_phase(
     if receipt is None:
         return {
             "acceptedResponses": 0,
+            "attemptedResponses": 0,
             "usageStatus": "pending" if pending else "not_recorded",
             "promptTokens": None,
             "completionTokens": None,
@@ -1368,7 +1815,8 @@ def _usage_phase(
         }
     usage = receipt.get("usage", {})
     return {
-        "acceptedResponses": 1,
+        "acceptedResponses": receipt.get("acceptedResponses", 1),
+        "attemptedResponses": receipt.get("attemptedResponses", 1),
         "usageStatus": usage.get("usageStatus", "unavailable"),
         "promptTokens": usage.get("promptTokens"),
         "completionTokens": usage.get("completionTokens"),
@@ -1378,7 +1826,40 @@ def _usage_phase(
         "model": receipt.get("model"),
         "artifactSha256": receipt.get("artifactSha256"),
         "acceptedAt": receipt.get("acceptedAt"),
+        "recordedAt": receipt.get("recordedAt"),
+        "outcome": receipt.get("outcome", "accepted"),
     }
+
+
+def _invalid_frontier_attempt_receipt(
+    *,
+    phase: str,
+    adapter: str,
+    provider: str | None,
+    model: str | None,
+    response: str,
+    usage: FrontierUsage,
+    input_artifact_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Record spent frontier usage even when its structured artifact is invalid."""
+    value = {
+        "schemaVersion": COMMANDER_SCHEMA_VERSION,
+        "phase": phase,
+        "outcome": "invalid",
+        "adapter": adapter,
+        "provider": provider,
+        "model": model,
+        "responseSha256": hashlib.sha256(
+            response.encode("utf-8")
+        ).hexdigest(),
+        "recordedAt": utc_now(),
+        "acceptedResponses": 0,
+        "attemptedResponses": 1,
+        "usage": usage.to_json(),
+    }
+    if input_artifact_sha256 is not None:
+        value["inputArtifactSha256"] = input_artifact_sha256
+    return value
 
 
 def _request_id() -> str:
@@ -1397,6 +1878,45 @@ def _read_bounded_text(path: Path) -> str:
             f"Frontier response exceeds {MAX_FRONTIER_RESPONSE_BYTES} bytes."
         )
     return resolved.read_text(encoding="utf-8")
+
+
+def _capture_frontier_response(
+    destination: Path,
+    source: Path,
+) -> str:
+    """Publish one raw response, or resume from the identical durable copy."""
+    if destination.is_symlink():
+        raise CommanderError(
+            f"Frontier response evidence cannot be a symlink: "
+            f"{destination.name}"
+        )
+    if destination.is_file():
+        existing = _read_bounded_text(destination)
+        try:
+            incoming = _read_bounded_text(source)
+        except CommanderError:
+            # A crash may occur after the raw response becomes durable but
+            # before its receipt/state. The immutable local copy is sufficient
+            # to finish that same claimed phase.
+            return existing
+        durable_incoming = (
+            incoming
+            if not incoming or incoming.endswith("\n")
+            else incoming + "\n"
+        )
+        if durable_incoming != existing:
+            raise CommanderError(
+                "The supplied frontier response differs from the already "
+                "recorded raw evidence."
+            )
+        return existing
+    response = _read_bounded_text(source)
+    _exclusive_text(destination, response)
+    return (
+        response
+        if not response or response.endswith("\n")
+        else response + "\n"
+    )
 
 
 def _exclusive_text(
@@ -1542,6 +2062,17 @@ def _sha256(value: Any, name: str) -> str:
     return value
 
 
+def _git_oid(value: Any, name: str) -> str:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", value) is None
+    ):
+        raise CommanderError(
+            f"{name} must be a lowercase Git object ID."
+        )
+    return value
+
+
 def _parse_approval(value: dict[str, Any]) -> None:
     _exact_keys(
         value,
@@ -1553,6 +2084,14 @@ def _parse_approval(value: dict[str, Any]) -> None:
             "approvedAt",
             "source",
         },
+        {
+            "executionDigest",
+            "workspaceRoot",
+            "baseSha",
+            "approvalMode",
+            "workspaceTarget",
+            "executionPolicySha256",
+        },
     )
     if value["schemaVersion"] != COMMANDER_SCHEMA_VERSION:
         raise CommanderError("Unsupported plan approval schema version.")
@@ -1560,6 +2099,59 @@ def _parse_approval(value: dict[str, Any]) -> None:
     _sha256(value["planSha256"], "request.approval.planSha256")
     _text(value["approvedAt"], "request.approval.approvedAt", 100)
     _text(value["source"], "request.approval.source", 100)
+    legacy_workspace_fields = {
+        "executionDigest",
+        "workspaceRoot",
+        "baseSha",
+    }
+    policy_fields = {
+        "approvalMode",
+        "workspaceTarget",
+        "executionPolicySha256",
+    }
+    workspace_fields = legacy_workspace_fields | policy_fields
+    present = workspace_fields.intersection(value)
+    if frozenset(present) not in {
+        frozenset(),
+        frozenset(legacy_workspace_fields),
+        frozenset(workspace_fields),
+    }:
+        raise CommanderError(
+            "Workspace plan approval fields must be recorded together."
+        )
+    if present:
+        _sha256(
+            value["executionDigest"],
+            "request.approval.executionDigest",
+        )
+        _text(
+            value["workspaceRoot"],
+            "request.approval.workspaceRoot",
+            10_000,
+        )
+        _git_oid(value["baseSha"], "request.approval.baseSha")
+        if policy_fields.issubset(present):
+            from .workspace import (
+                WorkspaceError,
+                canonical_sha256,
+                execution_policy,
+            )
+
+            try:
+                policy = execution_policy(
+                    approval_mode=value["approvalMode"],
+                    workspace_target=value["workspaceTarget"],
+                )
+            except WorkspaceError as exc:
+                raise CommanderError(str(exc)) from exc
+            recorded_policy_digest = _sha256(
+                value["executionPolicySha256"],
+                "request.approval.executionPolicySha256",
+            )
+            if recorded_policy_digest != canonical_sha256(policy):
+                raise CommanderError(
+                    "Request approval execution policy digest is invalid."
+                )
 
 
 def _is_within(path: Path, root: Path) -> bool:

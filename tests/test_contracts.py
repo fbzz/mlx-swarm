@@ -54,6 +54,17 @@ def test_load_config_minimal(tmp_path: Path) -> None:
     assert config.seed == 20260727
 
 
+def test_default_parallelism_is_interactive_four_workers(
+    tmp_path: Path,
+) -> None:
+    raw = json.loads(_write_config(tmp_path).read_text())
+    raw["batch"].pop("maxWorkers")
+    path = tmp_path / "default-workers.json"
+    path.write_text(json.dumps(raw))
+
+    assert load_config(path).batch.max_workers == 4
+
+
 def test_load_config_with_local_path(tmp_path: Path) -> None:
     model_dir = tmp_path / "model"
     model_dir.mkdir()
@@ -184,6 +195,47 @@ def test_plan_generation_cannot_exceed_worker_capability(
     })
     with pytest.raises(ContractError, match="maxGenerationTokens"):
         load_plan(plan_path, config)
+
+
+def test_exact_edit_default_fits_eight_hundred_token_cap(
+    tmp_path: Path,
+) -> None:
+    config = load_config(_write_config(tmp_path, {
+        "schemaVersion": 2,
+        "worker": {
+            "capabilities": {
+                "maxGenerationTokens": 800,
+            },
+        },
+        "workspace": {
+            "writeRoots": ["src"],
+            "verificationProfiles": {},
+        },
+    }))
+    plan_path = _write_plan(tmp_path, {
+        "schemaVersion": 2,
+        "tasks": [{
+            "id": "task-a",
+            "role": "implementation",
+            "prompt": "Return one exact edit.",
+            "artifactType": "patch",
+            "workerOutputProtocol": "edit-manifest-v1",
+            "allowedPaths": ["src/value.py"],
+            "verification": [],
+            "gate": {
+                "requiredPatterns": [],
+                "forbiddenPatterns": [],
+                "maxCharacters": 4000,
+                "format": "json",
+                "jsonRequiredKeys": ["edits"],
+                "jsonAllowedKeys": ["edits"],
+            },
+        }],
+    })
+
+    plan = load_plan(plan_path, config)
+
+    assert plan.tasks[0].generation_override == {}
 
 
 # ---------------------------------------------------------------------------

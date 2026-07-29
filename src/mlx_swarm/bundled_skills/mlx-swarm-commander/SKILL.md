@@ -45,6 +45,9 @@ validation, approval, execution, or claim logic in ad hoc scripts.
    broader proxy, cite exact authoritative excerpts for those predictions, and
    keep `changeValidation.candidateChange` consistent with every mutating task's
    literal old-to-new instructions.
+   Do not choose, request, or encode an execution approval mode or workspace
+   target in the plan. Supervised versus YOLO and worktree versus checkout are
+   operator-owned cockpit choices bound into a separate execution digest.
 5. Save the response beside the prompt as
    `frontier-plan.response.json`.
 6. Import it once using the returned claim:
@@ -67,8 +70,11 @@ Do not approve the plan for the operator. If it is not approved, stop with the
 cockpit instruction. If `sessionRef` exists, use `mlx-swarm --config CONFIG
 list` to resolve the session directory. Observe local execution without
 creating or importing any frontier artifact between worker waves.
-Do not apply or reject workspace artifacts for the operator. Those decisions
-remain digest-bound human actions in the cockpit or deterministic CLI.
+Do not apply or reject workspace artifacts for the operator. In supervised
+mode those decisions remain digest-bound human actions. In YOLO, the runtime
+may publish its own `source: yolo` decision only because the operator already
+approved that exact execution policy and target digest; the skill never enables
+or changes it.
 
 ## Perform final review
 

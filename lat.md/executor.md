@@ -39,9 +39,17 @@ decision. Verify runs only the same snapshotted profiles. Reject after apply
 creates a revert commit. Neither action triggers local repair generation or a
 frontier call.
 
-The executor holds an exclusive session runner lock and keeps the backend
-resident while polling the immutable decision ledger. Recovery reconciles
-interrupted artifact persistence and Git commits without duplicate apply. See
+In supervised mode the executor polls the immutable decision ledger while the
+model remains resident. In YOLO mode it writes an equally immutable
+`source: yolo` Apply receipt bound to the artifact and snapshotted execution
+policy digests, then applies and verifies without another frontier call. A
+verification failure ends the active runner as a resumable partial session; it
+never triggers automatic repair or rollback.
+
+The executor holds an exclusive session runner lock. Main-checkout YOLO also
+holds a repository-wide runner lock so two sessions cannot mutate the same
+checkout concurrently. Recovery reconciles interrupted artifact persistence and
+Git commits without duplicate apply. See
 [[workspace-execution]] and
 [[src/mlx_swarm/executor.py#_await_workspace_tasks]].
 

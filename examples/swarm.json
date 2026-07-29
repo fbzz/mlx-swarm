@@ -1,14 +1,15 @@
 {
   "schemaVersion": 2,
   "model": {
-    "repository": "mlx-community/Qwen3-4B-4bit",
+    "repository": "mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit",
     "revision": "",
-    "localPath": ""
+    "localPath": "~/models/qwen35-4b-opus-uncensored-6bit"
   },
   "batch": {
-    "maxWorkers": 32,
+    "maxWorkers": 4,
     "prefillStepSize": 512,
-    "maxPromptCharacters": 120000
+    "maxPromptCharacters": 120000,
+    "maxBatchPromptTokens": 32768
   },
   "artifacts": ".swarm/runs",
   "workspace": {
@@ -41,6 +42,32 @@
         "timeoutSeconds": 120,
         "inheritEnv": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
         "environment": {}
+      }
+    }
+  },
+  "worker": {
+    "mode": "direct",
+    "reasoningMaxTokens": 512,
+    "capabilities": {
+      "parameterScale": "4B",
+      "contextWindowTokens": 262144,
+      "maxGenerationTokens": 1800,
+      "specialization": "code",
+      "delegationLevel": "exact-edit",
+      "strengths": [
+        "Passed both capability-adapted exact-edit calibration cases with one generation and no repair.",
+        "True MLX batching at four compatible tasks per worker wave."
+      ],
+      "limitations": [
+        "Failed both frozen autonomous-diagnosis calibration cases.",
+        "Must not be asked to discover APIs, choose a causal fix, or inspect missing source.",
+        "Use 500-800 generation tokens for exact edits; reserve larger budgets for review or report artifacts."
+      ],
+      "calibration": {
+        "status": "passed",
+        "passedCases": 2,
+        "totalCases": 2,
+        "evidenceSha256": "b998dbbc3c868e7b17b82d789fc97d72c24de0ff8b48fc55c2c3538a8bee18ee"
       }
     }
   },

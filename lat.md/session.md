@@ -36,8 +36,14 @@ JSON shape persisted to session.json on disk.
   "status": "running",
   "reviewStatus": "pending_local",
   "launchSource": "commander",
+  "approvalMode": "yolo",
+  "workspaceTarget": "worktree",
   "commanderRequestId": "request-...",
-  "planApproval": { "planSha256": "..." },
+  "planApproval": {
+    "planSha256": "...",
+    "executionSha256": "...",
+    "executionPolicySha256": "..."
+  },
   "retryOf": "my-plan/20260727T110000Z-12345678",
   "maxRepair": 2,
   "planSnapshot": "plan.snapshot.json",
@@ -88,17 +94,27 @@ Methods for reading and updating session state.
   session-confined path and SHA-256.
 - **export_results**: Export completed artifacts and compact failure metadata.
 - **attach_commander**: Snapshot the planning receipt, digest approval, and optional revision lineage.
-- **attach_workspace**: Persist the immutable execution contract, Git lineage,
-  branch/worktree path, and dual-digest approval.
+- **attach_workspace**: Persist the immutable execution contract, execution
+  policy, Git lineage, branch/execution path, and digest-bound approval.
 - **write_frontier_result**: Persist the self-contained v2 generation packet or
   v3 completed-workspace packet; rejected raw generations are omitted and
   compact local usage remains separate from frontier receipts.
+
+Before local generation, the session also seals `localExecutionProfile`: the
+resolved model path and content fingerprint, batch limits, worker capability
+contract, role defaults, Python/platform/package versions, and the MLX Swarm
+source digest. Resume rejects a different profile, and the cockpit plus final
+packet expose it for later comparison.
 
 ## Resume
 
 Sessions can be resumed via `mlx-swarm resume <session_dir>`. The [[Executor]] preserves the session ID and completed artifacts, recovers interrupted tasks, and resumes stored rejections only when repair budget remains. See [[src/mlx_swarm/session.py#Session#load]].
 
 Workspace session loading reconstructs path and profile authority from
-`workspace.snapshot.json`, not the live config. Completed v3 packets include
-applied artifact manifests, apply/verification receipts, non-mutating outputs,
-and the final base-to-head branch diff. See [[workspace-execution]].
+`workspace.snapshot.json`, not the live config. Pre-policy snapshots default to
+supervised worktree semantics. Completed v3 packets include
+applied artifact manifests, strict apply/verification receipts, digest-bound
+review/report artifacts, the selected target/policy digest, and the final
+base-to-head branch diff. If strict completed evidence is missing or corrupt,
+the executor seals a partial diagnostic packet with the finalization error
+instead of falsely marking the run completed. See [[workspace-execution]].

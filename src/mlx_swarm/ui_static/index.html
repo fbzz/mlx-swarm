@@ -31,7 +31,7 @@
       </div>
       <div class="status-item"><span class="status-label">Elapsed</span><strong id="metric-elapsed">—</strong></div>
       <div class="status-item"><span class="status-label">Local tokens</span><strong id="metric-tokens">—</strong></div>
-      <div class="status-item"><span class="status-label">Frontier tokens</span><strong id="metric-frontier">—</strong></div>
+      <div class="status-item"><span class="status-label" id="metric-frontier-label">Frontier tokens</span><strong id="metric-frontier">—</strong></div>
       <div class="status-item compact-only"><span class="status-label">Calls</span><strong id="metric-calls">—</strong></div>
       <div class="status-item compact-only"><span class="status-label">Loads</span><strong id="metric-loads">—</strong></div>
     </div>
@@ -73,6 +73,23 @@
             <option value="">Loading plans…</option>
           </select>
           <p id="plan-description" class="field-hint">Select a validated plan from the configured directory.</p>
+          <div id="execution-policy-controls" class="execution-policy-controls" hidden>
+            <div>
+              <label for="approval-mode">Artifact decisions</label>
+              <select id="approval-mode">
+                <option value="supervised" selected>Supervised</option>
+                <option value="yolo">YOLO · auto-apply</option>
+              </select>
+            </div>
+            <div>
+              <label for="workspace-target">Execution target</label>
+              <select id="workspace-target">
+                <option value="worktree" selected>Isolated worktree</option>
+                <option value="checkout">Main checkout</option>
+              </select>
+            </div>
+          </div>
+          <p id="execution-policy-warning" class="field-hint" hidden></p>
           <div class="launch-controls">
             <div>
               <label for="max-repair">Repair cap</label>
@@ -182,7 +199,7 @@
           <div class="approval-strip">
             <span><span class="eyebrow">Approved root</span><code id="workspace-root"></code></span>
             <span><span class="eyebrow">Base → head</span><code id="workspace-shas"></code></span>
-            <span><span class="eyebrow">Isolated worktree</span><code id="workspace-path"></code></span>
+            <span><span id="workspace-path-label" class="eyebrow">Execution path</span><code id="workspace-path"></code></span>
           </div>
           <p id="workspace-warning" class="field-hint"></p>
           <details id="workspace-final-diff-wrap" hidden>

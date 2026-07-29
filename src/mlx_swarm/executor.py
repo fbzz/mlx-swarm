@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import fcntl
+import importlib.metadata
+import platform
+import sys
 import time
 from contextlib import contextmanager
 from dataclasses import replace
@@ -13,11 +16,13 @@ from typing import Any, Iterable
 from .backend import BatchBackend, MLXBatchBackend
 from .contracts import (
     Plan,
+    ROLE_DEFAULTS,
     SwarmConfig,
     TaskDef,
     worker_capabilities_payload,
 )
 from .gates import evaluate_gate, gate_feedback_for_repair, normalize_output
+from .model_identity import model_directory_identity
 from .prompting import (
     compose_editing_prompt,
     compose_prompt,
@@ -28,14 +33,21 @@ from .session import Session, _run_id, _utc_now
 from .workspace import (
     WorkspaceError,
     apply_artifact,
+    checkout_runner_lock_path,
     load_artifact,
+    load_completed_artifact_evidence,
+    load_workspace_snapshot,
     materialize_edit_manifest,
     persist_artifact,
     read_failed_verification_action,
     read_initial_decision,
     recover_artifact_application,
+    release_checkout_lease,
+    require_checkout_lease,
     revert_applied_artifact,
     run_verifications,
+    submit_artifact_decision,
+    validate_execution_snapshot,
 )
 
 
@@ -71,16 +83,17 @@ def execute_plan(
     session_dir = session_dir.resolve()
     session_dir.mkdir(parents=True, exist_ok=True)
     with _runner_lock(session_dir):
-        return _execute_plan_unlocked(
-            config,
-            plan,
-            session_dir=session_dir,
-            max_repair=max_repair,
-            backend=backend,
-            retry_of=retry_of,
-            launch_source=launch_source,
-            approval_poll_seconds=approval_poll_seconds,
-        )
+        with _workspace_execution_lock(config, session_dir):
+            return _execute_plan_unlocked(
+                config,
+                plan,
+                session_dir=session_dir,
+                max_repair=max_repair,
+                backend=backend,
+                retry_of=retry_of,
+                launch_source=launch_source,
+                approval_poll_seconds=approval_poll_seconds,
+            )
 
 
 def _execute_plan_unlocked(
@@ -107,122 +120,189 @@ def _execute_plan_unlocked(
         retry_of=retry_of,
         launch_source=launch_source,
     )
-    worker_strategy = {
-        "mode": config.worker.mode,
-        "reasoningMaxTokens": config.worker.reasoning_max_tokens,
-        "capabilities": worker_capabilities_payload(
-            config.worker.capabilities
-        ),
-    }
-    existing_strategy = session.state.get("workerStrategy")
+    # Existing sessions always execute their immutable plan snapshot.
+    plan = session.plan
+    stored_max_repair = session.state.get("maxRepair")
     if (
-        isinstance(existing_strategy, dict)
-        and not _worker_strategy_compatible(
-            existing_strategy,
-            worker_strategy,
-        )
+        isinstance(stored_max_repair, int)
+        and not isinstance(stored_max_repair, bool)
+        and stored_max_repair >= 0
     ):
-        raise RuntimeError(
-            "Resume worker strategy differs from the snapshotted session."
-        )
-    session.state["workerStrategy"] = worker_strategy
-    session._save()
+        max_repair = stored_max_repair
+    else:
+        session.state["maxRepair"] = max_repair
     if plan.workspace_execution and not session.state.get("workspaceExecution"):
         raise RuntimeError(
             "Schema-v2 workspace plans require a digest-approved worktree snapshot."
         )
+    if plan.workspace_execution:
+        workspace = session.workspace_snapshot()
+        assert workspace is not None
+        validate_execution_snapshot(
+            workspace,
+            plan=plan,
+            approval=session.state.get("executionApproval"),
+            session_id=session.session_id,
+        )
+        policy = workspace.get("executionPolicy")
+        if not isinstance(policy, dict):
+            policy = {
+                "schemaVersion": 1,
+                "approvalMode": "supervised",
+                "workspaceTarget": "worktree",
+                "onVerificationFailure": "pause",
+            }
+        existing_policy = session.state.get("executionPolicy")
+        if isinstance(existing_policy, dict) and existing_policy != policy:
+            raise RuntimeError(
+                "Resume execution policy differs from the snapshotted session."
+            )
+        session.state["executionPolicy"] = policy
+        session.state["approvalMode"] = policy.get(
+            "approvalMode",
+            "supervised",
+        )
+        session.state["workspaceTarget"] = policy.get(
+            "workspaceTarget",
+            "worktree",
+        )
+        session.state["executionPolicySha256"] = workspace.get(
+            "executionPolicySha256"
+        )
+        session._save()
     session.set_status("running")
     _recover_interrupted_tasks(session)
+    _process_existing_workspace_states(
+        session,
+        plan,
+        poll_seconds=approval_poll_seconds,
+    )
 
-    owns_backend = backend is None
-    if backend is None:
-        try:
-            worker_backend: BatchBackend = MLXBatchBackend(config)
-        except Exception as exc:
-            message = f"{type(exc).__name__}: {exc}"
-            for task in plan.tasks:
-                if session.get_task_status(task.id) != "completed":
-                    session.update_task(task.id, status="failed", error=message)
-            session.set_status("failed")
-            frontier_result = session.write_frontier_result()
-            session.state["frontierResult"] = str(frontier_result)
-            session._save()
-            return session
-    else:
-        worker_backend = backend
-
-    try:
-        for level_idx, level_tasks in enumerate(plan.topological_order()):
-            _await_workspace_tasks(
-                session,
-                level_tasks,
-                poll_seconds=approval_poll_seconds,
+    if _session_needs_generation(session, plan, max_repair):
+        worker_strategy = {
+            "mode": config.worker.mode,
+            "reasoningMaxTokens": config.worker.reasoning_max_tokens,
+            "capabilities": worker_capabilities_payload(
+                config.worker.capabilities
+            ),
+        }
+        existing_strategy = session.state.get("workerStrategy")
+        if (
+            isinstance(existing_strategy, dict)
+            and not _worker_strategy_compatible(
+                existing_strategy,
+                worker_strategy,
             )
-            _block_tasks_with_failed_dependencies(session, level_tasks)
+        ):
+            raise RuntimeError(
+                "Resume worker strategy differs from the snapshotted session."
+            )
+        session.state["workerStrategy"] = worker_strategy
+        session._save()
+        owns_backend = backend is None
+        if backend is None:
+            try:
+                worker_backend: BatchBackend = MLXBatchBackend(config)
+            except Exception as exc:
+                message = f"{type(exc).__name__}: {exc}"
+                for task in plan.tasks:
+                    if session.get_task_status(task.id) != "completed":
+                        session.update_task(
+                            task.id,
+                            status="failed",
+                            error=message,
+                        )
+                return _finalize_session(session, plan)
+        else:
+            worker_backend = backend
 
-            initial_tasks = [
-                task
-                for task in level_tasks
-                if session.get_task_status(task.id) == "pending"
-                and _dependencies_completed(session, task)
-            ]
-            for chunk_idx, tasks in enumerate(
-                _chunked(initial_tasks, config.batch.max_workers)
+        local_execution_profile = _local_execution_profile(
+            config,
+            worker_backend,
+        )
+        existing_profile = session.state.get("localExecutionProfile")
+        if (
+            isinstance(existing_profile, dict)
+            and existing_profile != local_execution_profile
+        ):
+            if owns_backend:
+                worker_backend.close()
+            raise RuntimeError(
+                "Resume local execution profile differs from the snapshotted "
+                "session."
+            )
+        session.state["localExecutionProfile"] = local_execution_profile
+        session._save()
+
+        try:
+            for level_idx, level_tasks in enumerate(
+                plan.topological_order()
             ):
-                _execute_initial_chunk(
-                    config,
-                    plan,
+                _await_workspace_tasks(
                     session,
-                    worker_backend,
-                    list(tasks),
-                    level_idx,
-                    chunk_idx,
-                    max_repair,
-                    approval_poll_seconds,
+                    level_tasks,
+                    poll_seconds=approval_poll_seconds,
                 )
-
-            # A process can die after a rejection was saved but before its
-            # repair generation completed. Resume those tasks directly from
-            # their stored gate feedback and previous output.
-            resumable_rejections = [
-                task
-                for task in level_tasks
-                if session.get_task_status(task.id) == "rejected"
-                and _dependencies_completed(session, task)
-                and session.state["tasks"][task.id]["repairAttempts"]
-                < _repair_limit(task, max_repair)
-            ]
-            for chunk_idx, tasks in enumerate(
-                _chunked(resumable_rejections, config.batch.max_workers)
-            ):
-                _execute_resume_repairs(
-                    config,
-                    plan,
+                _unblock_tasks_with_completed_dependencies(
                     session,
-                    worker_backend,
-                    list(tasks),
-                    level_idx,
-                    chunk_idx,
-                    max_repair,
-                    approval_poll_seconds,
+                    level_tasks,
                 )
-    finally:
-        if owns_backend:
-            worker_backend.close()
+                _block_tasks_with_failed_dependencies(session, level_tasks)
 
-    _block_all_remaining_descendants(session, plan)
-    statuses = [session.get_task_status(task.id) for task in plan.tasks]
-    if all(status == "completed" for status in statuses):
-        session.set_status("completed")
-    elif any(status == "failed" for status in statuses):
-        session.set_status("failed")
-    else:
-        session.set_status("partial")
+                initial_tasks = [
+                    task
+                    for task in level_tasks
+                    if session.get_task_status(task.id) == "pending"
+                    and _dependencies_completed(session, task)
+                ]
+                for chunk_idx, tasks in enumerate(
+                    _chunked(initial_tasks, config.batch.max_workers)
+                ):
+                    _execute_initial_chunk(
+                        config,
+                        plan,
+                        session,
+                        worker_backend,
+                        list(tasks),
+                        level_idx,
+                        chunk_idx,
+                        max_repair,
+                        approval_poll_seconds,
+                    )
 
-    frontier_result = session.write_frontier_result()
-    session.state["frontierResult"] = str(frontier_result)
-    session._save()
-    return session
+                # A process can die after a rejection was saved but before its
+                # repair generation completed. Resume those tasks directly
+                # from their stored gate feedback and previous output.
+                resumable_rejections = [
+                    task
+                    for task in level_tasks
+                    if session.get_task_status(task.id) == "rejected"
+                    and _dependencies_completed(session, task)
+                    and session.state["tasks"][task.id]["repairAttempts"]
+                    < _repair_limit(task, max_repair)
+                ]
+                for chunk_idx, tasks in enumerate(
+                    _chunked(
+                        resumable_rejections,
+                        config.batch.max_workers,
+                    )
+                ):
+                    _execute_resume_repairs(
+                        config,
+                        plan,
+                        session,
+                        worker_backend,
+                        list(tasks),
+                        level_idx,
+                        chunk_idx,
+                        max_repair,
+                        approval_poll_seconds,
+                    )
+        finally:
+            if owns_backend:
+                worker_backend.close()
+
+    return _finalize_session(session, plan)
 
 
 def _open_session(
@@ -250,7 +330,13 @@ def _open_session(
                 f"Session plan {session.plan.plan_id!r} does not match "
                 f"requested plan {plan.plan_id!r}."
             )
-        session.plan = plan
+        if session.plan.raw != plan.raw:
+            raise RuntimeError(
+                "Requested plan differs from the immutable session snapshot."
+            )
+        # The snapshotted contract remains authoritative even when the caller
+        # supplied equivalent JSON from another source path.
+        plan = session.plan
     else:
         session = Session(
             session_dir,
@@ -319,19 +405,45 @@ def _recover_interrupted_tasks(session: Session) -> None:
                     session.dir,
                     task,
                     workspace,
+                    expected_artifact_sha256=str(
+                        state.get("artifact", {}).get("sha256", "")
+                    ),
                 )
                 session.update_workspace(workspace)
             except WorkspaceError as exc:
                 session.update_task(
                     task_id,
-                    status="failed",
+                    status="applying",
                     error=(
-                        "Could not safely recover interrupted application: "
+                        "Interrupted artifact application requires explicit "
+                        "safe recovery: "
                         f"{exc}"
                     ),
                 )
+                session.state["pauseReason"] = "apply_recovery_required"
+                session._save()
                 continue
             if recovery["state"] == "applied":
+                try:
+                    evidence = load_completed_artifact_evidence(
+                        session.dir,
+                        task,
+                        workspace,
+                    )
+                except WorkspaceError:
+                    evidence = None
+                if evidence is not None:
+                    session.update_task(
+                        task_id,
+                        status="completed",
+                        applyReceipt=evidence["applyReceipt"],
+                        verificationResults=evidence[
+                            "verificationReceipts"
+                        ],
+                        error=None,
+                        recoveredVerificationAfterCrash=True,
+                    )
+                    continue
                 session.update_task(
                     task_id,
                     status="verification_failed",
@@ -359,6 +471,50 @@ def _dependencies_completed(session: Session, task: TaskDef) -> bool:
     )
 
 
+def _process_existing_workspace_states(
+    session: Session,
+    plan: Plan,
+    *,
+    poll_seconds: float,
+) -> None:
+    """Finish queued human/YOLO actions before loading a local model."""
+    if not plan.workspace_execution:
+        return
+    for level_tasks in plan.topological_order():
+        if any(
+            session.get_task_status(task.id)
+            in {"awaiting_approval", "verification_failed"}
+            for task in level_tasks
+        ):
+            _await_workspace_tasks(
+                session,
+                level_tasks,
+                poll_seconds=poll_seconds,
+            )
+        _unblock_tasks_with_completed_dependencies(session, level_tasks)
+        _block_tasks_with_failed_dependencies(session, level_tasks)
+
+
+def _session_needs_generation(
+    session: Session,
+    plan: Plan,
+    max_repair: int,
+) -> bool:
+    for task in plan.tasks:
+        status = session.get_task_status(task.id)
+        if not _dependencies_completed(session, task):
+            continue
+        if status == "pending":
+            return True
+        if (
+            status == "rejected"
+            and session.state["tasks"][task.id]["repairAttempts"]
+            < _repair_limit(task, max_repair)
+        ):
+            return True
+    return False
+
+
 def _block_tasks_with_failed_dependencies(
     session: Session,
     tasks: Iterable[TaskDef],
@@ -366,6 +522,7 @@ def _block_tasks_with_failed_dependencies(
     terminal_failure_states = {
         "rejected",
         "rejected_by_operator",
+        "verification_failed",
         "failed",
         "blocked",
     }
@@ -386,6 +543,24 @@ def _block_tasks_with_failed_dependencies(
                     "Dependency did not complete successfully: "
                     + ", ".join(blocked_by)
                 ),
+            )
+
+
+def _unblock_tasks_with_completed_dependencies(
+    session: Session,
+    tasks: Iterable[TaskDef],
+) -> None:
+    """Requeue descendants after an earlier failed verification later passes."""
+    for task in tasks:
+        if (
+            session.get_task_status(task.id) == "blocked"
+            and _dependencies_completed(session, task)
+        ):
+            session.update_task(
+                task.id,
+                status="pending",
+                blockedBy=None,
+                error=None,
             )
 
 
@@ -485,14 +660,21 @@ def _execute_initial_chunk(
         max_repair,
         record,
     )
+    record["generationFinishedAt"] = _utc_now()
+    record["generationElapsedSeconds"] = time.perf_counter() - started
+    record["state"] = "awaiting-workspace-actions"
+    record_index = session.add_batch_record(record)
     _await_workspace_tasks(
         session,
         runnable_tasks,
         poll_seconds=approval_poll_seconds,
     )
-    record["finishedAt"] = _utc_now()
-    record["elapsedSeconds"] = time.perf_counter() - started
-    session.add_batch_record(record)
+    session.update_batch_record(
+        record_index,
+        state="completed",
+        finishedAt=_utc_now(),
+        elapsedSeconds=time.perf_counter() - started,
+    )
 
 
 def _execute_resume_repairs(
@@ -524,14 +706,21 @@ def _execute_resume_repairs(
         max_repair,
         record,
     )
+    record["generationFinishedAt"] = _utc_now()
+    record["generationElapsedSeconds"] = time.perf_counter() - started
+    record["state"] = "awaiting-workspace-actions"
+    record_index = session.add_batch_record(record)
     _await_workspace_tasks(
         session,
         tasks,
         poll_seconds=approval_poll_seconds,
     )
-    record["finishedAt"] = _utc_now()
-    record["elapsedSeconds"] = time.perf_counter() - started
-    session.add_batch_record(record)
+    session.update_batch_record(
+        record_index,
+        state="completed",
+        finishedAt=_utc_now(),
+        elapsedSeconds=time.perf_counter() - started,
+    )
 
 
 def _repair_rejected_tasks(
@@ -688,7 +877,27 @@ def _generate_or_fail(
         message = f"{type(exc).__name__}: {exc}"
         for task in tasks:
             session.update_task(task.id, status="failed", error=message)
-        return [], {"batchSize": len(tasks), "error": message}
+        partial_statistics = getattr(exc, "statistics", None)
+        if isinstance(partial_statistics, dict):
+            statistics = dict(partial_statistics)
+            statistics["error"] = message
+            statistics.setdefault("batchSize", 0)
+            statistics.setdefault("attemptedBatchSize", len(tasks))
+            return [], statistics
+        load_seconds = 0.0
+        if (
+            getattr(backend, "model", None) is not None
+            and getattr(backend, "_load_reported", True) is False
+        ):
+            load_seconds = float(getattr(backend, "load_seconds", 0.0))
+            setattr(backend, "_load_reported", True)
+        return [], {
+            "batchSize": 0,
+            "attemptedBatchSize": len(tasks),
+            "generationCalls": 0,
+            "loadSeconds": load_seconds,
+            "error": message,
+        }
 
 
 def _generate_with_worker_strategy(
@@ -844,7 +1053,12 @@ def _merge_generation_statistics(
     active = [
         value
         for value in values
-        if value and value.get("batchSize", 0)
+        if value
+        and (
+            value.get("batchSize", 0)
+            or value.get("attemptedBatchSize", 0)
+            or float(value.get("loadSeconds", 0.0)) > 0
+        )
     ]
     if not active:
         errors = [
@@ -877,18 +1091,45 @@ def _merge_generation_statistics(
             int(value.get("promptTokens", 0))
             for value in active
         ),
+        "renderedPromptTokens": sum(
+            int(value.get("renderedPromptTokens", 0))
+            for value in active
+        ),
         "generationTokens": sum(
             int(value.get("generationTokens", 0))
             for value in active
         ),
         "generationCalls": sum(
-            int(value.get("generationCalls", 0))
-            or len(value.get("groups", []))
-            or 1
+            _statistics_generation_calls(value)
             for value in active
         ),
         "peakMemoryGigabytes": max(
             float(value.get("peakMemoryGigabytes", 0.0))
+            for value in active
+        ),
+        "samplerGroupCount": sum(
+            int(value.get("samplerGroupCount", 0))
+            for value in active
+        ),
+        "physicalBatchCount": sum(
+            int(
+                value.get(
+                    "physicalBatchCount",
+                    value.get("generationCalls", 0),
+                )
+            )
+            for value in active
+        ),
+        "maxTrueBatchWidth": max(
+            int(value.get("maxTrueBatchWidth", 0))
+            for value in active
+        ),
+        "samplerFragmented": any(
+            bool(value.get("samplerFragmented", False))
+            for value in active
+        ),
+        "batchSplitByPromptBudget": any(
+            bool(value.get("batchSplitByPromptBudget", False))
             for value in active
         ),
         "groups": [
@@ -897,6 +1138,15 @@ def _merge_generation_statistics(
             for group in value.get("groups", [])
         ],
     }
+
+
+def _statistics_generation_calls(value: dict[str, Any]) -> int:
+    if "generationCalls" in value:
+        return int(value["generationCalls"])
+    groups = value.get("groups", [])
+    if groups:
+        return len(groups)
+    return 1 if int(value.get("batchSize", 0)) > 0 else 0
 
 
 def _repair_limit(task: TaskDef, max_repair: int) -> int:
@@ -1018,8 +1268,64 @@ def _await_workspace_tasks(
                     )
                     continue
                 if decision is None:
-                    time.sleep(poll_seconds)
-                    continue
+                    if _approval_mode(session) == "yolo":
+                        manifest = session.state["tasks"][task.id].get(
+                            "artifact",
+                            {},
+                        )
+                        digest = manifest.get("sha256")
+                        if not isinstance(digest, str):
+                            session.update_task(
+                                task.id,
+                                status="failed",
+                                error=(
+                                    "YOLO artifact is missing its immutable "
+                                    "digest."
+                                ),
+                            )
+                            continue
+                        try:
+                            decision = submit_artifact_decision(
+                                session.dir,
+                                task.id,
+                                action="apply",
+                                artifact_sha256=digest,
+                                source="yolo",
+                                reason=(
+                                    "Automatically approved by the "
+                                    "digest-bound YOLO execution policy."
+                                ),
+                            )
+                        except WorkspaceError:
+                            # A concurrent operator decision may have won the
+                            # immutable ledger race. Read and honor that exact
+                            # sealed decision rather than overwriting it.
+                            try:
+                                decision = read_initial_decision(
+                                    session.dir,
+                                    task.id,
+                                )
+                            except WorkspaceError as exc:
+                                session.update_task(
+                                    task.id,
+                                    status="failed",
+                                    error=str(exc),
+                                )
+                                continue
+                            if decision is None:
+                                session.update_task(
+                                    task.id,
+                                    status="failed",
+                                    error=(
+                                        "YOLO could not seal an artifact "
+                                        "decision."
+                                    ),
+                                )
+                                continue
+                    else:
+                        time.sleep(poll_seconds)
+                        continue
+                assert decision is not None
                 _process_initial_decision(session, task, decision)
             else:
                 task_state = session.state["tasks"][task.id]
@@ -1041,19 +1347,49 @@ def _await_workspace_tasks(
                     )
                     continue
                 if action is None:
+                    if _approval_mode(session) == "yolo":
+                        session.state["pauseReason"] = (
+                            "verification_failed"
+                        )
+                        session._save()
+                        break
                     time.sleep(poll_seconds)
                     continue
                 request_name, decision = action
-                processed = [*processed, request_name]
-                session.update_task(
-                    task.id,
-                    processedVerificationRequests=processed,
-                )
+                # Verify requests are unique and can be durably consumed before
+                # execution. The fixed rejection slot remains replayable until
+                # its revert receipt is safely persisted.
+                if request_name != "rejection.json":
+                    processed = [*processed, request_name]
+                    session.update_task(
+                        task.id,
+                        processedVerificationRequests=processed,
+                    )
                 _process_failed_verification_action(
                     session,
                     task,
                     decision,
                 )
+                if (
+                    request_name == "rejection.json"
+                    and session.get_task_status(task.id)
+                    == "rejected_by_operator"
+                ):
+                    session.update_task(
+                        task.id,
+                        processedVerificationRequests=[
+                            *processed,
+                            request_name,
+                        ],
+                    )
+                elif request_name == "rejection.json":
+                    session.state["pauseReason"] = (
+                        "workspace_action_failed"
+                    )
+                    session._save()
+                    if _approval_mode(session) == "yolo":
+                        break
+                    time.sleep(poll_seconds)
     if session.state.get("status") == "awaiting_approval":
         session.set_status("running")
 
@@ -1064,6 +1400,25 @@ def _process_initial_decision(
     decision: dict[str, Any],
 ) -> None:
     manifest = session.state["tasks"][task.id].get("artifact") or {}
+    workspace = session.workspace_snapshot()
+    expected_policy = (
+        workspace.get("executionPolicySha256")
+        if workspace is not None
+        else None
+    )
+    if (
+        isinstance(expected_policy, str)
+        and decision.get("executionPolicySha256") != expected_policy
+    ):
+        session.update_task(
+            task.id,
+            status="failed",
+            error=(
+                "Artifact decision is not bound to the approved execution "
+                "policy."
+            ),
+        )
+        return
     if decision.get("artifactSha256") != manifest.get("sha256"):
         session.update_task(
             task.id,
@@ -1078,6 +1433,8 @@ def _process_initial_decision(
             decision=decision,
             error=decision.get("reason") or "Rejected by the operator.",
         )
+        session.state.pop("pauseReason", None)
+        session._save()
         return
     if decision.get("action") != "apply":
         session.update_task(
@@ -1086,20 +1443,55 @@ def _process_initial_decision(
             error="Invalid initial artifact decision.",
         )
         return
-    workspace = session.workspace_snapshot()
     assert workspace is not None
     try:
         session.update_task(task.id, status="applying", decision=decision)
-        apply_receipt = apply_artifact(session.dir, task, workspace)
-        session.update_workspace(workspace)
-        session.update_task(
-            task.id,
-            status="verifying",
-            applyReceipt=apply_receipt,
+        apply_receipt = apply_artifact(
+            session.dir,
+            task,
+            workspace,
+            expected_artifact_sha256=str(manifest.get("sha256", "")),
         )
+    except WorkspaceError as exc:
+        try:
+            recovery = recover_artifact_application(
+                session.dir,
+                task,
+                workspace,
+                expected_artifact_sha256=str(
+                    manifest.get("sha256", "")
+                ),
+            )
+        except WorkspaceError as recovery_exc:
+            session.update_task(
+                task.id,
+                status="applying",
+                error=(
+                    f"Artifact application requires safe recovery: {exc}; "
+                    f"{recovery_exc}"
+                ),
+            )
+            session.state["pauseReason"] = "apply_recovery_required"
+            session._save()
+            return
+        if recovery["state"] != "applied":
+            session.update_task(task.id, status="failed", error=str(exc))
+            return
+        apply_receipt = recovery["receipt"]
+    session.update_workspace(workspace)
+    session.update_task(
+        task.id,
+        status="verifying",
+        applyReceipt=apply_receipt,
+    )
+    try:
         results = run_verifications(session.dir, task, workspace)
     except WorkspaceError as exc:
-        session.update_task(task.id, status="failed", error=str(exc))
+        session.update_task(
+            task.id,
+            status="verification_failed",
+            error=str(exc),
+        )
         return
     _record_verification_outcome(session, task, results)
 
@@ -1110,6 +1502,22 @@ def _process_failed_verification_action(
     decision: dict[str, Any],
 ) -> None:
     manifest = session.state["tasks"][task.id].get("artifact") or {}
+    workspace = session.workspace_snapshot()
+    assert workspace is not None
+    expected_policy = workspace.get("executionPolicySha256")
+    if (
+        isinstance(expected_policy, str)
+        and decision.get("executionPolicySha256") != expected_policy
+    ):
+        session.update_task(
+            task.id,
+            status="failed",
+            error=(
+                "Artifact action is not bound to the approved execution "
+                "policy."
+            ),
+        )
+        return
     if decision.get("artifactSha256") != manifest.get("sha256"):
         session.update_task(
             task.id,
@@ -1117,18 +1525,23 @@ def _process_failed_verification_action(
             error="Artifact action digest does not match the persisted artifact.",
         )
         return
-    workspace = session.workspace_snapshot()
-    assert workspace is not None
     if decision.get("action") == "reject":
         try:
             revert_receipt = revert_applied_artifact(
                 session.dir,
-                task.id,
+                task,
                 workspace,
+                expected_artifact_sha256=str(
+                    manifest.get("sha256", "")
+                ),
             )
             session.update_workspace(workspace)
         except WorkspaceError as exc:
-            session.update_task(task.id, status="failed", error=str(exc))
+            session.update_task(
+                task.id,
+                status="verification_failed",
+                error=str(exc),
+            )
             return
         session.update_task(
             task.id,
@@ -1137,6 +1550,8 @@ def _process_failed_verification_action(
             revertReceipt=revert_receipt,
             error=decision.get("reason") or "Rejected by the operator.",
         )
+        session.state.pop("pauseReason", None)
+        session._save()
         return
     if decision.get("action") != "verify":
         session.update_task(
@@ -1149,7 +1564,11 @@ def _process_failed_verification_action(
         session.update_task(task.id, status="verifying", decision=decision)
         results = run_verifications(session.dir, task, workspace)
     except WorkspaceError as exc:
-        session.update_task(task.id, status="failed", error=str(exc))
+        session.update_task(
+            task.id,
+            status="verification_failed",
+            error=str(exc),
+        )
         return
     _record_verification_outcome(session, task, results)
 
@@ -1175,6 +1594,173 @@ def _record_verification_outcome(
             else "One or more allowlisted verification profiles failed."
         ),
     )
+    if passed:
+        session.state.pop("pauseReason", None)
+        session._save()
+
+
+def _approval_mode(session: Session) -> str:
+    policy = session.state.get("executionPolicy")
+    if isinstance(policy, dict) and policy.get("approvalMode") == "yolo":
+        return "yolo"
+    return "supervised"
+
+
+def _local_execution_profile(
+    config: SwarmConfig,
+    backend: BatchBackend,
+) -> dict[str, Any]:
+    resolved = getattr(backend, "model_path", None)
+    if not isinstance(resolved, Path):
+        resolved = (
+            Path(config.model.local_path).expanduser().resolve()
+            if config.model.local_path
+            else None
+        )
+    model_fingerprint = None
+    model_identity = None
+    if isinstance(resolved, Path) and resolved.is_dir():
+        model_identity = model_directory_identity(resolved)
+        model_fingerprint = model_identity["sha256"]
+    return {
+        "schemaVersion": 1,
+        "model": {
+            "repository": config.model.repository,
+            "revision": config.model.revision,
+            "configuredLocalPath": config.model.local_path,
+            "resolvedPath": str(resolved) if resolved is not None else None,
+            "fingerprint": model_fingerprint,
+            "fingerprintAlgorithm": (
+                model_identity["algorithm"]
+                if model_identity is not None
+                else None
+            ),
+            "fingerprintedFiles": (
+                model_identity["fileCount"]
+                if model_identity is not None
+                else 0
+            ),
+        },
+        "batch": {
+            "maxWorkers": config.batch.max_workers,
+            "prefillStepSize": config.batch.prefill_step_size,
+            "maxPromptCharacters": config.batch.max_prompt_characters,
+            "maxBatchPromptTokens": (
+                config.batch.max_batch_prompt_tokens
+            ),
+        },
+        "enableThinking": config.enable_thinking,
+        "seed": config.seed,
+        "worker": {
+            "mode": config.worker.mode,
+            "reasoningMaxTokens": config.worker.reasoning_max_tokens,
+            "capabilities": worker_capabilities_payload(
+                config.worker.capabilities
+            ),
+        },
+        "roleDefaults": ROLE_DEFAULTS,
+        "structuredOutputDefaults": {
+            "temperature": 0.0,
+            "topP": 1.0,
+            "maxTokens": 800,
+            "appliesWhenPlanOmitsOverride": True,
+        },
+        "runtime": {
+            "python": sys.version.split()[0],
+            "platform": platform.platform(),
+            "mlx": _installed_version("mlx"),
+            "mlxLm": _installed_version("mlx-lm"),
+            "mlxSwarm": _installed_version("mlx-swarm"),
+            "sourceSha256": _package_source_sha256(),
+        },
+    }
+
+
+def _installed_version(distribution: str) -> str | None:
+    try:
+        return importlib.metadata.version(distribution)
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
+def _package_source_sha256() -> str:
+    import hashlib
+
+    root = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for path in sorted(root.glob("*.py")):
+        digest.update(path.name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def _finalize_session(session: Session, plan: Plan) -> Session:
+    """Seal review evidence without exposing a false completed state."""
+    _reconcile_batch_records(session)
+    _block_all_remaining_descendants(session, plan)
+    statuses = [session.get_task_status(task.id) for task in plan.tasks]
+    if all(status == "completed" for status in statuses):
+        desired_status = "completed"
+    elif any(status == "failed" for status in statuses):
+        desired_status = "failed"
+    else:
+        desired_status = "partial"
+
+    if desired_status == "completed":
+        try:
+            frontier_result = session.write_frontier_result(
+                status_override="completed",
+            )
+        except WorkspaceError as exc:
+            session.state["pauseReason"] = (
+                "finalization_validation_failed"
+            )
+            session.state["finalizationError"] = str(exc)
+            session.set_status("partial")
+            frontier_result = session.write_frontier_result(
+                status_override="partial",
+            )
+            session.state["frontierResult"] = str(frontier_result)
+            session._save()
+            return session
+        session.state.pop("pauseReason", None)
+        session.state.pop("finalizationError", None)
+        session.state["frontierResult"] = str(frontier_result)
+        session.set_status("completed")
+    else:
+        session.set_status(desired_status)
+        frontier_result = session.write_frontier_result()
+        session.state["frontierResult"] = str(frontier_result)
+
+    _release_checkout_lease_if_resolved(session)
+    session._save()
+    return session
+
+
+def _reconcile_batch_records(session: Session) -> None:
+    changed = False
+    for record in session.state.get("batches", []):
+        if record.get("state") != "awaiting-workspace-actions":
+            continue
+        task_ids = record.get("taskIds", [])
+        if any(
+            session.get_task_status(str(task_id))
+            in {"running", "awaiting_approval", "applying", "verifying"}
+            for task_id in task_ids
+        ):
+            continue
+        record["state"] = "completed-after-resume"
+        record["recoveredAt"] = _utc_now()
+        record.setdefault("finishedAt", record["recoveredAt"])
+        record.setdefault(
+            "elapsedSeconds",
+            record.get("generationElapsedSeconds", 0.0),
+        )
+        changed = True
+    if changed:
+        session._save()
 
 
 @contextmanager
@@ -1190,3 +1776,81 @@ def _runner_lock(session_dir: Path):
     finally:
         fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
         handle.close()
+
+
+@contextmanager
+def _workspace_execution_lock(config: SwarmConfig, session_dir: Path):
+    """Prevent concurrent sessions from mutating the operator checkout."""
+    snapshot_path = session_dir / "workspace.snapshot.json"
+    if not snapshot_path.is_file():
+        yield
+        return
+    try:
+        workspace = load_workspace_snapshot(session_dir)
+    except WorkspaceError:
+        # The normal executor validation owns the user-facing snapshot error.
+        yield
+        return
+    policy = workspace.get("executionPolicy")
+    if (
+        not isinstance(policy, dict)
+        or policy.get("workspaceTarget") != "checkout"
+    ):
+        yield
+        return
+    require_checkout_lease(
+        workspace,
+        plan_id=str(
+            workspace.get("planId", session_dir.parent.name)
+        ),
+        session_id=str(
+            workspace.get("sessionId", session_dir.name)
+        ),
+    )
+    del config
+    lock_path = checkout_runner_lock_path(workspace)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RuntimeError(
+                "Another YOLO run already owns the main checkout."
+            ) from exc
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _release_checkout_lease_if_resolved(session: Session) -> None:
+    workspace = session.workspace_snapshot()
+    if workspace is None:
+        return
+    policy = workspace.get("executionPolicy")
+    if (
+        not isinstance(policy, dict)
+        or policy.get("workspaceTarget") != "checkout"
+    ):
+        return
+    for task_id, task_state in session.state.get("tasks", {}).items():
+        if task_state.get("status") in {
+            "applying",
+            "verifying",
+            "verification_failed",
+        }:
+            return
+        artifact_dir = session.dir / "artifacts" / task_id
+        if (
+            (artifact_dir / "apply-receipt.json").is_file()
+            and not (artifact_dir / "revert-receipt.json").is_file()
+            and task_state.get("status") != "completed"
+        ):
+            return
+    release_checkout_lease(
+        workspace,
+        plan_id=session.plan.plan_id,
+        session_id=session.session_id,
+    )
+    session.state["checkoutLeaseReleasedAt"] = _utc_now()

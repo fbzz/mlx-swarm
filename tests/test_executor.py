@@ -22,9 +22,11 @@ from mlx_swarm.contracts import (
 )
 from mlx_swarm.executor import (
     _generate_with_worker_strategy,
+    _local_execution_profile,
     _worker_strategy_compatible,
     execute_plan,
 )
+from mlx_swarm.model_identity import model_metadata
 from mlx_swarm.session import Session
 
 
@@ -137,6 +139,129 @@ def test_global_repair_cap_zero_disables_repairs(tmp_path: Path) -> None:
     assert len(backend.calls) == 1
     assert session.state["tasks"]["task"]["repairAttempts"] == 0
     assert session.get_task_status("task") == "rejected"
+
+
+def test_resume_preserves_original_global_repair_cap(tmp_path: Path) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=2,
+    )
+    config = _config(tmp_path)
+    plan_path = tmp_path / "plan.json"
+    plan_path.write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "planId": "resume-repair-cap",
+            "objective": "Test immutable resume repair cap",
+            "tasks": [{
+                "id": "task",
+                "role": "implementation",
+                "prompt": "Generate PASS",
+                "gate": {
+                    "requiredPatterns": [{
+                        "id": "must-pass",
+                        "pattern": "PASS",
+                    }],
+                    "forbiddenPatterns": [],
+                    "maxCharacters": 2000,
+                },
+                "maxRepairAttempts": 2,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    plan = load_plan(plan_path, config)
+    session_dir = config.artifacts_dir / plan.plan_id / "fixed-session"
+    first_backend = FakeBackend([["bad output"]])
+    first = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        max_repair=0,
+        backend=first_backend,
+    )
+    assert first.state["maxRepair"] == 0
+
+    second_backend = FakeBackend([["PASS"]])
+    second = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        max_repair=2,
+        backend=second_backend,
+    )
+
+    assert second.state["maxRepair"] == 0
+    assert second.get_task_status("task") == "rejected"
+    assert second_backend.calls == []
+
+
+def test_local_model_fingerprint_detects_same_size_replacement(
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    weight = model_dir / "weights.safetensors"
+    weight.write_bytes(b"aaaa")
+    config = SwarmConfig(
+        source=tmp_path / "swarm.json",
+        model=ModelConfig("unused", "", str(model_dir)),
+        batch=BatchConfig(max_workers=4),
+        artifacts_dir=tmp_path / "runs",
+    )
+    backend = FakeBackend([])
+
+    before = _local_execution_profile(config, backend)
+    cache = model_dir / ".cache"
+    cache.mkdir()
+    (cache / "download.incomplete").write_bytes(b"transient")
+    after_cache_churn = _local_execution_profile(config, backend)
+    weight.write_bytes(b"bbbb")
+    after = _local_execution_profile(config, backend)
+
+    assert (
+        before["model"]["fingerprint"]
+        == after_cache_churn["model"]["fingerprint"]
+    )
+    assert before["model"]["fingerprint"] != after["model"]["fingerprint"]
+
+
+def test_model_metadata_detects_context_overstatement(
+    tmp_path: Path,
+) -> None:
+    model_dir = tmp_path / "model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text(
+        json.dumps({
+            "model_type": "qwen3_5",
+            "text_config": {
+                "model_type": "qwen3_5_text",
+                "max_position_embeddings": 262144,
+            },
+            "quantization": {"bits": 6},
+        }),
+        encoding="utf-8",
+    )
+
+    compatible = model_metadata(
+        model_dir,
+        declared_context_tokens=262144,
+    )
+    overstated = model_metadata(
+        model_dir,
+        declared_context_tokens=300000,
+    )
+
+    assert compatible["contextCompatible"] is True
+    assert compatible["quantizationBits"] == 6
+    assert compatible["modelType"] == "qwen3_5_text"
+    assert overstated["contextCompatible"] is False
+    assert "exceeds checkpoint metadata" in overstated["warnings"][0]
 
 
 def test_generation_attempts_are_immutable_and_repeated_repair_changes_feedback(

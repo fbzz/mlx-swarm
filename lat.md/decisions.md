@@ -20,26 +20,33 @@ feedback actionable. Trade-off: the bundled Codex bridge cannot observe
 host-internal calls or token totals, so it guarantees one accepted artifact per
 phase and records usage as unavailable.
 
-## Operator Approval
+## Operator Approval and pre-authorization
 
 Frontier planning does not authorize execution. The cockpit displays the full
 validated DAG and requires approval of its canonical SHA-256 before launch.
 Historical sessions retain the exact plan, receipt, and approval.
 
 Workspace execution adds a second approval surface. The execution digest binds
-the canonical plan, resolved Git root, base HEAD, path authority, and referenced
-verification profiles. Every mutating artifact then requires a separate
-digest-bound Apply or Reject decision.
+the canonical plan, resolved Git root, base HEAD, path authority, referenced
+verification profiles, and execution policy. Supervised mode requires a
+separate digest-bound Apply or Reject decision for every mutating artifact.
+YOLO is an explicit pre-authorization that lets the runtime seal the equivalent
+immutable Apply receipt automatically. Verification failure always pauses.
 
-## Isolated worktree, no promotion
+## Worktree by default, clean checkout by explicit YOLO selection
 
 Workspace diffs apply only to a branch and worktree created from the displayed
-committed HEAD. Dirty source state is reported but excluded.
+committed HEAD by default. Dirty source state is reported but excluded.
+
+YOLO can instead target the operator's current checkout. That path requires a
+fully clean staged, unstaged, and untracked state at preview and launch, binds
+the starting branch and HEAD, and takes a repository-wide runner lock. It has no
+cleanup or automatic restoration action.
 
 Failed verification keeps the applied commit visible, and rejection creates an
-explicit revert commit. Cleanup removes only the worktree; no MLX Swarm action
-merges, cherry-picks, or mutates the original checkout. See
-[[workspace-execution]].
+explicit revert commit. Cleanup removes only a terminal isolated worktree and
+retains its branch. No action merges or cherry-picks a worktree branch into the
+original checkout. See [[workspace-execution]].
 
 ## Operator-defined verification only
 

@@ -352,6 +352,8 @@ def test_plan_discovery_and_status(tmp_path: Path) -> None:
     status = app.status_payload()
     assert status["ready"] is True
     assert status["reviewMode"] == "frontier-final-only"
+    assert status["batch"]["maxBatchPromptTokens"] == 32768
+    assert status["worker"]["capabilities"]["delegationLevel"] == "exact-edit"
 
 
 def test_plan_discovery_excludes_artifacts_and_duplicates(
@@ -463,6 +465,44 @@ def test_workspace_plan_requires_both_displayed_digests(
     assert kwargs["shell"] is False
 
 
+def test_cockpit_launches_digest_bound_main_checkout_yolo(
+    tmp_path: Path,
+) -> None:
+    recorder = _PopenRecorder()
+    app, repo, _plan_path = _v2_app(tmp_path, recorder)
+    displayed = app.plans_payload()["plans"][0]
+    preview = displayed["executionPreviews"]["yolo"]["checkout"]
+    assert preview["ready"] is True
+
+    launched = app.launch_run(
+        "ui-workspace",
+        2,
+        plan_digest=displayed["digest"],
+        execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_dir = (
+        app.artifacts_dir
+        / "ui-workspace"
+        / launched["run"]["sessionId"]
+    )
+    state = json.loads((session_dir / "session.json").read_text())
+    snapshot = json.loads(
+        (session_dir / "workspace.snapshot.json").read_text()
+    )
+
+    assert state["approvalMode"] == "yolo"
+    assert state["workspaceTarget"] == "checkout"
+    assert state["executionPolicy"] == preview["executionPolicy"]
+    assert snapshot["executionPath"] == str(repo.resolve())
+    assert snapshot["cleanupAllowed"] is False
+    assert launched["actions"]["cleanupWorkspace"] is False
+    argv, kwargs = recorder.calls[-1]
+    assert isinstance(argv, list)
+    assert kwargs["shell"] is False
+
+
 def test_workspace_artifact_api_is_digest_bound_and_cleanup_retains_branch(
     tmp_path: Path,
 ) -> None:
@@ -552,6 +592,14 @@ def test_workspace_artifact_api_is_digest_bound_and_cleanup_retains_branch(
     terminal.set_status("partial")
     branch = snapshot["branch"]
     worktree = Path(snapshot["worktreePath"])
+
+    with pytest.raises(APIError, match="Resumable workspace work"):
+        app.cleanup_run_workspace(plan.plan_id, session_id)
+
+    # Simulate the inactive runner sealing the task as terminal. A top-level
+    # terminal label alone must not delete a worktree that still has resumable
+    # artifact work.
+    terminal.update_task("change", status="failed")
     cleaned = app.cleanup_run_workspace(plan.plan_id, session_id)
     assert cleaned["workspace"]["cleanedUp"] is True
     assert not worktree.exists()

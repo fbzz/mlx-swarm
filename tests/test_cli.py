@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -14,6 +15,21 @@ from mlx_swarm.cli import main
 from mlx_swarm.contracts import load_config, load_plan
 from mlx_swarm.session import Session
 from mlx_swarm.workspace import execution_preview, persist_artifact
+
+
+def test_legacy_swarm_help_warns_before_argparse_exits(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["swarm", "--help"])
+
+    with pytest.raises(SystemExit) as exc_info:
+        main()
+
+    assert exc_info.value.code == 0
+    captured = capsys.readouterr()
+    assert "deprecated" in captured.err
+    assert "mlx-swarm" in captured.err
 
 
 def _write_config(tmp_path: Path) -> Path:
@@ -157,7 +173,10 @@ def _workspace_diff() -> str:
     )
 
 
-def test_cli_doctor_ready(tmp_path: Path) -> None:
+def test_cli_doctor_ready(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     config_path = _write_config(tmp_path)
     model_dir = tmp_path / "model"
     model_dir.mkdir()
@@ -169,6 +188,10 @@ def test_cli_doctor_ready(tmp_path: Path) -> None:
     with patch("mlx_swarm.backend._resolve_model_path", return_value=model_dir):
         result = main(["--config", str(config_path), "doctor"])
     assert result == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["batch"]["maxBatchPromptTokens"] == 32768
+    assert payload["worker"]["capabilities"]["delegationLevel"] == "exact-edit"
+    assert payload["model"]["metadata"]["metadataReady"] is True
 
 
 def test_cli_doctor_not_ready(tmp_path: Path) -> None:
@@ -314,6 +337,20 @@ def test_cli_workspace_preview_run_artifact_and_cleanup(
         "workspace",
         "cleanup",
         str(run_dir),
+    ]) == 1
+    assert "Resumable workspace work" in capsys.readouterr().err
+    terminal.update_task(
+        "change",
+        status="failed",
+        error="Synthetic terminal state for cleanup.",
+    )
+    terminal.set_status("failed")
+    assert main([
+        "--config",
+        str(config_path),
+        "workspace",
+        "cleanup",
+        str(run_dir),
     ]) == 0
     cleaned = json.loads(capsys.readouterr().out)
     assert cleaned["cleanedUp"] is True
@@ -330,6 +367,67 @@ def test_cli_workspace_preview_run_artifact_and_cleanup(
         check=True,
         stdout=subprocess.PIPE,
     )
+
+
+def test_cli_main_checkout_yolo_preview_and_launch_policy(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, config_path, plan_path = _write_workspace_v2(tmp_path)
+    assert main([
+        "--config",
+        str(config_path),
+        "workspace",
+        "preview",
+        str(plan_path),
+        "--approval-mode",
+        "yolo",
+        "--workspace-target",
+        "checkout",
+    ]) == 0
+    preview_payload = json.loads(capsys.readouterr().out)
+    preview = preview_payload["execution"]
+    assert preview["executionPolicy"]["approvalMode"] == "yolo"
+    assert preview["executionPolicy"]["workspaceTarget"] == "checkout"
+
+    mock_session = MagicMock()
+    mock_session.summary.return_value = {
+        "status": "completed",
+        "total": 1,
+        "completed": 1,
+    }
+    with patch("mlx_swarm.cli.execute_plan", return_value=mock_session):
+        assert main([
+            "--config",
+            str(config_path),
+            "run",
+            str(plan_path),
+            "--approval-mode",
+            "yolo",
+            "--workspace-target",
+            "checkout",
+            "--approve-plan-digest",
+            preview_payload["planDigest"],
+            "--approve-execution-digest",
+            preview["executionDigest"],
+        ]) == 0
+    capsys.readouterr()
+
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    run_dirs = [
+        value
+        for value in (config.artifacts_dir / plan.plan_id).iterdir()
+        if (value / "session.json").is_file()
+    ]
+    assert len(run_dirs) == 1
+    state = json.loads((run_dirs[0] / "session.json").read_text())
+    snapshot = json.loads(
+        (run_dirs[0] / "workspace.snapshot.json").read_text()
+    )
+    assert state["approvalMode"] == "yolo"
+    assert state["workspaceTarget"] == "checkout"
+    assert snapshot["executionPath"] == str(repo.resolve())
 
 
 def test_cli_list_empty(tmp_path: Path) -> None:
@@ -473,6 +571,117 @@ def test_cli_commander_create_claim_and_import(
     imported = json.loads(capsys.readouterr().out)
     assert imported["request"]["status"] == "plan_ready"
     assert imported["planningReceipt"]["usage"]["usageStatus"] == "unavailable"
+
+
+def test_cli_commander_imports_exact_codex_jsonl_usage(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "create",
+        "--objective",
+        "Prepare one local task",
+    ]) == 0
+    request_id = json.loads(capsys.readouterr().out)["request"]["requestId"]
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "claim-plan",
+        request_id,
+    ]) == 0
+    claim_id = json.loads(capsys.readouterr().out)["claimId"]
+    usage_path = tmp_path / "codex.jsonl"
+    usage_path.write_text(
+        json.dumps({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 125,
+                "cached_input_tokens": 75,
+                "output_tokens": 25,
+                "total_tokens": 150,
+            },
+        }) + "\n",
+        encoding="utf-8",
+    )
+
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "import-plan",
+        request_id,
+        str(_write_plan(tmp_path)),
+        "--claim-id",
+        claim_id,
+        "--usage-jsonl",
+        str(usage_path),
+    ]) == 0
+
+    receipt = json.loads(capsys.readouterr().out)["planningReceipt"]
+    assert receipt["usage"] == {
+        "usageStatus": "reported",
+        "promptTokens": 125,
+        "completionTokens": 25,
+        "totalTokens": 150,
+    }
+
+
+def test_cli_rejects_malformed_codex_usage_stream(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    usage_path = tmp_path / "codex.jsonl"
+    usage_path.write_text(
+        "not-json\n"
+        + json.dumps({
+            "type": "turn.completed",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 5,
+                "total_tokens": 15,
+            },
+        })
+        + "\n",
+        encoding="utf-8",
+    )
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "create",
+        "--objective",
+        "Prepare one local task",
+    ]) == 0
+    request_id = json.loads(capsys.readouterr().out)["request"]["requestId"]
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "claim-plan",
+        request_id,
+    ]) == 0
+    claim_id = json.loads(capsys.readouterr().out)["claimId"]
+
+    assert main([
+        "--config",
+        str(config_path),
+        "commander",
+        "import-plan",
+        request_id,
+        str(_write_plan(tmp_path)),
+        "--claim-id",
+        claim_id,
+        "--usage-jsonl",
+        str(usage_path),
+    ]) == 1
+
+    assert "malformed lines" in capsys.readouterr().err
 
 
 def test_cli_skill_install_does_not_require_config(

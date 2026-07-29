@@ -998,6 +998,10 @@ def parse_codex_usage_jsonl(text: str) -> dict[str, Any]:
             continue
         usage = event.get("usage")
         if not isinstance(usage, dict):
+            # A completed turn without usage makes any sum from the same
+            # stream incomplete. Reuse malformedLines as the public
+            # completeness signal so exact-import callers fail closed.
+            malformed += 1
             continue
         input_value = _usage_integer(
             usage,

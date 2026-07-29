@@ -1,6 +1,7 @@
 """Compatibility namespace for the former ``swarm_agents`` package.
 
-Use :mod:`mlx_swarm` instead. This namespace is retained for the 0.2 release.
+Use :mod:`mlx_swarm` instead. This namespace is retained temporarily for the
+0.3 compatibility release.
 """
 
 from __future__ import annotations

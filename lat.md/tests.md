@@ -17,6 +17,15 @@ Thinking prefixes remain open when the plan explicitly enables reasoning.
 ### Per-task generation configuration
 Role defaults and validated task overrides merge without inheriting another task's settings.
 
+### Structured sampler compatibility
+Strict JSON and edit-manifest tasks use deterministic sampler defaults unless a
+plan supplies explicit overrides, keeping compatible workers in one true MLX
+batch.
+
+### Context window guard
+Rendered prompt tokens plus requested generation must fit the declared worker
+context window; overflow fails before generation.
+
 ## Contracts
 
 Validation of [[Config]] and [[Plans]] JSON schemas.
@@ -38,6 +47,10 @@ Config without model field raises ContractError.
 
 ### Bad max workers
 maxWorkers=0 raises ContractError (must be >= 1).
+
+### Calibrated default workers
+Omitting maxWorkers uses the four-worker interactive default while explicit
+values through thirty-two remain valid.
 
 ### Strict boolean config
 Non-boolean enableThinking values raise ContractError.
@@ -211,6 +224,20 @@ Completed task state and session identity survive resume without re-execution.
 ### Frontier packet
 One final packet is persisted and omits rejected raw output.
 
+### YOLO artifact apply
+YOLO worktree sessions create immutable policy-bound automatic Apply receipts,
+run only snapshotted verification profiles, and complete without a human
+decision or frontier coordination call.
+
+### YOLO verification pause
+A failed allowlisted verification ends the active runner as partial, retains the
+commit and evidence, and does not spend another local generation or frontier
+call.
+
+### Main-checkout serialization
+Checkout execution requires YOLO plus a clean repository and an exclusive
+repository-wide lock; concurrent checkout runners cannot mutate it.
+
 ## CLI
 
 CLI entrypoint tests. See [[src/mlx_swarm/cli.py]].
@@ -226,6 +253,10 @@ Run command returns 0 when all tasks complete.
 
 ### Run partial
 Run command returns 1 when status is partial.
+
+### Workspace policy options
+CLI preview and run bind supervised/YOLO plus worktree/checkout to distinct
+execution digests, and reject supervised checkout.
 
 ### List empty
 List command returns 0 with no sessions.

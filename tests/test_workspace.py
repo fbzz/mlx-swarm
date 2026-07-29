@@ -3,15 +3,18 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
+from mlx_swarm import executor as executor_module
 from mlx_swarm import workspace as workspace_module
 from mlx_swarm.contracts import (
     ContractError,
@@ -28,8 +31,10 @@ from mlx_swarm.workspace import (
     cleanup_worktree,
     execution_preview,
     load_artifact,
+    load_completed_artifact_evidence,
     materialize_edit_manifest,
     persist_artifact,
+    prepare_workspace,
     prepare_worktree,
     recover_artifact_application,
     run_verifications,
@@ -126,6 +131,18 @@ def _diff() -> str:
     )
 
 
+def _approval(preview: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "planSha256": preview["planSha256"],
+        "executionDigest": preview["executionDigest"],
+        "workspaceRoot": preview["workspaceRoot"],
+        "baseSha": preview["baseSha"],
+        "approvalMode": preview["executionPolicy"]["approvalMode"],
+        "workspaceTarget": preview["executionPolicy"]["workspaceTarget"],
+        "executionPolicySha256": preview["executionPolicySha256"],
+    }
+
+
 def test_schema_v2_workspace_contract_and_plan(tmp_path: Path) -> None:
     repo, config_path = _repo(tmp_path)
     config = load_config(config_path)
@@ -213,10 +230,7 @@ def test_edit_manifest_materializes_and_executes_as_reviewable_diff(
     session.set_sources(config_source=config.source, plan_source=plan.source)
     session.attach_workspace(
         snapshot,
-        execution_approval={
-            "planSha256": preview["planSha256"],
-            "executionDigest": preview["executionDigest"],
-        },
+        execution_approval=_approval(preview),
     )
     backend = _SequenceBackend([raw_output])
     outcome: list[Session] = []
@@ -348,6 +362,338 @@ def test_worktree_uses_head_and_excludes_dirty_source(tmp_path: Path) -> None:
     assert "src/value.py" in source_status
 
 
+def test_execution_digest_binds_yolo_and_selected_target(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    _git(repo, "add", "config/plan.json")
+    _git(repo, "commit", "-qm", "add plan")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+
+    supervised = execution_preview(config, plan)
+    yolo_worktree = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    yolo_checkout = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+
+    assert len({
+        supervised["executionDigest"],
+        yolo_worktree["executionDigest"],
+        yolo_checkout["executionDigest"],
+    }) == 3
+    assert yolo_checkout["executionPolicy"] == {
+        "schemaVersion": 1,
+        "approvalMode": "yolo",
+        "workspaceTarget": "checkout",
+        "onVerificationFailure": "pause",
+    }
+    with pytest.raises(WorkspaceError, match="only with explicit YOLO"):
+        execution_preview(
+            config,
+            plan,
+            workspace_target="checkout",
+        )
+
+
+def test_main_checkout_yolo_requires_clean_tree_and_commits_in_place(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    _git(repo, "add", "config/plan.json")
+    _git(repo, "commit", "-qm", "add plan")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id="checkout-yolo",
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / "checkout-yolo"
+    manifest = persist_artifact(
+        session_dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    receipt = apply_artifact(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
+
+    assert snapshot["executionPath"] == str(repo.resolve())
+    assert snapshot["worktreePath"] == str(repo.resolve())
+    assert snapshot["branch"] == _git(repo, "branch", "--show-current")
+    assert receipt["commitSha"] == _git(repo, "rev-parse", "HEAD")
+    assert (repo / "src" / "value.py").read_text() == "VALUE = 2\n"
+    assert manifest["baseCommit"] == preview["baseSha"]
+    with pytest.raises(WorkspaceError, match="cannot be removed"):
+        cleanup_worktree(snapshot)
+
+    (repo / "src" / "value.py").write_text("VALUE = 3\n", encoding="utf-8")
+    with pytest.raises(WorkspaceError, match="completely clean"):
+        execution_preview(
+            config,
+            plan,
+            approval_mode="yolo",
+            workspace_target="checkout",
+        )
+
+
+def test_checkout_verification_never_restores_detected_changes(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    raw["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        "from pathlib import Path; Path('src/value.py').write_text('VALUE = 99\\n')",
+    ]
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+    _git(repo, "add", "config/swarm.json", "config/plan.json")
+    _git(repo, "commit", "-qm", "add mutating verification")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id="checkout-verification",
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_dir = (
+        config.artifacts_dir / plan.plan_id / "checkout-verification"
+    )
+    manifest = persist_artifact(
+        session_dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    apply_artifact(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
+    results = run_verifications(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+    )
+
+    assert results[0]["passed"] is False
+    assert results[0]["trackedChangesRejected"] == ["src/value.py"]
+    assert results[0]["trackedChangesRestored"] == []
+    assert (repo / "src" / "value.py").read_text() == "VALUE = 99\n"
+
+
+def test_main_checkout_runner_lock_is_repository_wide(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    _git(repo, "add", "config/plan.json")
+    _git(repo, "commit", "-qm", "add plan")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_id = "checkout-lock-one"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(
+        config_source=config.source,
+        plan_source=plan.source,
+    )
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+
+    with executor_module._workspace_execution_lock(
+        config,
+        session_dir,
+    ):
+        with pytest.raises(RuntimeError, match="already owns"):
+            with executor_module._workspace_execution_lock(
+                config,
+                session_dir,
+            ):
+                pass
+
+
+def test_checkout_branch_switch_at_same_head_is_rejected(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    _git(repo, "add", "config/plan.json")
+    _git(repo, "commit", "-qm", "add plan")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id="checkout-branch-switch",
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    _git(repo, "switch", "-qc", "same-head-other-branch")
+
+    with pytest.raises(WorkspaceError, match="branch differs"):
+        persist_artifact(
+            config.artifacts_dir / plan.plan_id / "checkout-branch-switch",
+            plan.tasks[0],
+            _diff(),
+            snapshot,
+        )
+
+
+def test_detached_head_allows_worktree_but_not_checkout(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    _git(repo, "add", "config/plan.json")
+    _git(repo, "commit", "-qm", "add plan")
+    _git(repo, "checkout", "--detach", "-q")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+
+    preview = execution_preview(config, plan)
+    assert preview["startingBranch"] is None
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id="detached-worktree",
+        expected_execution_digest=preview["executionDigest"],
+    )
+    assert Path(snapshot["worktreePath"]).is_dir()
+    with pytest.raises(WorkspaceError, match="checked-out Git branch"):
+        execution_preview(
+            config,
+            plan,
+            approval_mode="yolo",
+            workspace_target="checkout",
+        )
+
+
+def test_unignored_artifacts_root_is_not_workspace_ready(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    (repo / ".gitignore").write_text(
+        "config/.swarm/runs/_worktrees/\n",
+        encoding="utf-8",
+    )
+    _git(repo, "add", ".gitignore", "config/plan.json")
+    _git(repo, "commit", "-qm", "ignore only worktrees")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+
+    with pytest.raises(WorkspaceError, match="not ignored"):
+        execution_preview(config, plan)
+
+
+def test_two_artifact_roots_share_one_checkout_lock(
+    tmp_path: Path,
+) -> None:
+    repo, first_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    second_path = repo / "config" / "second-swarm.json"
+    second_raw = json.loads(first_path.read_text(encoding="utf-8"))
+    second_raw["artifacts"] = ".swarm/other-runs"
+    second_path.write_text(json.dumps(second_raw), encoding="utf-8")
+    _git(repo, "add", "config/plan.json", "config/second-swarm.json")
+    _git(repo, "commit", "-qm", "add second config")
+    first = load_config(first_path)
+    second = load_config(second_path)
+    plan_first = load_plan(plan_path, first)
+    plan_second = load_plan(plan_path, second)
+    preview = execution_preview(
+        first,
+        plan_first,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    snapshot = prepare_workspace(
+        first,
+        plan_first,
+        session_id="first-root",
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    first_session = Session(
+        first.artifacts_dir / plan_first.plan_id / "first-root",
+        plan_first,
+        session_id="first-root",
+    )
+    first_session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+
+    with pytest.raises(WorkspaceError, match="reserved by unresolved"):
+        execution_preview(
+            second,
+            plan_second,
+            approval_mode="yolo",
+            workspace_target="checkout",
+        )
+
+
 def test_patch_apply_and_allowlisted_verification(tmp_path: Path) -> None:
     repo, config_path = _repo(tmp_path)
     config = load_config(config_path)
@@ -376,6 +722,7 @@ def test_patch_apply_and_allowlisted_verification(tmp_path: Path) -> None:
         session_dir,
         plan.tasks[0],
         snapshot,
+        expected_artifact_sha256=manifest["sha256"],
     )
     results = run_verifications(
         session_dir,
@@ -384,8 +731,95 @@ def test_patch_apply_and_allowlisted_verification(tmp_path: Path) -> None:
     )
     assert receipt["commitSha"] == snapshot["headSha"]
     assert results[0]["passed"] is True
+    assert results[0]["schemaVersion"] == 2
+    verification_log = session_dir / results[0]["output"]
+    assert results[0]["outputBytes"] == verification_log.stat().st_size
+    assert results[0]["outputSha256"] == hashlib.sha256(
+        verification_log.read_bytes()
+    ).hexdigest()
+    evidence = load_completed_artifact_evidence(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+    )
+    assert evidence["verificationReceipts"] == results
+    verification_log.write_bytes(b"tampered\n")
+    with pytest.raises(
+        WorkspaceError,
+        match="verification log binding is invalid",
+    ):
+        load_completed_artifact_evidence(
+            session_dir,
+            plan.tasks[0],
+            snapshot,
+        )
     assert (Path(snapshot["worktreePath"]) / "src" / "value.py").read_text() == "VALUE = 2\n"
     assert (repo / "src" / "value.py").read_text() == "VALUE = 1\n"
+
+
+def test_forged_passing_verification_receipt_is_rejected(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    raw["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        "raise SystemExit(7)",
+    ]
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(config, plan)
+    snapshot = prepare_worktree(
+        config,
+        plan,
+        session_id="forged-verification",
+        expected_execution_digest=preview["executionDigest"],
+    )
+    session_dir = (
+        config.artifacts_dir / plan.plan_id / "forged-verification"
+    )
+    session_dir.mkdir(parents=True)
+    manifest = persist_artifact(
+        session_dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    apply_artifact(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
+    results = run_verifications(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+    )
+    assert results[0]["passed"] is False
+    receipt_path = (
+        session_dir
+        / "artifacts"
+        / "change"
+        / "verification"
+        / "syntax"
+        / "attempt-001.json"
+    )
+    forged = json.loads(receipt_path.read_text(encoding="utf-8"))
+    forged["passed"] = True
+    receipt_path.write_text(json.dumps(forged), encoding="utf-8")
+
+    with pytest.raises(
+        WorkspaceError,
+        match="verification result is inconsistent",
+    ):
+        load_completed_artifact_evidence(
+            session_dir,
+            plan.tasks[0],
+            snapshot,
+        )
 
 
 def test_git_recount_accepts_correct_edit_with_bad_worker_hunk_metadata(
@@ -431,14 +865,173 @@ def test_git_recount_accepts_correct_edit_with_bad_worker_hunk_metadata(
 
     session_dir = config.artifacts_dir / plan.plan_id / "recount-hunk"
     session_dir.mkdir(parents=True)
-    persist_artifact(
+    manifest = persist_artifact(
         session_dir,
         plan.tasks[0],
         malformed_metadata,
         snapshot,
     )
-    apply_artifact(session_dir, plan.tasks[0], snapshot)
+    apply_artifact(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
     assert (worktree / "src" / "value.py").read_text() == "VALUE = 2\n"
+
+
+def test_artifact_payload_tamper_is_rejected_before_apply(
+    tmp_path: Path,
+) -> None:
+    _repo_path, _config, plan, snapshot, session = _prepared_session(
+        tmp_path,
+        session_id="payload-tamper",
+    )
+    manifest = persist_artifact(
+        session.dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    payload_path = session.dir / "artifacts" / "change" / "payload.diff"
+    payload_path.write_text(
+        _diff().replace("VALUE = 2", "VALUE = 3"),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(WorkspaceError, match="digest is invalid"):
+        apply_artifact(
+            session.dir,
+            plan.tasks[0],
+            snapshot,
+            expected_artifact_sha256=manifest["sha256"],
+        )
+
+
+def test_replaced_manifest_cannot_escape_approved_artifact_digest(
+    tmp_path: Path,
+) -> None:
+    _repo_path, _config, plan, snapshot, session = _prepared_session(
+        tmp_path,
+        session_id="manifest-replacement",
+    )
+    original = persist_artifact(
+        session.dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    replacement = _diff().replace("VALUE = 2", "VALUE = 3")
+    artifact_dir = session.dir / "artifacts" / "change"
+    (artifact_dir / "payload.diff").write_text(
+        replacement,
+        encoding="utf-8",
+    )
+    manifest_path = artifact_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["sha256"] = workspace_module.canonical_sha256({
+        "taskId": "change",
+        "artifactType": "patch",
+        "baseCommit": manifest["baseCommit"],
+        "payload": replacement,
+    })
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(WorkspaceError, match="approved digest"):
+        apply_artifact(
+            session.dir,
+            plan.tasks[0],
+            snapshot,
+            expected_artifact_sha256=original["sha256"],
+        )
+
+
+def test_headerless_extra_patch_section_is_rejected(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    (repo / "tests" / "other.py").write_text("OTHER = 1\n", encoding="utf-8")
+    _git(repo, "add", "tests/other.py")
+    _git(repo, "commit", "-qm", "add second file")
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(config, plan)
+    snapshot = prepare_worktree(
+        config,
+        plan,
+        session_id="headerless-extra",
+        expected_execution_digest=preview["executionDigest"],
+    )
+    payload = (
+        _diff()
+        + "--- a/tests/other.py\n"
+        + "+++ b/tests/other.py\n"
+        + "@@ -1 +1 @@\n"
+        + "-OTHER = 1\n"
+        + "+OTHER = 2\n"
+    )
+
+    with pytest.raises(WorkspaceError, match="not represented|git apply"):
+        persist_artifact(
+            config.artifacts_dir / plan.plan_id / "headerless-extra",
+            plan.tasks[0],
+            payload,
+            snapshot,
+        )
+
+
+def test_runtime_artifact_root_is_never_an_allowed_patch_target(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_config["workspace"]["writeRoots"] = ["."]
+    config_path.write_text(json.dumps(raw_config), encoding="utf-8")
+    raw_plan = json.loads(_plan_file(repo).read_text(encoding="utf-8"))
+    raw_plan["tasks"][0]["allowedPaths"] = ["."]
+    plan_path = repo / "config" / "broad-plan.json"
+    plan_path.write_text(json.dumps(raw_plan), encoding="utf-8")
+    _git(
+        repo,
+        "add",
+        "config/swarm.json",
+        "config/plan.json",
+        "config/broad-plan.json",
+    )
+    _git(repo, "commit", "-qm", "broad path authority")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id="runtime-root-target",
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    payload = (
+        "diff --git a/config/.swarm/runs/evidence.txt "
+        "b/config/.swarm/runs/evidence.txt\n"
+        "new file mode 100644\n"
+        "--- /dev/null\n"
+        "+++ b/config/.swarm/runs/evidence.txt\n"
+        "@@ -0,0 +1 @@\n"
+        "+tamper\n"
+    )
+
+    with pytest.raises(WorkspaceError, match="runtime data"):
+        persist_artifact(
+            config.artifacts_dir / plan.plan_id / "runtime-root-target",
+            plan.tasks[0],
+            payload,
+            snapshot,
+        )
 
 
 def test_verification_uses_exact_argv_no_shell_and_sanitized_environment(
@@ -449,13 +1042,18 @@ def test_verification_uses_exact_argv_no_shell_and_sanitized_environment(
         tmp_path,
         session_id="popen-boundary",
     )
-    persist_artifact(
+    manifest = persist_artifact(
         session.dir,
         plan.tasks[0],
         _diff(),
         snapshot,
     )
-    apply_artifact(session.dir, plan.tasks[0], snapshot)
+    apply_artifact(
+        session.dir,
+        plan.tasks[0],
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
     original_popen = subprocess.Popen
     calls: list[tuple[Any, dict[str, Any]]] = []
 
@@ -475,10 +1073,15 @@ def test_verification_uses_exact_argv_no_shell_and_sanitized_environment(
     )
 
     assert results[0]["passed"] is True
-    argv, kwargs = calls[0]
-    assert argv == list(
+    expected_argv = list(
         snapshot["verificationProfiles"]["syntax"]["argv"]
     )
+    argv, kwargs = next(
+        (argv, kwargs)
+        for argv, kwargs in calls
+        if argv == expected_argv
+    )
+    assert argv == expected_argv
     assert kwargs["shell"] is False
     assert kwargs["stdin"] is subprocess.DEVNULL
     assert kwargs["start_new_session"] is True
@@ -504,8 +1107,18 @@ def test_verification_output_is_bounded(tmp_path: Path) -> None:
     )
     session_dir = config.artifacts_dir / plan.plan_id / "bounded-output"
     session_dir.mkdir(parents=True)
-    persist_artifact(session_dir, plan.tasks[0], _diff(), snapshot)
-    apply_artifact(session_dir, plan.tasks[0], snapshot)
+    manifest = persist_artifact(
+        session_dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    apply_artifact(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
     result = run_verifications(
         session_dir,
         plan.tasks[0],
@@ -537,8 +1150,18 @@ def test_verification_timeout_terminates_process_group(
     )
     session_dir = config.artifacts_dir / plan.plan_id / "verification-timeout"
     session_dir.mkdir(parents=True)
-    persist_artifact(session_dir, plan.tasks[0], _diff(), snapshot)
-    apply_artifact(session_dir, plan.tasks[0], snapshot)
+    manifest = persist_artifact(
+        session_dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    apply_artifact(
+        session_dir,
+        plan.tasks[0],
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
     started = time.monotonic()
     result = run_verifications(
         session_dir,
@@ -620,6 +1243,667 @@ class _SequenceBackend(_Backend):
         return [self.outputs.pop(0)], {"batchSize": 1}
 
 
+def test_yolo_auto_applies_digest_bound_artifact_and_verifies(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "yolo-success"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+    backend = _Backend()
+
+    outcome = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=backend,
+        approval_poll_seconds=0.01,
+    )
+
+    assert outcome.state["status"] == "completed"
+    assert outcome.state["approvalMode"] == "yolo"
+    assert outcome.state["workspaceTarget"] == "worktree"
+    assert backend.calls == 1
+    decision = json.loads(
+        (
+            session_dir
+            / "artifacts"
+            / "change"
+            / "decision.json"
+        ).read_text()
+    )
+    assert decision["source"] == "yolo"
+    assert (
+        decision["executionPolicySha256"]
+        == preview["executionPolicySha256"]
+    )
+    assert Path(snapshot["worktreePath"], "src/value.py").read_text() == (
+        "VALUE = 2\n"
+    )
+
+
+def test_corrupt_completed_evidence_seals_partial_diagnostic_packet(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "finalization-diagnostic"
+    yolo_snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(
+        config_source=config.source,
+        plan_source=plan.source,
+    )
+    session.attach_workspace(
+        yolo_snapshot,
+        execution_approval=_approval(preview),
+    )
+    first = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=_Backend(),
+        approval_poll_seconds=0.01,
+    )
+    assert first.state["status"] == "completed"
+    receipt_path = (
+        session_dir / "artifacts" / "change" / "apply-receipt.json"
+    )
+    corrupt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    corrupt["forged"] = True
+    receipt_path.write_text(json.dumps(corrupt), encoding="utf-8")
+
+    with patch(
+        "mlx_swarm.executor.MLXBatchBackend",
+        side_effect=AssertionError("model must not load"),
+    ) as model:
+        resumed = execute_plan(
+            config,
+            plan,
+            session_dir=session_dir,
+            approval_poll_seconds=0.01,
+        )
+
+    model.assert_not_called()
+    assert resumed.state["status"] == "partial"
+    assert resumed.state["pauseReason"] == (
+        "finalization_validation_failed"
+    )
+    packet = json.loads(
+        (session_dir / "frontier-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert packet["status"] == "partial"
+    assert packet["requiresFrontierReview"] is False
+    assert packet["pauseReason"] == "finalization_validation_failed"
+    assert "receipt is invalid" in packet[
+        "finalizationError"
+    ].lower()
+    assert packet["workspace"]["appliedArtifacts"][0][
+        "evidenceStatus"
+    ] == "unvalidated-diagnostic"
+    assert "finalDiff" not in packet["workspace"]
+
+
+def test_yolo_verification_failure_pauses_without_another_generation(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    raw["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        "raise SystemExit(7)",
+    ]
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "yolo-failed-check"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+    backend = _Backend()
+
+    outcome = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=backend,
+        approval_poll_seconds=0.01,
+    )
+
+    assert outcome.state["status"] == "partial"
+    assert outcome.get_task_status("change") == "verification_failed"
+    assert outcome.state["pauseReason"] == "verification_failed"
+    assert outcome.state["reviewStatus"] == "not_eligible"
+    assert backend.calls == 1
+
+
+def test_existing_session_rejects_changed_same_id_plan(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "immutable-plan"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+    changed_raw = json.loads(plan_path.read_text(encoding="utf-8"))
+    changed_raw["tasks"][0]["prompt"] = "A different same-ID task."
+    changed_path = repo / "config" / "changed-plan.json"
+    changed_path.write_text(json.dumps(changed_raw), encoding="utf-8")
+    changed_plan = load_plan(changed_path, config)
+    backend = _Backend()
+
+    with pytest.raises(RuntimeError, match="immutable session snapshot"):
+        execute_plan(
+            config,
+            changed_plan,
+            session_dir=session_dir,
+            backend=backend,
+            approval_poll_seconds=0.01,
+        )
+    assert backend.calls == 0
+
+
+def test_tampered_execution_snapshot_cannot_become_resume_authority(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, plan, snapshot, session = _prepared_session(
+        tmp_path,
+        session_id="snapshot-tamper",
+    )
+    snapshot_path = session.dir / "workspace.snapshot.json"
+    tampered = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    tampered["executionPolicy"]["onVerificationFailure"] = "continue"
+    snapshot_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    with pytest.raises(WorkspaceError, match="policy snapshot is invalid"):
+        execute_plan(
+            config,
+            plan,
+            session_dir=session.dir,
+            backend=_Backend(),
+            approval_poll_seconds=0.01,
+        )
+
+
+def test_worktree_branch_field_cannot_replace_deterministic_identity(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, plan, _snapshot, session = _prepared_session(
+        tmp_path,
+        session_id="branch-identity-tamper",
+    )
+    snapshot_path = session.dir / "workspace.snapshot.json"
+    tampered = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    tampered["branch"] = "mlx-swarm/workspace-plan/another-session"
+    snapshot_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    with pytest.raises(WorkspaceError, match="branch identity"):
+        execute_plan(
+            config,
+            plan,
+            session_dir=session.dir,
+            backend=_Backend(),
+            approval_poll_seconds=0.01,
+        )
+
+
+def test_session_load_recovers_durable_workspace_attachment(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(config, plan)
+    session_id = "attachment-recovery"
+    snapshot = prepare_worktree(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    snapshot["executionApproval"] = _approval(preview)
+    snapshot["sessionDir"] = str(session_dir.resolve())
+    (session_dir / "workspace.snapshot.json").write_text(
+        json.dumps(snapshot),
+        encoding="utf-8",
+    )
+    assert session.state.get("workspaceExecution") is not True
+
+    recovered = Session.load(session_dir, config)
+
+    assert recovered.state["workspaceExecution"] is True
+    assert recovered.state["executionApproval"] == _approval(preview)
+    assert recovered.workspace_snapshot()["branch"] == snapshot["branch"]
+
+
+def test_yolo_verify_resume_unblocks_descendant(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    marker = tmp_path / "verification-ready"
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_config["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        f"from pathlib import Path; assert Path({str(marker)!r}).is_file()",
+    ]
+    config_path.write_text(json.dumps(raw_config), encoding="utf-8")
+    raw_plan = json.loads(_plan_file(repo).read_text(encoding="utf-8"))
+    raw_plan["tasks"].append({
+        "id": "report",
+        "role": "review",
+        "prompt": "Return the completion report.",
+        "artifactType": "report",
+        "allowedPaths": [],
+        "verification": [],
+        "dependsOn": ["change"],
+        "maxRepairAttempts": 0,
+    })
+    plan_path = repo / "config" / "descendant-plan.json"
+    plan_path.write_text(json.dumps(raw_plan), encoding="utf-8")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "verify-unblocks"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+    first_backend = _SequenceBackend([_diff()])
+    first = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=first_backend,
+        approval_poll_seconds=0.01,
+    )
+    assert first.get_task_status("change") == "verification_failed"
+    assert first.get_task_status("report") == "blocked"
+
+    marker.write_text("ready\n", encoding="utf-8")
+    manifest = first.state["tasks"]["change"]["artifact"]
+    submit_artifact_decision(
+        session_dir,
+        "change",
+        action="verify",
+        artifact_sha256=manifest["sha256"],
+        source="test",
+    )
+    second_backend = _SequenceBackend(["verified locally"])
+    second = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=second_backend,
+        approval_poll_seconds=0.01,
+    )
+
+    assert second.state["status"] == "completed"
+    assert second.get_task_status("change") == "completed"
+    assert second.get_task_status("report") == "completed"
+    assert second_backend.calls == 1
+
+
+def test_yolo_verification_resume_does_not_load_model(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    marker = tmp_path / "verification-ready"
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_config["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        f"from pathlib import Path; assert Path({str(marker)!r}).is_file()",
+    ]
+    config_path.write_text(json.dumps(raw_config), encoding="utf-8")
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "verify-without-model"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+    first = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=_Backend(),
+        approval_poll_seconds=0.01,
+    )
+    assert first.get_task_status("change") == "verification_failed"
+    marker.write_text("ready\n", encoding="utf-8")
+    manifest = first.state["tasks"]["change"]["artifact"]
+    submit_artifact_decision(
+        session_dir,
+        "change",
+        action="verify",
+        artifact_sha256=manifest["sha256"],
+        source="test",
+    )
+
+    with patch(
+        "mlx_swarm.executor.MLXBatchBackend",
+        side_effect=AssertionError("model must not load"),
+    ) as model:
+        resumed = execute_plan(
+            config,
+            plan,
+            session_dir=session_dir,
+            approval_poll_seconds=0.01,
+        )
+
+    model.assert_not_called()
+    assert resumed.state["status"] == "completed"
+    assert resumed.get_task_status("change") == "completed"
+
+
+def test_final_evidence_failure_is_recoverable_and_not_review_eligible(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = repo / "config" / "report-plan.json"
+    plan_path.write_text(
+        json.dumps({
+            "schemaVersion": 2,
+            "planId": "report-plan",
+            "objective": "Produce a report without mutating the worktree",
+            "tasks": [{
+                "id": "report",
+                "role": "review",
+                "prompt": "Return the report.",
+                "artifactType": "report",
+                "allowedPaths": [],
+                "verification": [],
+                "maxRepairAttempts": 0,
+            }],
+        }),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "final-evidence-recovery"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+
+    class DirtyingBackend(_SequenceBackend):
+        def generate(
+            self,
+            tasks: list[TaskDef],
+            prompts: list[str],
+        ) -> tuple[list[str], dict[str, Any]]:
+            Path(snapshot["worktreePath"], "rogue.txt").write_text(
+                "outside ledger\n",
+                encoding="utf-8",
+            )
+            return super().generate(tasks, prompts)
+
+    first = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=DirtyingBackend(["local report"]),
+        approval_poll_seconds=0.01,
+    )
+    packet = json.loads(
+        (session_dir / "frontier-result.json").read_text(encoding="utf-8")
+    )
+    assert first.state["status"] == "partial"
+    assert first.state["pauseReason"] == "finalization_validation_failed"
+    assert first.get_task_status("report") == "completed"
+    assert packet["status"] == "partial"
+    assert packet["requiresFrontierReview"] is False
+    with pytest.raises(WorkspaceError, match="Final evidence"):
+        cleanup_worktree(
+            snapshot,
+            task_states=first.state["tasks"],
+            pause_reason=first.state["pauseReason"],
+        )
+
+    Path(snapshot["worktreePath"], "rogue.txt").unlink()
+    with patch(
+        "mlx_swarm.executor.MLXBatchBackend",
+        side_effect=AssertionError("model must not load"),
+    ) as model:
+        resumed = execute_plan(
+            config,
+            plan,
+            session_dir=session_dir,
+            approval_poll_seconds=0.01,
+        )
+
+    model.assert_not_called()
+    assert resumed.state["status"] == "completed"
+    assert resumed.state["reviewStatus"] == "awaiting_review"
+    completed_packet = json.loads(
+        (session_dir / "frontier-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    output_evidence = completed_packet["workspace"][
+        "nonMutatingOutputs"
+    ][0]
+    assert output_evidence["output"] == "local report"
+    assert output_evidence["manifest"]["taskId"] == "report"
+    assert output_evidence["artifactSha256"] == output_evidence[
+        "manifest"
+    ]["sha256"]
+    assert output_evidence["payloadSha256"] == hashlib.sha256(
+        b"local report"
+    ).hexdigest()
+    assert completed_packet["tasks"]["report"]["output"] == "local report"
+
+
+def test_failed_checkout_rejection_remains_replayable_after_cleanup(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = _plan_file(repo)
+    raw = json.loads(config_path.read_text(encoding="utf-8"))
+    raw["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        "from pathlib import Path; Path('src/value.py').write_text('VALUE = 99\\n')",
+    ]
+    config_path.write_text(json.dumps(raw), encoding="utf-8")
+    _git(repo, "add", "config/swarm.json", "config/plan.json")
+    _git(repo, "commit", "-qm", "add mutating verification")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_id = "replay-rejection"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+    first = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=_Backend(),
+        approval_poll_seconds=0.01,
+    )
+    manifest = first.state["tasks"]["change"]["artifact"]
+    submit_artifact_decision(
+        session_dir,
+        "change",
+        action="reject",
+        artifact_sha256=manifest["sha256"],
+        source="test",
+    )
+    failed_reject = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=_Backend(),
+        approval_poll_seconds=0.01,
+    )
+    assert failed_reject.get_task_status("change") == "verification_failed"
+    assert "rejection.json" not in failed_reject.state["tasks"]["change"].get(
+        "processedVerificationRequests",
+        [],
+    )
+
+    _git(repo, "restore", "--source=HEAD", "--staged", "--worktree", "src/value.py")
+    recovered = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=_Backend(),
+        approval_poll_seconds=0.01,
+    )
+    assert recovered.get_task_status("change") == "rejected_by_operator"
+    assert recovered.state["tasks"]["change"]["revertReceipt"]["revertCommit"]
+    assert "rejection.json" in recovered.state["tasks"]["change"][
+        "processedVerificationRequests"
+    ]
+
+
 def test_executor_waits_for_digest_bound_human_apply(tmp_path: Path) -> None:
     repo, config_path = _repo(tmp_path)
     config = load_config(config_path)
@@ -637,10 +1921,7 @@ def test_executor_waits_for_digest_bound_human_apply(tmp_path: Path) -> None:
     session.set_sources(config_source=config.source, plan_source=plan.source)
     session.attach_workspace(
         snapshot,
-        execution_approval={
-            "planSha256": "test",
-            "executionDigest": preview["executionDigest"],
-        },
+        execution_approval=_approval(preview),
     )
     backend = _Backend()
     outcome: list[Session] = []
@@ -711,10 +1992,7 @@ def test_structural_patch_failure_uses_bounded_local_repair(
     session.set_sources(config_source=config.source, plan_source=plan.source)
     session.attach_workspace(
         snapshot,
-        execution_approval={
-            "planSha256": preview["planSha256"],
-            "executionDigest": preview["executionDigest"],
-        },
+        execution_approval=_approval(preview),
     )
     backend = _SequenceBackend([
         "This is not a unified diff.",
@@ -778,12 +2056,65 @@ def _prepared_session(
     session.set_sources(config_source=config.source, plan_source=plan.source)
     session.attach_workspace(
         snapshot,
-        execution_approval={
-            "planSha256": preview["planSha256"],
-            "executionDigest": preview["executionDigest"],
-        },
+        execution_approval=_approval(preview),
     )
     return repo, config, plan, snapshot, session
+
+
+def test_resume_reconciles_persisted_passing_verification(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, plan, snapshot, session = _prepared_session(
+        tmp_path,
+        session_id="verification-crash-recovery",
+    )
+    task = plan.tasks[0]
+    manifest = persist_artifact(
+        session.dir,
+        task,
+        _diff(),
+        snapshot,
+    )
+    apply_receipt = apply_artifact(
+        session.dir,
+        task,
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
+    verification_results = run_verifications(
+        session.dir,
+        task,
+        snapshot,
+    )
+    assert verification_results[0]["passed"] is True
+    session.update_workspace(snapshot)
+    session.update_task(
+        task.id,
+        status="verifying",
+        normalizedOutput=_diff(),
+        artifact=manifest,
+        applyReceipt=apply_receipt,
+        verificationResults=[],
+        error=None,
+    )
+
+    with patch(
+        "mlx_swarm.executor.MLXBatchBackend",
+        side_effect=AssertionError("model must not load"),
+    ) as model:
+        resumed = execute_plan(
+            config,
+            plan,
+            session_dir=session.dir,
+            approval_poll_seconds=0.01,
+        )
+
+    model.assert_not_called()
+    assert resumed.state["status"] == "completed"
+    recovered = resumed.state["tasks"][task.id]
+    assert recovered["status"] == "completed"
+    assert recovered["recoveredVerificationAfterCrash"] is True
+    assert recovered["verificationResults"] == verification_results
 
 
 def test_execution_digest_binds_plan_and_current_head(tmp_path: Path) -> None:
@@ -942,10 +2273,7 @@ def test_failed_verification_waits_then_reruns_without_worker_call(
     session.set_sources(config_source=config.source, plan_source=plan.source)
     session.attach_workspace(
         snapshot,
-        execution_approval={
-            "planSha256": preview["planSha256"],
-            "executionDigest": preview["executionDigest"],
-        },
+        execution_approval=_approval(preview),
     )
     backend = _Backend()
     outcome: list[Session] = []
@@ -1021,10 +2349,7 @@ def test_failed_verification_reject_creates_revert_commit(
     session.set_sources(config_source=config.source, plan_source=plan.source)
     session.attach_workspace(
         snapshot,
-        execution_approval={
-            "planSha256": preview["planSha256"],
-            "executionDigest": preview["executionDigest"],
-        },
+        execution_approval=_approval(preview),
     )
     outcome: list[Session] = []
     thread = threading.Thread(
@@ -1113,10 +2438,7 @@ def test_operator_rejection_blocks_descendants_without_more_generation(
     session.set_sources(config_source=config.source, plan_source=plan.source)
     session.attach_workspace(
         snapshot,
-        execution_approval={
-            "planSha256": preview["planSha256"],
-            "executionDigest": preview["executionDigest"],
-        },
+        execution_approval=_approval(preview),
     )
     backend = _Backend()
     outcome: list[Session] = []
@@ -1169,6 +2491,7 @@ def test_crash_recovery_recognizes_committed_artifact(
         session.dir,
         plan.tasks[0],
         snapshot,
+        expected_artifact_sha256=manifest["sha256"],
     )
     # Simulate the crash window after the receipt/commit but before the
     # updated snapshot and task state were atomically saved.
@@ -1179,10 +2502,103 @@ def test_crash_recovery_recognizes_committed_artifact(
         session.dir,
         plan.tasks[0],
         stale,
+        expected_artifact_sha256=manifest["sha256"],
     )
     assert recovered["state"] == "applied"
     assert recovered["receipt"]["commitSha"] == receipt["commitSha"]
     assert stale["headSha"] == receipt["commitSha"]
+
+
+def test_crash_recovery_commits_only_exact_staged_artifact(
+    tmp_path: Path,
+) -> None:
+    _repo_path, _config, plan, snapshot, session = _prepared_session(
+        tmp_path,
+        session_id="recover-staged",
+    )
+    manifest = persist_artifact(
+        session.dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    worktree = Path(snapshot["worktreePath"])
+    subprocess.run(
+        ["git", "-C", str(worktree), "apply", "--index", "--recount", "-"],
+        input=_diff(),
+        text=True,
+        check=True,
+    )
+
+    recovered = recover_artifact_application(
+        session.dir,
+        plan.tasks[0],
+        snapshot,
+        expected_artifact_sha256=manifest["sha256"],
+    )
+
+    assert recovered["state"] == "applied"
+    assert recovered["receipt"]["recoveredAfterCrash"] is True
+    assert _git(worktree, "show", "HEAD:src/value.py") == "VALUE = 2"
+
+
+def test_crash_recovery_rejects_extra_staged_same_file_content(
+    tmp_path: Path,
+) -> None:
+    _repo_path, _config, plan, snapshot, session = _prepared_session(
+        tmp_path,
+        session_id="recover-extra-stage",
+    )
+    manifest = persist_artifact(
+        session.dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    worktree = Path(snapshot["worktreePath"])
+    (worktree / "src" / "value.py").write_text(
+        "VALUE = 3\n",
+        encoding="utf-8",
+    )
+    _git(worktree, "add", "src/value.py")
+
+    with pytest.raises(WorkspaceError, match="sealed patch"):
+        recover_artifact_application(
+            session.dir,
+            plan.tasks[0],
+            snapshot,
+            expected_artifact_sha256=manifest["sha256"],
+        )
+
+
+def test_crash_recovery_rejects_wrong_same_path_commit(
+    tmp_path: Path,
+) -> None:
+    _repo_path, _config, plan, snapshot, session = _prepared_session(
+        tmp_path,
+        session_id="recover-wrong-commit",
+    )
+    manifest = persist_artifact(
+        session.dir,
+        plan.tasks[0],
+        _diff(),
+        snapshot,
+    )
+    worktree = Path(snapshot["worktreePath"])
+    (worktree / "src" / "value.py").write_text(
+        "VALUE = 3\n",
+        encoding="utf-8",
+    )
+    _git(worktree, "add", "src/value.py")
+    _git(worktree, "commit", "-qm", "different same-file commit")
+
+    with pytest.raises(WorkspaceError, match="lineage changed"):
+        recover_artifact_application(
+            session.dir,
+            plan.tasks[0],
+            snapshot,
+            expected_artifact_sha256=manifest["sha256"],
+        )
 
 
 def test_cleanup_removes_only_worktree_and_retains_branch(

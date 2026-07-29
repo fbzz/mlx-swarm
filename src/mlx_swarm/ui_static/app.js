@@ -33,6 +33,8 @@ function bindEvents() {
   el("approve-run-button").addEventListener("click", approveCommanderRun);
   el("launch-form").addEventListener("submit", launchRun);
   el("plan-select").addEventListener("change", selectPlanForPreview);
+  el("approval-mode").addEventListener("change", executionChoiceChanged);
+  el("workspace-target").addEventListener("change", executionChoiceChanged);
   el("run-search").addEventListener("input", renderRuns);
   el("refresh-button").addEventListener("click", () => refreshAll(true));
   el("resume-button").addEventListener("click", resumeRun);
@@ -146,7 +148,7 @@ function renderPlans() {
   } else {
     warning.hidden = true;
   }
-  renderPlanDescription();
+  if (appState.viewMode !== "commander") renderPlanDescription();
 }
 
 function renderEvaluations() {
@@ -243,21 +245,77 @@ function renderEvaluationSummary(detail) {
 
 function renderPlanDescription() {
   const plan = appState.plans.find((item) => item.planId === el("plan-select").value);
+  const workspacePlan = plan?.schemaVersion === 2;
+  el("execution-policy-controls").hidden = !workspacePlan;
+  if (!workspacePlan) {
+    el("approval-mode").value = "supervised";
+    el("workspace-target").value = "worktree";
+  }
+  synchronizeExecutionChoice();
+  const execution = selectedExecutionPreview(plan);
   el("plan-description").textContent = plan
-    ? `${plan.objective}${plan.schemaVersion === 2
-      ? ` · workspace ${shortSha(plan.execution?.baseSha)}`
+    ? `${plan.objective}${workspacePlan
+      ? ` · ${executionLabel()} · ${shortSha(execution?.baseSha)}`
       : " · generation only"}`
     : "Select a validated plan from the configured directory.";
-  el("launch-button").disabled = !plan || plan.execution?.ready === false;
-  const launchLabel = plan?.schemaVersion === 2
-    ? "Approve and launch"
+  el("launch-button").disabled = !plan || execution?.ready === false;
+  const launchLabel = workspacePlan
+    ? el("approval-mode").value === "yolo"
+      ? "Approve YOLO run"
+      : "Approve and launch"
     : "Launch run";
   (el("launch-button").querySelector("span") || el("launch-button")).textContent = launchLabel;
-  if (plan?.execution?.error) {
+  const policyWarning = el("execution-policy-warning");
+  policyWarning.hidden = !workspacePlan;
+  policyWarning.textContent = workspacePlan
+    ? el("workspace-target").value === "checkout"
+      ? "YOLO will commit approved local artifacts directly to the current clean branch. Verification failure pauses with the commit visible."
+      : el("approval-mode").value === "yolo"
+        ? "YOLO auto-applies digest-bound artifacts inside an isolated worktree, then runs only configured verification profiles."
+        : "Supervised mode pauses before every workspace-changing artifact."
+    : "";
+  if (execution?.error) {
     const warning = el("plan-warning");
-    warning.textContent = plan.execution.error;
+    warning.textContent = execution.error;
     warning.hidden = false;
+  } else if (!appState.invalidPlans.length) {
+    el("plan-warning").hidden = true;
   }
+}
+
+function synchronizeExecutionChoice() {
+  const mode = el("approval-mode").value;
+  const checkout = [...el("workspace-target").options]
+    .find((option) => option.value === "checkout");
+  if (checkout) checkout.disabled = mode !== "yolo";
+  if (mode !== "yolo" && el("workspace-target").value === "checkout") {
+    el("workspace-target").value = "worktree";
+  }
+}
+
+function executionChoiceChanged() {
+  synchronizeExecutionChoice();
+  if (appState.viewMode === "commander") {
+    renderCommanderPreview();
+  } else {
+    renderPlanDescription();
+  }
+}
+
+function executionLabel() {
+  const mode = el("approval-mode").value === "yolo" ? "YOLO" : "supervised";
+  const target = el("workspace-target").value === "checkout"
+    ? "main checkout"
+    : "isolated worktree";
+  return `${mode} · ${target}`;
+}
+
+function selectedExecutionPreview(source) {
+  if (!source) return null;
+  const previews = source.executionPreviews;
+  const selected = previews?.[el("approval-mode").value]
+    ?.[el("workspace-target").value];
+  return selected || source.executionPreview || source.execution || null;
 }
 
 function selectPlanForPreview() {
@@ -286,6 +344,7 @@ function selectPlanForPreview() {
       levels: planLevels(plan.tasks),
     },
     executionPreview: plan.execution || null,
+    executionPreviews: plan.executionPreviews || null,
     executionError: plan.execution?.error || null,
     validationError: null,
     handoff: {},
@@ -370,15 +429,27 @@ function renderCommanderPreview() {
   el("commander-workspace").hidden = false;
   const request = detail.request;
   const plan = detail.plan;
-  const catalogPreview = appState.viewMode === "catalog";
+  const workspacePlan = plan?.schemaVersion === 2;
   const status = request.status || "awaiting_plan";
+  const historicalApproval = status === "launched" && request.approval;
+  if (historicalApproval) {
+    el("approval-mode").value = request.approval.approvalMode || "supervised";
+    el("workspace-target").value = request.approval.workspaceTarget || "worktree";
+  }
+  el("execution-policy-controls").hidden = !workspacePlan || Boolean(historicalApproval);
+  if (!workspacePlan) {
+    el("approval-mode").value = "supervised";
+    el("workspace-target").value = "worktree";
+  }
+  synchronizeExecutionChoice();
+  const catalogPreview = appState.viewMode === "catalog";
   setStateChip(el("commander-state-chip"), status);
   el("commander-request-id").textContent = request.requestId || "";
   el("commander-plan-title").textContent = plan?.planId || "Frontier planning request";
   el("commander-plan-objective").textContent = plan?.objective || request.objective || "";
   el("commander-workspace-root").textContent = request.workspaceRoot || "";
   el("commander-plan-digest").textContent = request.planDigest || "Awaiting validated frontier plan";
-  const execution = detail.executionPreview;
+  const execution = selectedExecutionPreview(detail);
   el("commander-execution-digest-wrap").hidden = !execution;
   el("commander-base-wrap").hidden = !execution;
   el("commander-execution-digest").textContent = execution?.executionDigest || "";
@@ -387,7 +458,16 @@ function renderCommanderPreview() {
     ? `${plan.tasks.length} task${plan.tasks.length === 1 ? "" : "s"} · ${plan.levels.length} wave${plan.levels.length === 1 ? "" : "s"}`
     : "No validated DAG yet";
   el("approve-run-button").hidden = catalogPreview || status !== "plan_ready";
-  el("approve-run-button").disabled = status !== "plan_ready" || Boolean(detail.executionError);
+  el("approve-run-button").disabled = (
+    status !== "plan_ready"
+    || execution?.ready === false
+    || Boolean(detail.executionError && !execution)
+  );
+  el("approve-run-button").textContent = (
+    el("approval-mode").value === "yolo"
+      ? "Approve YOLO run"
+      : "Approve and run"
+  );
 
   const handoff = el("commander-handoff");
   handoff.hidden = catalogPreview;
@@ -397,8 +477,9 @@ function renderCommanderPreview() {
     : commanderStatusCopy(status);
 
   const error = el("commander-error");
-  if (detail.validationError || detail.executionError) {
+  if (detail.validationError || execution?.error || detail.executionError) {
     error.textContent = detail.validationError?.error
+      || execution?.error
       || detail.executionError
       || "The frontier plan failed validation.";
     error.hidden = false;
@@ -532,7 +613,14 @@ function renderRuns() {
     session.textContent = shortSession(run.sessionId);
     const progress = document.createElement("span");
     progress.textContent = `${run.completed || 0}/${run.total || 0}`;
+    const policy = document.createElement("span");
+    policy.textContent = run.approvalMode === "yolo"
+      ? `YOLO · ${run.workspaceTarget === "checkout" ? "checkout" : "worktree"}`
+      : run.workspaceTarget
+        ? "supervised"
+        : "";
     meta.append(session, progress);
+    if (policy.textContent) meta.append(policy);
     main.append(top, meta);
     button.append(accent, main);
     list.append(button);
@@ -615,16 +703,28 @@ function renderWorkspaceBoundary(detail) {
   el("workspace-branch").textContent = workspace.branch || "Session branch";
   el("workspace-root").textContent = workspace.workspaceRoot || "";
   el("workspace-shas").textContent = `${shortSha(workspace.baseSha)} → ${shortSha(workspace.headSha)}`;
+  const target = workspace.executionPolicy?.workspaceTarget
+    || detail.run.workspaceTarget
+    || "worktree";
+  const yolo = (
+    workspace.executionPolicy?.approvalMode
+    || detail.run.approvalMode
+  ) === "yolo";
+  el("workspace-path-label").textContent = target === "checkout"
+    ? "Main checkout"
+    : "Isolated worktree";
   el("workspace-path").textContent = workspace.cleanedUp
     ? "Worktree removed; branch retained"
-    : workspace.worktreePath || "";
+    : workspace.executionPath || workspace.worktreePath || "";
   const dirty = el("workspace-dirty");
   setStateChip(dirty, workspace.dirty ? "rejected" : "completed");
   dirty.textContent = workspace.dirty ? "dirty source excluded" : "clean source";
   const entries = workspace.dirtyEntries || [];
-  el("workspace-warning").textContent = workspace.dirty
-    ? `The session started from committed HEAD. Local changes were excluded${entries.length ? `: ${entries.join(", ")}` : "."}`
-    : "The original checkout is never modified by artifact actions.";
+  el("workspace-warning").textContent = target === "checkout"
+    ? `${yolo ? "YOLO" : "Supervised"} main-checkout run: successful artifacts commit directly to ${workspace.branch}. Verification failure pauses without hiding the commit.`
+    : workspace.dirty
+      ? `The session started from committed HEAD. Local changes were excluded${entries.length ? `: ${entries.join(", ")}` : "."}`
+      : `${yolo ? "YOLO auto-apply is active in the isolated worktree." : "The original checkout is never modified by artifact actions."}`;
   const finalDiff = detail.frontierResult?.workspace?.finalDiff;
   el("workspace-final-diff-wrap").hidden = typeof finalDiff !== "string";
   el("workspace-final-diff").textContent = finalDiff || "";
@@ -640,6 +740,15 @@ function renderTopMetrics(detail) {
   const usage = detail.localUsage || {};
   el("metric-elapsed").textContent = formatDuration(detail.run.elapsedSeconds);
   el("metric-tokens").textContent = formatNumber(localTokens(usage));
+  const reviewPending = (
+    !detail.frontierUsage?.review?.attemptedResponses
+    && !["approved", "changes_requested", "rejected"].includes(
+      detail.reviewStatus,
+    )
+  );
+  el("metric-frontier-label").textContent = reviewPending
+    ? "Frontier tokens so far"
+    : "Frontier tokens";
   el("metric-frontier").textContent = frontierTokenMetric(detail.frontierUsage);
   el("metric-calls").textContent = formatNumber(usage.generationCalls || 0);
   el("metric-loads").textContent = formatNumber(usage.modelLoads || 0);
@@ -687,21 +796,29 @@ function renderFrontierReview(detail) {
 
 function frontierTokenMetric(frontierUsage) {
   const total = frontierUsage?.total;
-  if (!total || total.acceptedResponses === 0) return "—";
+  if (!total || (total.attemptedResponses || 0) === 0) return "—";
   if (total.usageStatus !== "reported") return "Unavailable";
   return formatNumber(total.totalTokens);
 }
 
 function frontierUsageCopy(frontierUsage) {
-  const planning = frontierUsage?.planning?.acceptedResponses || 0;
-  const review = frontierUsage?.review?.acceptedResponses || 0;
+  const planningPhase = frontierUsage?.planning;
+  const reviewPhase = frontierUsage?.review;
+  const planning = planningPhase?.attemptedResponses || 0;
+  const review = reviewPhase?.attemptedResponses || 0;
   const total = frontierUsage?.total;
   const calls = planning + review;
   if (!calls) return "No frontier response recorded";
-  if (total?.usageStatus === "reported") {
-    return `${formatNumber(total.totalTokens)} frontier tokens · ${calls} accepted response${calls === 1 ? "" : "s"}`;
-  }
-  return `Frontier tokens unavailable · ${calls} accepted response${calls === 1 ? "" : "s"}`;
+  const phaseMetric = (label, phase) => {
+    if (!phase?.attemptedResponses) return `${label} pending`;
+    const outcome = phase.outcome === "invalid" ? " invalid" : "";
+    if (phase.usageStatus !== "reported") return `${label}${outcome} unavailable`;
+    return `${label}${outcome} ${formatNumber(phase.totalTokens)}`;
+  };
+  const combined = total?.usageStatus === "reported"
+    ? `total ${formatNumber(total.totalTokens)}`
+    : "combined unavailable";
+  return `${phaseMetric("plan", planningPhase)} · ${phaseMetric("review", reviewPhase)} · ${combined}`;
 }
 
 function renderDag(detail) {
@@ -938,6 +1055,12 @@ function renderRuntime(panel, taskId, taskState) {
     detailCell("Artifact", taskState.artifact?.sha256 || "Unavailable"),
   );
   panel.append(grid);
+  if (appState.detail?.localExecutionProfile) {
+    panel.append(codeSection(
+      "Local execution profile",
+      JSON.stringify(appState.detail.localExecutionProfile, null, 2),
+    ));
+  }
   const artifact = appState.detail?.artifacts?.[taskId];
   if (artifact?.verification?.length) {
     panel.append(codeSection(
@@ -1132,6 +1255,13 @@ async function approveCommanderRun() {
   const requestId = detail?.request?.requestId;
   const planDigest = detail?.request?.planDigest;
   if (!requestId || !planDigest) return;
+  const execution = selectedExecutionPreview(detail);
+  if (
+    el("workspace-target").value === "checkout"
+    && !window.confirm(
+      "Main-checkout YOLO commits successful local artifacts directly to the current branch. Continue?",
+    )
+  ) return;
   setActionBusy(el("approve-run-button"), true, "Approving…");
   try {
     const runDetail = await api(
@@ -1140,8 +1270,10 @@ async function approveCommanderRun() {
         method: "POST",
         body: JSON.stringify({
           planDigest,
-          executionDigest: detail.executionPreview?.executionDigest,
+          executionDigest: execution?.executionDigest,
           maxRepair: Number(el("max-repair").value),
+          approvalMode: el("approval-mode").value,
+          workspaceTarget: el("workspace-target").value,
         }),
       },
     );
@@ -1174,9 +1306,16 @@ async function launchRun(event) {
   event.preventDefault();
   const planId = el("plan-select").value;
   if (!planId) return;
+  if (
+    el("workspace-target").value === "checkout"
+    && !window.confirm(
+      "Main-checkout YOLO commits successful local artifacts directly to the current branch. Continue?",
+    )
+  ) return;
   setActionBusy(el("launch-button"), true, "Launching…");
   try {
     const plan = appState.plans.find((item) => item.planId === planId);
+    const execution = selectedExecutionPreview(plan);
     const detail = await api("/api/runs", {
       method: "POST",
       body: JSON.stringify({
@@ -1184,7 +1323,9 @@ async function launchRun(event) {
         maxRepair: Number(el("max-repair").value),
         ...(plan?.schemaVersion === 2 ? {
           planDigest: plan.digest,
-          executionDigest: plan.execution?.executionDigest,
+          executionDigest: execution?.executionDigest,
+          approvalMode: el("approval-mode").value,
+          workspaceTarget: el("workspace-target").value,
         } : {}),
       }),
     });
@@ -1199,7 +1340,9 @@ async function launchRun(event) {
       el("launch-button"),
       false,
       selectedPlan?.schemaVersion === 2
-        ? "Approve and launch"
+        ? el("approval-mode").value === "yolo"
+          ? "Approve YOLO run"
+          : "Approve and launch"
         : "Launch run",
     );
     schedulePoll();
@@ -1235,6 +1378,8 @@ async function retryRun() {
     const detail = await api(`/api/runs/${encodeURIComponent(planId)}/${encodeURIComponent(sessionId)}/retry`, {
       method: "POST", body: JSON.stringify({
         maxRepair: Number(el("max-repair").value),
+        approvalMode: appState.detail.run.approvalMode || "supervised",
+        workspaceTarget: appState.detail.run.workspaceTarget || "worktree",
         ...(appState.detail.retryExecutionPreview?.executionDigest
           ? {executionDigest: appState.detail.retryExecutionPreview.executionDigest}
           : {}),

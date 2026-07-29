@@ -18,9 +18,10 @@ JSON structure for the config file.
     "localPath": "/path/to/local/model"
   },
   "batch": {
-    "maxWorkers": 32,
+    "maxWorkers": 4,
     "prefillStepSize": 512,
-    "maxPromptCharacters": 120000
+    "maxPromptCharacters": 120000,
+    "maxBatchPromptTokens": 32768
   },
   "artifacts": ".swarm/runs",
   "enableThinking": false,
@@ -68,9 +69,15 @@ All config fields with types, defaults, and constraints.
 - **model.repository** (required, string): HuggingFace repo ID for the MLX model.
 - **model.revision** (optional, string): Git revision/tag. Empty string means latest.
 - **model.localPath** (optional, string): Local filesystem path. Takes priority over repository.
-- **batch.maxWorkers** (optional, int, default 32): Maximum parallel workers in a batch. 1–32.
+- **batch.maxWorkers** (optional, int, default 4): Maximum tasks in one bounded
+  dependency-level chunk. 1–32. Four is the calibrated interactive default for
+  the local 4B profile; eight is an explicit throughput trade-off.
 - **batch.prefillStepSize** (optional, int, default 512): Prefill chunk size. 64–8192.
 - **batch.maxPromptCharacters** (optional, int, default 120000): Max prompt length. 1024–500000.
+- **batch.maxBatchPromptTokens** (optional, int, default 32768): Hard ceiling
+  for aggregate rendered input tokens in one physical MLX batch. A larger
+  compatible wave is split deterministically; one prompt above the ceiling is
+  rejected. Per-task completion budgets are separate.
 - **artifacts** (required, string): Directory for session artifacts. Relative to config file.
 - **enableThinking** (optional, strict bool, default false): Configure the model chat template's thinking mode. Completed thinking blocks are never propagated as task artifacts.
 - **seed** (optional, int, default 20260727): Random seed for reproducibility. 0–2^31-1.
@@ -85,7 +92,8 @@ All config fields with types, defaults, and constraints.
 - **worker.capabilities.parameterScale** (default `unknown`): Operator-reported
   model scale such as `4B`.
 - **worker.capabilities.contextWindowTokens** (default 0/unreported): Declared
-  model context window.
+  model context window. When reported, the backend rejects any rendered prompt
+  plus requested generation that exceeds it.
 - **worker.capabilities.maxGenerationTokens** (default 8192): Hard per-task
   generation ceiling. A plan exceeding it is rejected.
 - **worker.capabilities.specialization**: `unknown`, `general`, `code`, or
@@ -111,6 +119,11 @@ All config fields with types, defaults, and constraints.
 Config validation uses strict key checking — unknown fields raise ContractError.
 
 Empty strings are allowed for `revision` and `localPath` (both optional). The `artifacts` path is resolved relative to the config file's parent directory.
+
+`doctor` reports the active batch and worker capability envelope. When the
+checkpoint exposes `max_position_embeddings`, it compares that metadata with
+`worker.capabilities.contextWindowTokens` and refuses readiness if the
+configured value overstates the checkpoint.
 
 Schema-v1 configs reject `workspace` as an unknown field. Schema-v2 workspace
 execution auto-detects the nearest Git top-level above the config directory;

@@ -13,7 +13,9 @@ launch. Non-local bind hosts are rejected.
 
 ## API
 
-- `GET /api/status` reports model/config readiness and the approved roots.
+- `GET /api/status` reports model/config readiness, checkpoint context and
+  quantization metadata, batch/worker limits, approved roots, and available
+  execution-policy choices.
 - `GET /api/plans` discovers and validates frontier-authored plan files.
 - `GET /api/commander/requests` lists frontier planning requests.
 - `GET /api/commander/requests/{requestId}` returns its prompt, validation,
@@ -21,7 +23,8 @@ launch. Non-local bind hosts are rejected.
 - `GET /api/runs` lists immutable sessions newest first.
 - `GET /api/runs/{planId}/{sessionId}` returns the plan snapshot, topological
   levels, task/gate/output state, batch evidence, local usage, and final packet.
-- `POST /api/runs` launches a selected plan.
+- `POST /api/runs` launches a selected plan with an explicit
+  `approvalMode`/`workspaceTarget` pair.
 - `POST /api/commander/requests` creates an objective and constraints request.
 - `POST /api/commander/requests/{requestId}/approve-run` verifies the displayed
   plan digest, records approval, and launches its immutable snapshot.
@@ -59,8 +62,12 @@ The packaged interface is a dense dark operator cockpit:
 - commander composition, approved plans, and searchable run history in the left rail;
 - a keyboard-selectable DAG grouped by topological wave in the center;
 - Overview, Output, Gate, and Runtime task evidence in the right inspector.
+- the immutable local execution profile, model fingerprint, and active batch
+  limits in Runtime evidence;
 - separate local/frontier usage plus final verdict findings.
-- workspace root/base/head/branch/worktree evidence, dirty-source warning, full
+- supervised/YOLO and worktree/main-checkout selectors with explicit checkout
+  warnings;
+- workspace root/base/head/branch/execution-path evidence, dirty-source warning, full
   escaped diff preview, digest-bound Apply/Reject controls, configured command
   evidence, bounded logs, and the final branch diff.
 
@@ -68,6 +75,16 @@ Live work polls once per second, completed work every five seconds, and hidden
 pages do not poll. All task output and JSON evidence is rendered as text rather
 than executable HTML.
 
-Workspace plan launch submits both the displayed canonical plan digest and the
-execution digest. The browser and server never invoke a frontier provider
-directly. See [[workspace-execution]].
+Workspace plan launch submits the displayed canonical plan digest plus the
+execution digest for the selected mode and target. Supervised worktree is the
+default. YOLO worktree auto-seals Apply decisions; YOLO checkout is enabled only
+for a clean repository after an additional browser confirmation. Checkout
+cleanup is never exposed.
+
+The frontier panel presents planning usage and review usage as separate phases.
+Combined frontier totals appear only when both included receipts report usage;
+Codex-skill receipts remain explicitly unavailable rather than becoming zero.
+Codex CLI JSONL usage may be imported with the response; malformed streams are
+rejected and each accepted phase remains separate from local usage.
+The browser and server never invoke a frontier provider directly. See
+[[workspace-execution]].

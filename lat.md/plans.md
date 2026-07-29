@@ -123,5 +123,6 @@ profile IDs. Review and report tasks require empty path and verification
 arrays. Plans and workers cannot provide commands.
 
 At most one patch/test-suite task may occur in each topological level. This
-serializes human-controlled mutations while preserving parallel local
-generation for non-mutating artifacts. See [[workspace-execution]].
+serializes workspace mutations while preserving parallel local generation for
+non-mutating artifacts. Supervised execution waits for a human decision; YOLO
+uses the separately approved execution policy. See [[workspace-execution]].

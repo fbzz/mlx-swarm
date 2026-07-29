@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -78,9 +79,11 @@ class Session:
         from .contracts import (
             SwarmConfig,
             VerificationProfile,
+            WorkerConfig,
             WorkspaceConfig,
             load_config,
             load_plan,
+            worker_capabilities_from_payload,
         )
 
         if config is None:
@@ -118,12 +121,37 @@ class Session:
                     verification_profiles=profiles,
                 ),
             )
+        local_profile = state.get("localExecutionProfile")
+        stored_worker = (
+            local_profile.get("worker")
+            if isinstance(local_profile, dict)
+            else None
+        )
+        if not isinstance(stored_worker, dict):
+            stored_worker = state.get("workerStrategy")
+        if (
+            isinstance(stored_worker, dict)
+            and isinstance(stored_worker.get("capabilities"), dict)
+        ):
+            config = replace(
+                config,
+                worker=WorkerConfig(
+                    mode=str(stored_worker.get("mode", "direct")),
+                    reasoning_max_tokens=int(
+                        stored_worker.get("reasoningMaxTokens", 1200)
+                    ),
+                    capabilities=worker_capabilities_from_payload(
+                        stored_worker["capabilities"]
+                    ),
+                ),
+            )
         plan = load_plan(plan_path, config)
         obj = cls.__new__(cls)
         obj.dir = session_dir
         obj.plan = plan
         obj.session_id = state["sessionId"]
         obj.state = state
+        obj._reconcile_workspace_attachment()
         return obj
 
     def _write_plan_snapshot(self) -> None:
@@ -202,8 +230,19 @@ class Session:
             raise RuntimeError(f"Frozen prompt digest changed for {task_id}.")
         return prompt
 
-    def add_batch_record(self, batch: dict[str, Any]) -> None:
+    def add_batch_record(self, batch: dict[str, Any]) -> int:
         self.state["batches"].append(batch)
+        self._save()
+        return len(self.state["batches"]) - 1
+
+    def update_batch_record(
+        self,
+        index: int,
+        **fields: Any,
+    ) -> None:
+        if not 0 <= index < len(self.state["batches"]):
+            raise IndexError("Unknown batch record.")
+        self.state["batches"][index].update(fields)
         self._save()
 
     def record_generation_attempt(
@@ -344,8 +383,17 @@ class Session:
         revision_of: str | None = None,
     ) -> None:
         """Attach immutable commander evidence to a newly approved session."""
-        from .commander import write_frontier_usage
+        from .commander import (
+            canonical_json_sha256,
+            validate_frontier_receipt,
+            write_frontier_usage,
+        )
 
+        planning_receipt = validate_frontier_receipt(
+            planning_receipt,
+            expected_phase="plan",
+            expected_artifact_sha256=canonical_json_sha256(self.plan.raw),
+        )
         self.state["commanderRequestId"] = request_id
         self.state["planApproval"] = approval
         self.state["frontierPlanReceipt"] = "frontier-plan-receipt.json"
@@ -365,20 +413,160 @@ class Session:
         execution_approval: dict[str, Any],
     ) -> None:
         """Attach the immutable Git/worktree authority to a new session."""
-        _atomic_json(self.dir / "workspace.snapshot.json", snapshot)
+        from .workspace import (
+            acquire_checkout_lease,
+            release_checkout_lease,
+        )
+
+        snapshot = dict(snapshot)
+        snapshot_path = self.dir / "workspace.snapshot.json"
+        if self.state.get("workspaceExecution") or snapshot_path.exists():
+            raise RuntimeError(
+                "Workspace authority is already attached to this session."
+            )
+        previous_state = copy.deepcopy(self.state)
+        snapshot["executionApproval"] = execution_approval
+        snapshot["sessionDir"] = str(self.dir)
+        policy = snapshot.get("executionPolicy")
+        acquired_checkout_lease = False
+        snapshot_written = False
+        try:
+            _atomic_json(snapshot_path, snapshot)
+            snapshot_written = True
+            if (
+                isinstance(policy, dict)
+                and policy.get("workspaceTarget") == "checkout"
+            ):
+                lease = acquire_checkout_lease(
+                    Path(snapshot["workspaceRoot"]),
+                    plan_id=self.plan.plan_id,
+                    session_id=self.session_id,
+                    execution_digest=snapshot["executionDigest"],
+                    branch=snapshot["branch"],
+                    base_sha=snapshot["baseSha"],
+                    session_dir=self.dir,
+                )
+                snapshot["checkoutLeaseId"] = lease["leaseId"]
+                acquired_checkout_lease = True
+                _atomic_json(snapshot_path, snapshot)
+            self._set_workspace_attachment_state(
+                snapshot,
+                execution_approval=execution_approval,
+            )
+            self._save()
+        except Exception:
+            self.state = previous_state
+            if snapshot_written:
+                snapshot_path.unlink(missing_ok=True)
+            if acquired_checkout_lease:
+                try:
+                    release_checkout_lease(
+                        snapshot,
+                        plan_id=self.plan.plan_id,
+                        session_id=self.session_id,
+                    )
+                except Exception:
+                    # Preserve the original attachment failure. A persisted
+                    # lease remains explicit in Git metadata for recovery.
+                    pass
+            raise
+
+    def _reconcile_workspace_attachment(self) -> None:
+        """Recover a crash between durable snapshot and session-state writes."""
+        if self.state.get("workspaceExecution"):
+            return
+        snapshot_path = self.dir / "workspace.snapshot.json"
+        if not snapshot_path.is_file():
+            return
+        from .workspace import (
+            WorkspaceError,
+            acquire_checkout_lease,
+            load_workspace_snapshot,
+            require_checkout_lease,
+            validate_execution_snapshot,
+        )
+
+        snapshot = load_workspace_snapshot(self.dir)
+        approval = snapshot.get("executionApproval")
+        try:
+            validate_execution_snapshot(
+                snapshot,
+                plan=self.plan,
+                approval=approval,
+                session_id=self.session_id,
+            )
+            policy = snapshot.get("executionPolicy")
+            if (
+                isinstance(policy, dict)
+                and policy.get("workspaceTarget") == "checkout"
+            ):
+                if not isinstance(
+                    snapshot.get("checkoutLeaseId"),
+                    str,
+                ):
+                    lease = acquire_checkout_lease(
+                        Path(snapshot["workspaceRoot"]),
+                        plan_id=self.plan.plan_id,
+                        session_id=self.session_id,
+                        execution_digest=snapshot["executionDigest"],
+                        branch=snapshot["branch"],
+                        base_sha=snapshot["baseSha"],
+                        session_dir=self.dir,
+                    )
+                    snapshot["checkoutLeaseId"] = lease["leaseId"]
+                    _atomic_json(snapshot_path, snapshot)
+                require_checkout_lease(
+                    snapshot,
+                    plan_id=self.plan.plan_id,
+                    session_id=self.session_id,
+                )
+        except WorkspaceError:
+            return
+        self._set_workspace_attachment_state(
+            snapshot,
+            execution_approval=approval,
+        )
+        self._save()
+
+    def _set_workspace_attachment_state(
+        self,
+        snapshot: dict[str, Any],
+        *,
+        execution_approval: dict[str, Any],
+    ) -> None:
+        """Populate the session-side projection of one durable snapshot."""
+        policy = snapshot.get("executionPolicy")
         self.state["workspaceExecution"] = True
         self.state["workspaceSnapshot"] = "workspace.snapshot.json"
         self.state["executionApproval"] = execution_approval
+        if isinstance(policy, dict):
+            self.state["executionPolicy"] = policy
+            self.state["executionPolicySha256"] = snapshot.get(
+                "executionPolicySha256"
+            )
+            self.state["approvalMode"] = policy.get(
+                "approvalMode",
+                "supervised",
+            )
+            self.state["workspaceTarget"] = policy.get(
+                "workspaceTarget",
+                "worktree",
+            )
         self.state["workspace"] = {
             "workspaceRoot": snapshot["workspaceRoot"],
             "baseSha": snapshot["baseSha"],
             "headSha": snapshot["headSha"],
             "branch": snapshot["branch"],
+            "executionPath": snapshot.get(
+                "executionPath",
+                snapshot["worktreePath"],
+            ),
             "worktreePath": snapshot["worktreePath"],
             "dirty": snapshot.get("dirty", False),
             "cleanedUp": snapshot.get("cleanedUp", False),
+            "approvalMode": self.state.get("approvalMode", "supervised"),
+            "workspaceTarget": self.state.get("workspaceTarget", "worktree"),
         }
-        self._save()
 
     def workspace_snapshot(self) -> dict[str, Any] | None:
         if not self.state.get("workspaceExecution"):
@@ -394,9 +582,21 @@ class Session:
             "baseSha": snapshot["baseSha"],
             "headSha": snapshot["headSha"],
             "branch": snapshot["branch"],
+            "executionPath": snapshot.get(
+                "executionPath",
+                snapshot["worktreePath"],
+            ),
             "worktreePath": snapshot["worktreePath"],
             "dirty": snapshot.get("dirty", False),
             "cleanedUp": snapshot.get("cleanedUp", False),
+            "approvalMode": (
+                snapshot.get("executionPolicy", {})
+                .get("approvalMode", "supervised")
+            ),
+            "workspaceTarget": (
+                snapshot.get("executionPolicy", {})
+                .get("workspaceTarget", "worktree")
+            ),
         }
         self._save()
 
@@ -425,16 +625,21 @@ class Session:
             "batches": len(self.state["batches"]),
         }
 
-    def export_results(self) -> dict[str, Any]:
+    def export_results(
+        self,
+        *,
+        status_override: str | None = None,
+    ) -> dict[str, Any]:
         """Export all task results for the orchestrator (master LLM)."""
         return {
             "sessionId": self.session_id,
             "planId": self.plan.plan_id,
             "planSource": str(self.plan.source),
             "objective": self.plan.objective,
-            "status": self.state["status"],
+            "status": status_override or self.state["status"],
             "launchSource": self.state.get("launchSource", "cli"),
             "retryOf": self.state.get("retryOf"),
+            "executionPolicy": self.state.get("executionPolicy"),
             "tasks": {
                 tid: {
                     "id": tid,
@@ -466,25 +671,25 @@ class Session:
             },
         }
 
-    def write_frontier_result(self) -> Path:
+    def write_frontier_result(
+        self,
+        *,
+        status_override: str | None = None,
+    ) -> Path:
         """Persist the single compact packet intended for final frontier review."""
         from .commander import canonical_json_sha256, write_frontier_usage
 
         path = self.dir / "frontier-result.json"
-        packet = self.export_results()
+        effective_status = status_override or self.state.get("status")
+        packet = self.export_results(status_override=status_override)
         workspace = self.workspace_snapshot()
         packet["schemaVersion"] = 3 if workspace is not None else 2
         packet["reviewMode"] = "frontier-final-only"
-        packet["requiresFrontierReview"] = (
-            self.state.get("status") == "completed"
-        )
-        packet["reviewStatus"] = self.state.get(
-            "reviewStatus",
-            (
-                "awaiting_review"
-                if self.state.get("status") == "completed"
-                else "not_eligible"
-            ),
+        packet["requiresFrontierReview"] = effective_status == "completed"
+        packet["reviewStatus"] = (
+            "awaiting_review"
+            if effective_status == "completed"
+            else self.state.get("reviewStatus", "not_eligible")
         )
         packet["planSha256"] = canonical_json_sha256(self.plan.raw)
         packet["planContract"] = self.plan.raw
@@ -492,12 +697,28 @@ class Session:
         packet["commanderRequestId"] = self.state.get("commanderRequestId")
         packet["revisionOf"] = self.state.get("revisionOf")
         packet["localUsage"] = self.local_usage()
+        packet["localExecutionProfile"] = self.state.get(
+            "localExecutionProfile"
+        )
+        if self.state.get("pauseReason") is not None:
+            packet["pauseReason"] = self.state["pauseReason"]
+        if self.state.get("finalizationError") is not None:
+            packet["finalizationError"] = self.state[
+                "finalizationError"
+            ]
         if workspace is not None:
-            from .workspace import final_workspace_diff
+            from .workspace import (
+                final_workspace_diff,
+                load_completed_artifact_evidence,
+                load_completed_non_mutating_artifact_evidence,
+            )
 
             task_definitions = {
                 task.id: task for task in self.plan.tasks
             }
+            validate_completed_evidence = (
+                effective_status == "completed"
+            )
             applied_artifacts: list[dict[str, Any]] = []
             verification_receipts: list[dict[str, Any]] = []
             non_mutating_outputs: list[dict[str, Any]] = []
@@ -506,33 +727,118 @@ class Session:
                 if (
                     task.mutates_workspace
                     and task_state.get("status") == "completed"
-                    and isinstance(task_state.get("applyReceipt"), dict)
                 ):
-                    applied_artifacts.append({
-                        "taskId": task_id,
-                        "manifest": task_state.get("artifact"),
-                        "applyReceipt": task_state["applyReceipt"],
-                    })
-                    verification_receipts.extend(
-                        task_state.get("verificationResults", [])
-                    )
+                    if validate_completed_evidence:
+                        evidence = load_completed_artifact_evidence(
+                            self.dir,
+                            task,
+                            workspace,
+                        )
+                        packet["tasks"][task_id]["artifact"] = evidence[
+                            "manifest"
+                        ]
+                        packet["tasks"][task_id]["applyReceipt"] = (
+                            evidence["applyReceipt"]
+                        )
+                        packet["tasks"][task_id][
+                            "verificationResults"
+                        ] = evidence["verificationReceipts"]
+                        applied_artifacts.append({
+                            "taskId": task_id,
+                            "manifest": evidence["manifest"],
+                            "applyReceipt": evidence["applyReceipt"],
+                            "applyReceiptSha256": (
+                                evidence["applyReceiptSha256"]
+                            ),
+                            "verificationReceiptSha256": (
+                                evidence["verificationReceiptSha256"]
+                            ),
+                        })
+                        verification_receipts.extend(
+                            evidence["verificationReceipts"]
+                        )
+                    else:
+                        applied_artifacts.append({
+                            "taskId": task_id,
+                            "evidenceStatus": (
+                                "unvalidated-diagnostic"
+                            ),
+                            "manifest": task_state.get("artifact"),
+                            "applyReceipt": task_state.get(
+                                "applyReceipt"
+                            ),
+                        })
+                        diagnostic_receipts = task_state.get(
+                            "verificationResults"
+                        )
+                        if isinstance(diagnostic_receipts, list):
+                            verification_receipts.extend(
+                                diagnostic_receipts
+                            )
                 elif (
                     not task.mutates_workspace
                     and task_state.get("status") == "completed"
                 ):
-                    non_mutating_outputs.append({
-                        "taskId": task_id,
-                        "artifactType": task.artifact_type,
-                        "output": (
-                            task_state.get("normalizedOutput")
-                            or task_state.get("output")
-                        ),
-                    })
+                    if validate_completed_evidence:
+                        evidence = (
+                            load_completed_non_mutating_artifact_evidence(
+                                self.dir,
+                                task,
+                                workspace,
+                            )
+                        )
+                        packet["tasks"][task_id]["output"] = evidence[
+                            "payload"
+                        ]
+                        packet["tasks"][task_id]["artifact"] = evidence[
+                            "manifest"
+                        ]
+                        non_mutating_outputs.append({
+                            "taskId": task_id,
+                            "artifactType": task.artifact_type,
+                            "output": evidence["payload"],
+                            "manifest": evidence["manifest"],
+                            "manifestSha256": evidence[
+                                "manifestSha256"
+                            ],
+                            "artifactSha256": evidence[
+                                "artifactSha256"
+                            ],
+                            "payloadSha256": evidence[
+                                "payloadSha256"
+                            ],
+                        })
+                    else:
+                        non_mutating_outputs.append({
+                            "taskId": task_id,
+                            "artifactType": task.artifact_type,
+                            "evidenceStatus": (
+                                "unvalidated-diagnostic"
+                            ),
+                            "output": (
+                                task_state.get("normalizedOutput")
+                                or task_state.get("output")
+                            ),
+                            "manifest": task_state.get("artifact"),
+                        })
             workspace_packet = {
                 "workspaceRoot": workspace["workspaceRoot"],
                 "baseSha": workspace["baseSha"],
                 "headSha": workspace["headSha"],
                 "branch": workspace["branch"],
+                "executionPath": workspace.get(
+                    "executionPath",
+                    workspace["worktreePath"],
+                ),
+                "executionPolicy": workspace.get("executionPolicy", {
+                    "schemaVersion": 1,
+                    "approvalMode": "supervised",
+                    "workspaceTarget": "worktree",
+                    "onVerificationFailure": "pause",
+                }),
+                "executionPolicySha256": workspace.get(
+                    "executionPolicySha256"
+                ),
                 "dirtyAtLaunch": workspace.get("dirty", False),
                 "executionDigest": workspace["executionDigest"],
                 "writeRoots": workspace["writeRoots"],
@@ -541,7 +847,7 @@ class Session:
                 "verificationReceipts": verification_receipts,
                 "nonMutatingOutputs": non_mutating_outputs,
             }
-            if self.state.get("status") == "completed":
+            if effective_status == "completed":
                 final_diff, final_digest = final_workspace_diff(workspace)
                 workspace_packet["finalDiff"] = final_diff
                 workspace_packet["finalDiffSha256"] = final_digest
@@ -571,7 +877,11 @@ class Session:
                 for repair in batch.get("repairs", [])
             )
             for stats in statistics:
-                if not stats or stats.get("batchSize", 0) == 0:
+                if not stats:
+                    continue
+                if float(stats.get("loadSeconds", 0.0)) > 0:
+                    model_loads += 1
+                if stats.get("batchSize", 0) == 0:
                     continue
                 generation_calls += (
                     int(stats.get("generationCalls", 0))
@@ -580,8 +890,6 @@ class Session:
                 )
                 prompt_tokens += int(stats.get("promptTokens", 0))
                 generation_tokens += int(stats.get("generationTokens", 0))
-                if float(stats.get("loadSeconds", 0.0)) > 0:
-                    model_loads += 1
         return {
             "promptTokens": prompt_tokens,
             "generationTokens": generation_tokens,

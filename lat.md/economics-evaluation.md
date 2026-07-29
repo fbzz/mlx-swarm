@@ -49,7 +49,8 @@ Frontier Alone receives one clean buggy repository and one end-to-end Codex
 turn. MLX Swarm receives one frontier plan, local worker execution with at
 most two repairs, and one final frontier review only after a completed local
 run. The evaluation harness can approve typed artifacts only inside disposable
-case workspaces; normal sessions retain their human approval boundary.
+case workspaces. Normal sessions retain their selected, digest-bound execution
+policy; the evaluation-only approval never changes supervised or YOLO behavior.
 
 Protocol version 4 constructs one deterministic task packet for both arms. It
 contains the objective, failing evidence, fixed acceptance argv, frozen

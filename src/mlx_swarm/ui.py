@@ -34,16 +34,19 @@ from .contracts import (
     SwarmConfig,
     TaskDef,
     load_plan,
+    worker_capabilities_payload,
 )
 from .evaluation import EvaluationError, EvaluationStore
 from .session import Session, _run_id, _utc_now
+from .model_identity import model_metadata
 from .workspace import (
     WorkspaceError,
-    cleanup_worktree,
+    cleanup_session_worktree,
     execution_preview,
+    execution_previews,
     load_artifact,
     load_workspace_snapshot,
-    prepare_worktree,
+    prepare_workspace,
     submit_artifact_decision,
     workspace_readiness,
 )
@@ -88,10 +91,20 @@ class CockpitApp:
             model_path = _resolve_model_path(self.config)
             model_ready = True
             model_error = None
+            metadata = model_metadata(
+                model_path,
+                declared_context_tokens=(
+                    self.config.worker.capabilities.context_window_tokens
+                ),
+            )
+            if metadata.get("contextCompatible") is False:
+                model_ready = False
+                model_error = metadata["warnings"][0]
         except Exception as exc:
             model_path = None
             model_ready = False
             model_error = str(exc)
+            metadata = None
         workspace = workspace_readiness(self.config)
         ready = model_ready and (
             not workspace.get("enabled")
@@ -103,11 +116,24 @@ class CockpitApp:
                 "repository": self.config.model.repository,
                 "path": str(model_path) if model_path else None,
                 "error": model_error,
+                "metadata": metadata,
             },
             "batch": {
                 "maxWorkers": self.config.batch.max_workers,
                 "prefillStepSize": self.config.batch.prefill_step_size,
                 "maxPromptCharacters": self.config.batch.max_prompt_characters,
+                "maxBatchPromptTokens": (
+                    self.config.batch.max_batch_prompt_tokens
+                ),
+            },
+            "worker": {
+                "mode": self.config.worker.mode,
+                "reasoningMaxTokens": (
+                    self.config.worker.reasoning_max_tokens
+                ),
+                "capabilities": worker_capabilities_payload(
+                    self.config.worker.capabilities
+                ),
             },
             "plansDir": str(self.plans_dir),
             "artifactsDir": str(self.artifacts_dir),
@@ -184,6 +210,7 @@ class CockpitApp:
                     plan,
                     path,
                     _safe_execution_preview(self.config, plan),
+                    _safe_execution_previews(self.config, plan),
                 )
                 for plan, path in sorted(
                     valid.values(),
@@ -286,7 +313,11 @@ class CockpitApp:
                 }
             except WorkspaceError:
                 pass
-        artifacts = _serialize_artifacts(session_dir, state)
+        artifacts = _serialize_artifacts(
+            session_dir,
+            state,
+            approval_mode=state.get("approvalMode", "supervised"),
+        )
         return {
             "run": summary,
             "plan": plan_payload,
@@ -295,7 +326,18 @@ class CockpitApp:
             "artifacts": artifacts,
             "workspace": workspace_payload,
             "retryExecutionPreview": (
-                _safe_execution_preview(self.config, plan)
+                _safe_execution_preview(
+                    self.config,
+                    plan,
+                    approval_mode=state.get(
+                        "approvalMode",
+                        "supervised",
+                    ),
+                    workspace_target=state.get(
+                        "workspaceTarget",
+                        "worktree",
+                    ),
+                )
                 if plan is not None and plan.workspace_execution
                 else None
             ),
@@ -305,6 +347,7 @@ class CockpitApp:
                 if frontier_result
                 else _local_usage(state.get("batches", []))
             ),
+            "localExecutionProfile": state.get("localExecutionProfile"),
             "frontierResult": frontier_result,
             "frontierUsage": review_detail["frontierUsage"],
             "frontierReview": review_detail["review"],
@@ -321,11 +364,14 @@ class CockpitApp:
             "actions": {
                 "resume": (
                     not active
-                    and state.get("status") in {
-                        "pending",
-                        "running",
-                        "awaiting_approval",
-                    }
+                    and (
+                        state.get("status") in {
+                            "pending",
+                            "running",
+                            "awaiting_approval",
+                        }
+                        or _recoverable_partial(state)
+                    )
                 ),
                 "retry": state.get("status") in {"partial", "failed"},
                 "review": (
@@ -342,6 +388,9 @@ class CockpitApp:
                         "failed",
                     }
                     and not (workspace_payload or {}).get("cleanedUp", False)
+                    and state.get("workspaceTarget", "worktree")
+                    == "worktree"
+                    and not _recoverable_partial(state)
                 ),
             },
             "runnerLogAvailable": (session_dir / "runner.log").is_file(),
@@ -358,6 +407,8 @@ class CockpitApp:
         mark_commander_launched: bool = False,
         plan_digest: str | None = None,
         execution_digest: str | None = None,
+        approval_mode: str = "supervised",
+        workspace_target: str = "worktree",
     ) -> dict[str, Any]:
         if not isinstance(max_repair, int) or isinstance(max_repair, bool):
             raise APIError(HTTPStatus.BAD_REQUEST, "maxRepair must be an integer.")
@@ -365,6 +416,22 @@ class CockpitApp:
             raise APIError(
                 HTTPStatus.BAD_REQUEST,
                 "maxRepair must be between 0 and 5.",
+            )
+        if (
+            not isinstance(approval_mode, str)
+            or approval_mode not in {"supervised", "yolo"}
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "approvalMode must be supervised or yolo.",
+            )
+        if (
+            not isinstance(workspace_target, str)
+            or workspace_target not in {"worktree", "checkout"}
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "workspaceTarget must be worktree or checkout.",
             )
 
         if plan_override is None:
@@ -382,6 +449,14 @@ class CockpitApp:
         session_dir = self.artifacts_dir / plan.plan_id / run_id
         workspace_snapshot = None
         execution_approval = None
+        if not plan.workspace_execution and (
+            approval_mode != "supervised"
+            or workspace_target != "worktree"
+        ):
+            raise APIError(
+                HTTPStatus.BAD_REQUEST,
+                "YOLO and workspace targets require a schema-v2 workspace plan.",
+            )
         if plan.workspace_execution:
             actual_plan_digest = canonical_json_sha256(plan.raw)
             approved_plan_digest = (
@@ -411,11 +486,13 @@ class CockpitApp:
                     "Workspace plans require the displayed execution digest.",
                 )
             try:
-                workspace_snapshot = prepare_worktree(
+                workspace_snapshot = prepare_workspace(
                     self.config,
                     plan,
                     session_id=run_id,
                     expected_execution_digest=approved_execution_digest,
+                    approval_mode=approval_mode,
+                    workspace_target=workspace_target,
                 )
             except WorkspaceError as exc:
                 raise APIError(HTTPStatus.CONFLICT, str(exc)) from exc
@@ -425,6 +502,11 @@ class CockpitApp:
                 "executionDigest": approved_execution_digest,
                 "workspaceRoot": workspace_snapshot["workspaceRoot"],
                 "baseSha": workspace_snapshot["baseSha"],
+                "approvalMode": approval_mode,
+                "workspaceTarget": workspace_target,
+                "executionPolicySha256": workspace_snapshot[
+                    "executionPolicySha256"
+                ],
                 "approvedAt": _utc_now(),
                 "source": (
                     "commander"
@@ -432,6 +514,25 @@ class CockpitApp:
                     else "cockpit"
                 ),
             }
+            if commander_evidence is not None:
+                previous = commander_evidence["approval"]
+                commander_evidence = {
+                    **commander_evidence,
+                    "approval": PlanApproval(
+                        request_id=previous.request_id,
+                        plan_sha256=previous.plan_sha256,
+                        approved_at=_utc_now(),
+                        source=previous.source,
+                        execution_digest=approved_execution_digest,
+                        workspace_root=workspace_snapshot["workspaceRoot"],
+                        base_sha=workspace_snapshot["baseSha"],
+                        approval_mode=approval_mode,
+                        workspace_target=workspace_target,
+                        execution_policy_sha256=workspace_snapshot[
+                            "executionPolicySha256"
+                        ],
+                    ),
+                }
         session = Session(
             session_dir,
             plan,
@@ -479,7 +580,7 @@ class CockpitApp:
                 "--config",
                 str(self.config.source),
                 "run",
-                str(plan_path),
+                str(session_dir / "plan.snapshot.json"),
                 "--session-dir",
                 str(session_dir),
                 "--max-repair",
@@ -494,6 +595,8 @@ class CockpitApp:
         plan_digest: str,
         max_repair: int,
         execution_digest: str | None = None,
+        approval_mode: str = "supervised",
+        workspace_target: str = "worktree",
     ) -> dict[str, Any]:
         _validate_identifier(request_id, "requestId")
         if (
@@ -513,6 +616,8 @@ class CockpitApp:
                         plan_digest,
                         source="cockpit",
                         execution_digest=execution_digest,
+                        approval_mode=approval_mode,
+                        workspace_target=workspace_target,
                     )
                 )
             except CommanderError as exc:
@@ -530,6 +635,8 @@ class CockpitApp:
                 mark_commander_launched=True,
                 plan_digest=plan_digest,
                 execution_digest=execution_digest,
+                approval_mode=approval_mode,
+                workspace_target=workspace_target,
             )
 
     def resume_run(self, plan_id: str, session_id: str) -> dict[str, Any]:
@@ -540,7 +647,7 @@ class CockpitApp:
             "pending",
             "running",
             "awaiting_approval",
-        }:
+        } and not _recoverable_partial(state):
             raise APIError(
                 HTTPStatus.CONFLICT,
                 "Only interrupted or pending runs can be resumed.",
@@ -572,6 +679,8 @@ class CockpitApp:
         max_repair: int,
         *,
         execution_digest: str | None = None,
+        approval_mode: str | None = None,
+        workspace_target: str | None = None,
     ) -> dict[str, Any]:
         session_dir, state = self._load_run_state(plan_id, session_id)
         if state.get("status") not in {"partial", "failed"}:
@@ -586,6 +695,16 @@ class CockpitApp:
                 "The original plan is unavailable for retry.",
             )
         plan_path = plan.source
+        selected_approval_mode = (
+            approval_mode
+            or state.get("approvalMode")
+            or "supervised"
+        )
+        selected_workspace_target = (
+            workspace_target
+            or state.get("workspaceTarget")
+            or "worktree"
+        )
         commander_evidence = None
         receipt_path = session_dir / "frontier-plan-receipt.json"
         approval_raw = state.get("planApproval")
@@ -604,6 +723,11 @@ class CockpitApp:
                     execution_digest=approval_raw.get("executionDigest"),
                     workspace_root=approval_raw.get("workspaceRoot"),
                     base_sha=approval_raw.get("baseSha"),
+                    approval_mode=approval_raw.get("approvalMode"),
+                    workspace_target=approval_raw.get("workspaceTarget"),
+                    execution_policy_sha256=approval_raw.get(
+                        "executionPolicySha256"
+                    ),
                 )
                 commander_evidence = {
                     "requestId": request_id,
@@ -621,6 +745,8 @@ class CockpitApp:
             commander_evidence=commander_evidence,
             plan_digest=canonical_json_sha256(plan.raw),
             execution_digest=execution_digest,
+            approval_mode=selected_approval_mode,
+            workspace_target=selected_workspace_target,
         )
 
     def artifact_action(
@@ -684,7 +810,12 @@ class CockpitApp:
             snapshot = load_workspace_snapshot(session_dir)
             if snapshot.get("cleanedUp"):
                 raise WorkspaceError("Session worktree was already cleaned up.")
-            cleanup_worktree(snapshot)
+            cleanup_session_worktree(
+                session_dir,
+                snapshot,
+                task_states=state.get("tasks", {}),
+                pause_reason=state.get("pauseReason"),
+            )
             session = Session.load(session_dir, self.config)
             session.update_workspace(snapshot)
         except WorkspaceError as exc:
@@ -865,6 +996,7 @@ def _serialize_plan(
     plan: Plan,
     source: Path,
     execution: dict[str, Any] | None = None,
+    previews: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     value = {
         "schemaVersion": plan.schema_version,
@@ -877,6 +1009,8 @@ def _serialize_plan(
     }
     if execution is not None:
         value["execution"] = execution
+    if previews is not None:
+        value["executionPreviews"] = previews
     return value
 
 
@@ -900,18 +1034,46 @@ def _serialize_task(task: TaskDef) -> dict[str, Any]:
 def _safe_execution_preview(
     config: SwarmConfig,
     plan: Plan,
+    *,
+    approval_mode: str = "supervised",
+    workspace_target: str = "worktree",
 ) -> dict[str, Any] | None:
     if not plan.workspace_execution:
         return None
     try:
-        return execution_preview(config, plan)
+        return execution_preview(
+            config,
+            plan,
+            approval_mode=approval_mode,
+            workspace_target=workspace_target,
+        )
     except WorkspaceError as exc:
-        return {"ready": False, "error": str(exc)}
+        return {
+            "ready": False,
+            "executionPolicy": {
+                "schemaVersion": 1,
+                "approvalMode": approval_mode,
+                "workspaceTarget": workspace_target,
+                "onVerificationFailure": "pause",
+            },
+            "error": str(exc),
+        }
+
+
+def _safe_execution_previews(
+    config: SwarmConfig,
+    plan: Plan,
+) -> dict[str, Any] | None:
+    if not plan.workspace_execution:
+        return None
+    return execution_previews(config, plan)
 
 
 def _serialize_artifacts(
     session_dir: Path,
     state: dict[str, Any],
+    *,
+    approval_mode: str = "supervised",
 ) -> dict[str, Any]:
     artifacts: dict[str, Any] = {}
     for task_id, task_state in state.get("tasks", {}).items():
@@ -944,7 +1106,10 @@ def _serialize_artifacts(
             "revertReceipt": task_state.get("revertReceipt"),
             "verification": enriched_verification,
             "actions": {
-                "apply": status == "awaiting_approval",
+                "apply": (
+                    status == "awaiting_approval"
+                    and approval_mode != "yolo"
+                ),
                 "reject": status in {
                     "awaiting_approval",
                     "verification_failed",
@@ -994,7 +1159,7 @@ def _run_summary(
     finished_at = state.get("finishedAt")
     started_at = state.get("startedAt")
     elapsed = _elapsed_seconds(started_at, finished_at)
-    return {
+    summary = {
         "sessionId": state.get("sessionId"),
         "planId": state.get("planId"),
         "objective": state.get("objective", ""),
@@ -1018,6 +1183,7 @@ def _run_summary(
             ),
         ),
         "launchSource": state.get("launchSource", "cli"),
+        "pauseReason": state.get("pauseReason"),
         "maxRepair": state.get("maxRepair"),
         "frontierResult": (
             str(session_dir / "frontier-result.json")
@@ -1025,6 +1191,34 @@ def _run_summary(
             else None
         ),
     }
+    if state.get("workspaceExecution"):
+        summary["approvalMode"] = state.get(
+            "approvalMode",
+            "supervised",
+        )
+        summary["workspaceTarget"] = state.get(
+            "workspaceTarget",
+            "worktree",
+        )
+    return summary
+
+
+def _recoverable_partial(state: dict[str, Any]) -> bool:
+    if state.get("status") != "partial":
+        return False
+    if state.get("pauseReason") == "finalization_validation_failed":
+        return True
+    recoverable = {
+        "awaiting_approval",
+        "verification_failed",
+        "applying",
+        "verifying",
+    }
+    return any(
+        task.get("status") in recoverable
+        for task in state.get("tasks", {}).values()
+        if isinstance(task, dict)
+    )
 
 
 def _elapsed_seconds(
@@ -1057,13 +1251,19 @@ def _local_usage(batches: list[dict[str, Any]]) -> dict[str, int]:
             for repair in batch.get("repairs", [])
         )
         for stats in statistics:
-            if not stats or stats.get("batchSize", 0) == 0:
+            if not stats:
                 continue
-            generation_calls += len(stats.get("groups", [])) or 1
-            prompt_tokens += int(stats.get("promptTokens", 0))
-            generation_tokens += int(stats.get("generationTokens", 0))
             if float(stats.get("loadSeconds", 0.0)) > 0:
                 model_loads += 1
+            if stats.get("batchSize", 0) == 0:
+                continue
+            generation_calls += (
+                int(stats.get("generationCalls", 0))
+                or len(stats.get("groups", []))
+                or 1
+            )
+            prompt_tokens += int(stats.get("promptTokens", 0))
+            generation_tokens += int(stats.get("generationTokens", 0))
     return {
         "promptTokens": prompt_tokens,
         "generationTokens": generation_tokens,
@@ -1192,7 +1392,13 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 _validate_body_keys(
                     body,
                     {"planId"},
-                    {"maxRepair", "planDigest", "executionDigest"},
+                    {
+                        "maxRepair",
+                        "planDigest",
+                        "executionDigest",
+                        "approvalMode",
+                        "workspaceTarget",
+                    },
                 )
                 self._send_json(
                     self.app.launch_run(
@@ -1200,6 +1406,14 @@ class CockpitHandler(BaseHTTPRequestHandler):
                         body.get("maxRepair", 2),
                         plan_digest=body.get("planDigest"),
                         execution_digest=body.get("executionDigest"),
+                        approval_mode=body.get(
+                            "approvalMode",
+                            "supervised",
+                        ),
+                        workspace_target=body.get(
+                            "workspaceTarget",
+                            "worktree",
+                        ),
                     ),
                     status=HTTPStatus.ACCEPTED,
                 )
@@ -1211,7 +1425,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
                     _validate_body_keys(
                         body,
                         {"planDigest"},
-                        {"executionDigest", "maxRepair"},
+                        {
+                            "executionDigest",
+                            "maxRepair",
+                            "approvalMode",
+                            "workspaceTarget",
+                        },
                     )
                     self._send_json(
                         self.app.approve_commander_run(
@@ -1219,6 +1438,8 @@ class CockpitHandler(BaseHTTPRequestHandler):
                             _required_text(body, "planDigest"),
                             body.get("maxRepair", 2),
                             body.get("executionDigest"),
+                            body.get("approvalMode", "supervised"),
+                            body.get("workspaceTarget", "worktree"),
                         ),
                         status=HTTPStatus.ACCEPTED,
                     )
@@ -1271,7 +1492,12 @@ class CockpitHandler(BaseHTTPRequestHandler):
                     _validate_body_keys(
                         body,
                         set(),
-                        {"maxRepair", "executionDigest"},
+                        {
+                            "maxRepair",
+                            "executionDigest",
+                            "approvalMode",
+                            "workspaceTarget",
+                        },
                     )
                     self._send_json(
                         self.app.retry_run(
@@ -1279,6 +1505,8 @@ class CockpitHandler(BaseHTTPRequestHandler):
                             session_id,
                             body.get("maxRepair", 2),
                             execution_digest=body.get("executionDigest"),
+                            approval_mode=body.get("approvalMode"),
+                            workspace_target=body.get("workspaceTarget"),
                         ),
                         status=HTTPStatus.ACCEPTED,
                     )

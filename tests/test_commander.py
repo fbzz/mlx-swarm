@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -341,6 +342,9 @@ def test_commander_rejects_unvalidated_causal_hypothesis(
             request_id,
             response,
             claim_id=claim["claimId"],
+            prompt_tokens=40,
+            completion_tokens=10,
+            total_tokens=50,
         )
     detail = store.request_detail(request_id)
     assert detail["request"]["status"] == "plan_invalid"
@@ -363,6 +367,9 @@ def test_commander_rejects_diagnosis_without_candidate_change_validation(
             request_id,
             response,
             claim_id=claim["claimId"],
+            prompt_tokens=30,
+            completion_tokens=20,
+            total_tokens=50,
         )
 
 
@@ -384,6 +391,10 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     assert "edit-manifest-v1" in prompt
     assert "verification may contain only these profile IDs: unit" in prompt
     assert "workers never receive or produce command arrays" in prompt
+    assert "edit-manifest-v1, set max_tokens to at" in prompt
+    assert "most 800" in prompt
+    assert "For review tasks, set max_tokens to at most 1000" in prompt
+    assert "For report tasks, set max_tokens to at most 1800" in prompt
 
     claim = store.claim_plan(request_id)
     response = tmp_path / "workspace-response.json"
@@ -412,6 +423,20 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     assert approval.execution_digest == preview["executionDigest"]
     assert approval.workspace_root == str(repo.resolve())
     assert approval.base_sha == preview["baseSha"]
+    assert approval.approval_mode == "supervised"
+    assert approval.workspace_target == "worktree"
+    assert approval.execution_policy_sha256 == preview[
+        "executionPolicySha256"
+    ]
+    store.mark_launched(
+        request_id,
+        approval,
+        plan_id=plan.plan_id,
+        session_id="round-trip",
+    )
+    launched = store.request_detail(request_id)
+    assert launched["request"]["approval"]["approvalMode"] == "supervised"
+    assert launched["request"]["approval"]["workspaceTarget"] == "worktree"
 
 
 def test_plan_claim_import_digest_and_immutable_slot(tmp_path: Path) -> None:
@@ -445,18 +470,98 @@ def test_invalid_plan_is_recorded_and_request_is_sealed(tmp_path: Path) -> None:
             request_id,
             response,
             claim_id=claim["claimId"],
+            prompt_tokens=30,
+            completion_tokens=20,
+            total_tokens=50,
         )
 
     detail = store.request_detail(request_id)
     assert detail["request"]["status"] == "plan_invalid"
     assert detail["validationError"]["phase"] == "plan"
     assert detail["plan"] is None
+    assert detail["planningAttemptReceipt"]["acceptedResponses"] == 0
+    assert detail["planningAttemptReceipt"]["attemptedResponses"] == 1
+    assert detail["planningAttemptReceipt"]["usage"]["totalTokens"] == 50
+    raw_response = (
+        Path(detail["planPrompt"]).parent / "frontier-plan.raw.txt"
+    ).read_bytes()
+    assert detail["planningAttemptReceipt"]["responseSha256"] == (
+        hashlib.sha256(raw_response).hexdigest()
+    )
     with pytest.raises(CommanderError, match="already"):
         store.import_plan(
             request_id,
             response,
             claim_id=claim["claimId"],
         )
+
+
+def test_unreadable_plan_response_still_records_spent_usage(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    request_id = store.create_request("Make a plan")["request"]["requestId"]
+    claim = store.claim_plan(request_id)
+
+    with pytest.raises(CommanderError, match="sealed"):
+        store.import_plan(
+            request_id,
+            tmp_path / "missing-response.json",
+            claim_id=claim["claimId"],
+            prompt_tokens=18,
+            completion_tokens=7,
+            total_tokens=25,
+        )
+
+    detail = store.request_detail(request_id)
+    assert detail["request"]["status"] == "plan_invalid"
+    assert detail["planningAttemptReceipt"]["usage"]["totalTokens"] == 25
+
+
+def test_plan_import_recovers_after_raw_response_was_published(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    detail = store.create_request("Make a plan")
+    request_id = detail["request"]["requestId"]
+    claim = store.claim_plan(request_id)
+    response = tmp_path / "plan-response.json"
+    response.write_text(json.dumps(_plan()), encoding="utf-8")
+    request_dir = Path(detail["planPrompt"]).parent
+    (request_dir / "frontier-plan.raw.txt").write_text(
+        response.read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+
+    imported = store.import_plan(
+        request_id,
+        response,
+        claim_id=claim["claimId"],
+    )
+
+    assert imported["request"]["status"] == "plan_ready"
+    assert imported["planningReceipt"]["artifactSha256"] == (
+        imported["request"]["planDigest"]
+    )
+    receipt_before = imported["planningReceipt"]
+    request_state = json.loads(
+        (request_dir / "request.json").read_text(encoding="utf-8")
+    )
+    request_state["status"] = "awaiting_plan"
+    request_state["planPhase"]["status"] = "claimed"
+    (request_dir / "request.json").write_text(
+        json.dumps(request_state),
+        encoding="utf-8",
+    )
+
+    recovered = store.import_plan(
+        request_id,
+        response,
+        claim_id=claim["claimId"],
+    )
+
+    assert recovered["request"]["status"] == "plan_ready"
+    assert recovered["planningReceipt"] == receipt_before
 
 
 def test_claims_are_exclusive_and_releasable_before_response(
@@ -584,9 +689,50 @@ def test_digest_bound_approval_and_completed_review_flow(
     assert reviewed["frontierUsage"]["planning"]["usageStatus"] == "unavailable"
     assert reviewed["frontierUsage"]["review"]["totalTokens"] == 50
     assert reviewed["frontierUsage"]["total"]["usageStatus"] == "unavailable"
+    assert (
+        reviewed["receipt"]["inputArtifactSha256"]
+        == canonical_json_sha256(packet)
+    )
     state = json.loads((session_dir / "session.json").read_text())
     assert state["status"] == "completed"
     assert state["reviewStatus"] == "changes_requested"
+
+    # Recover both crash windows: normalized review durable before its receipt,
+    # and receipt durable before the session state transition.
+    (session_dir / "frontier-review-receipt.json").unlink()
+    (session_dir / "frontier-usage.json").unlink()
+    state["reviewStatus"] = "review_claimed"
+    state.pop("frontierReviewReceipt", None)
+    (session_dir / "session.json").write_text(
+        json.dumps(state),
+        encoding="utf-8",
+    )
+    recovered = store.import_review(
+        session_dir,
+        review_response,
+        claim_id=claim["claimId"],
+        prompt_tokens=30,
+        completion_tokens=20,
+        total_tokens=50,
+    )
+    assert recovered["review"]["verdict"] == "changes_requested"
+    state = json.loads((session_dir / "session.json").read_text())
+    state["reviewStatus"] = "review_claimed"
+    state.pop("frontierReviewReceipt", None)
+    (session_dir / "session.json").write_text(
+        json.dumps(state),
+        encoding="utf-8",
+    )
+    recovered_again = store.import_review(
+        session_dir,
+        review_response,
+        claim_id=claim["claimId"],
+    )
+    assert recovered_again["frontierUsage"]["review"]["totalTokens"] == 50
+    assert json.loads(
+        (session_dir / "session.json").read_text()
+    )["reviewStatus"] == "changes_requested"
+
     with pytest.raises(CommanderError, match="already"):
         store.claim_review(session_dir)
 
@@ -646,12 +792,115 @@ def test_invalid_review_is_recorded_and_seals_phase(tmp_path: Path) -> None:
             session_dir,
             bad,
             claim_id=claim["claimId"],
+            prompt_tokens=12,
+            completion_tokens=8,
+            total_tokens=20,
         )
     status = store.review_detail(session_dir)
     assert status["reviewStatus"] == "review_error"
     assert status["reviewError"]["phase"] == "review"
+    assert status["reviewAttemptReceipt"]["acceptedResponses"] == 0
+    assert status["reviewAttemptReceipt"]["attemptedResponses"] == 1
+    assert status["frontierUsage"]["review"]["totalTokens"] == 20
+    raw_review = (session_dir / "frontier-review.raw.txt").read_bytes()
+    assert status["reviewAttemptReceipt"]["responseSha256"] == (
+        hashlib.sha256(raw_review).hexdigest()
+    )
+    (session_dir / "frontier-review.raw.txt").write_text(
+        '{"different":true}\n',
+        encoding="utf-8",
+    )
+    with pytest.raises(CommanderError, match="raw evidence"):
+        store.review_detail(session_dir)
     with pytest.raises(CommanderError, match="sealed"):
         store.claim_review(session_dir)
+
+
+def test_review_packet_loss_after_claim_records_spent_usage(
+    tmp_path: Path,
+) -> None:
+    config = _workspace(tmp_path)
+    store = CommanderStore(config)
+    request_id, detail = _import_plan(store, tmp_path, reported_usage=True)
+    plan, plan_path, approval, receipt, _request = store.approved_plan(
+        request_id,
+        detail["request"]["planDigest"],
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / "packet-loss"
+    session = Session(session_dir, plan, session_id="packet-loss")
+    session.set_sources(config_source=config.source, plan_source=plan_path)
+    session.attach_commander(
+        request_id=request_id,
+        approval=approval.to_json(),
+        planning_receipt=receipt,
+    )
+    session.update_task(
+        "build",
+        status="completed",
+        output="RESULT",
+        normalizedOutput="RESULT",
+    )
+    session.set_status("completed")
+    result_path = session.write_frontier_result()
+    claim = store.claim_review(session_dir)
+    result_path.unlink()
+    response = tmp_path / "packet-loss-review.json"
+    response.write_text(
+        json.dumps({
+            "schemaVersion": 1,
+            "sessionId": "packet-loss",
+            "planId": plan.plan_id,
+            "verdict": "approved",
+            "summary": "Would have approved.",
+            "findings": [],
+        }),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(CommanderError, match="sealed"):
+        store.import_review(
+            session_dir,
+            response,
+            claim_id=claim["claimId"],
+            prompt_tokens=9,
+            completion_tokens=6,
+            total_tokens=15,
+        )
+
+    detail_after = store.review_detail(session_dir)
+    attempt = detail_after["reviewAttemptReceipt"]
+    assert attempt["inputArtifactSha256"] == claim[
+        "inputArtifactSha256"
+    ]
+    assert attempt["usage"]["totalTokens"] == 15
+    assert detail_after["frontierUsage"]["planning"]["totalTokens"] == 150
+    assert detail_after["frontierUsage"]["review"]["totalTokens"] == 15
+    assert detail_after["frontierUsage"]["total"]["totalTokens"] == 165
+
+
+def test_session_rejects_tampered_planning_receipt(tmp_path: Path) -> None:
+    config = _workspace(tmp_path)
+    store = CommanderStore(config)
+    request_id, detail = _import_plan(store, tmp_path, reported_usage=True)
+    plan, plan_path, approval, receipt, _request = store.approved_plan(
+        request_id,
+        detail["request"]["planDigest"],
+    )
+    tampered = json.loads(json.dumps(receipt))
+    tampered["artifactSha256"] = "0" * 64
+    session = Session(
+        config.artifacts_dir / plan.plan_id / "receipt-tamper",
+        plan,
+        session_id="receipt-tamper",
+    )
+    session.set_sources(config_source=config.source, plan_source=plan_path)
+
+    with pytest.raises(CommanderError, match="artifact digest"):
+        session.attach_commander(
+            request_id=request_id,
+            approval=approval.to_json(),
+            planning_receipt=tampered,
+        )
 
 
 def test_review_path_and_identity_are_confined_to_artifacts(

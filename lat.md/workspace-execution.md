@@ -26,8 +26,10 @@ Internal Git subprocesses ignore global/system Git configuration and inherited
 
 The execution digest covers the canonical plan SHA-256, resolved Git root, base
 HEAD SHA, configured write-root snapshot, referenced profile definitions, and
-worktree runtime root. Approval submits both this digest and the independent
-canonical plan digest. See
+worktree runtime root. Contract version 2 also binds the operator-owned
+execution policy: `supervised | yolo`, `worktree | checkout`, and the fixed
+verification-failure action `pause`. Checkout is valid only with YOLO.
+Approval submits this digest and the independent canonical plan digest. See
 [[src/mlx_swarm/workspace.py#execution_preview]].
 
 ## Typed task artifacts
@@ -49,8 +51,8 @@ while non-mutating tasks remain batchable.
 For small local models, `edit-manifest-v1` accepts one strict JSON object with
 an `edits` array. Every entry contains exactly `path`, non-empty exact `old`
 text, and replacement `new` text. Paths pass both allowlists and symlink/runtime
-checks; each old anchor must occur exactly once in the current isolated
-worktree. The runtime applies edits in memory, derives a unified diff, and then
+checks; each old anchor must occur exactly once in the selected execution
+target. The runtime applies edits in memory, derives a unified diff, and then
 uses the normal immutable artifact, digest approval, `git apply --check`, and
 verification lifecycle. The worktree is not changed during materialization.
 
@@ -60,9 +62,9 @@ untrusted data. See [[Prompting]].
 
 ## Worktree lifecycle
 
-Approval records the current committed HEAD and any staged, unstaged, or
-untracked source warning. The session starts at that committed SHA, so dirty
-source state is excluded.
+Approval records the current branch/HEAD and any staged, unstaged, or untracked
+source warning. The default session starts at that committed SHA in an isolated
+worktree, so dirty source state is excluded.
 
 MLX Swarm creates:
 
@@ -71,7 +73,10 @@ MLX Swarm creates:
 - immutable `workspace.snapshot.json` beside `session.json`.
 
 The snapshot fixes session authority even if the live config later changes.
-The original checkout is never modified.
+YOLO may instead target the current checkout. That target requires a completely
+clean repository, holds an artifacts-root checkout lock for the full runner,
+rechecks HEAD and cleanliness before every Apply, refuses cleanup, and commits
+successful artifacts directly to the displayed current branch.
 
 ## Artifact validation and decisions
 
@@ -99,8 +104,9 @@ symlink, or metadata checks and does not invent an edit. Apply uses the same
 mode, so a diff accepted during preview cannot fail merely because a small
 model guessed the hunk line numbers incorrectly.
 
-A valid diff becomes `awaiting_approval`. Apply or Reject writes an immutable
-digest-bound decision. Evidence is fsynced to a temporary inode and
+A valid diff becomes `awaiting_approval`. Supervised Apply/Reject or a
+pre-authorized `source: yolo` Apply writes an immutable artifact- and
+execution-policy-digest-bound decision. Evidence is fsynced to a temporary inode and
 atomically hard-linked to its final path, so readers never observe partial JSON
 and concurrent decisions cannot overwrite one another.
 
@@ -116,13 +122,16 @@ argument array with `shell=False`, closed stdin, a worktree-confined resolved
 cwd, and a sanitized environment.
 
 It also receives a new process group, a hard timeout, and a bounded combined
-log. Verification-created tracked changes are restored and make the attempt
-fail; any remaining workspace changes are recorded.
+log. Verification-created tracked changes in an isolated worktree are restored
+and make the attempt fail. In the main checkout they are never automatically
+restored, because that could erase concurrent operator work; all detected
+changes remain visible and the attempt fails.
 
 A failed profile sets `verification_failed` and keeps the applied commit
-visible. The operator may enqueue another run of the same profiles or Reject,
-which creates an explicit revert commit. No local worker repair or frontier
-call occurs because of human rejection or verification failure.
+visible. YOLO stops as a partial run instead of polling forever. The operator
+may enqueue another run of the same profiles or Reject, which creates an
+explicit revert commit after cleanliness/HEAD checks. No local worker repair or
+frontier call occurs because of human rejection or verification failure.
 
 Descendants run only after the artifact is applied and every referenced
 profile passes.
@@ -139,9 +148,13 @@ pause.
 
 Completed workspace runs emit `frontier-result.json` schema version 3 with
 base/head/branch lineage, execution approval, applied manifests, apply and
-verification receipts, non-mutating outputs, and the final base-to-head diff.
+verification receipts, immutable review/report manifests and payload digests,
+and the final base-to-head diff. Verification receipt v2 binds its bounded
+merged log by SHA-256 and byte count and strictly validates exit, timeout,
+cleanup, lineage, profile, and workspace-cleanliness semantics. Legacy v1
+receipts remain readable.
 Partial/rejected runs remain ineligible for frontier review.
 
-Terminal cleanup removes only the session worktree. The session branch remains
-for manual inspection or external promotion. MLX Swarm provides no merge,
-cherry-pick, or original-checkout apply action.
+Terminal cleanup removes only an isolated session worktree. The session branch
+remains for manual inspection or external promotion. Checkout cleanup is
+categorically refused. MLX Swarm provides no merge or cherry-pick action.

@@ -19,6 +19,7 @@ MANIFEST_SCHEMA_VERSION = 2
 SUPPORTED_CONFIG_SCHEMA_VERSIONS = {1, 2}
 SUPPORTED_PLAN_SCHEMA_VERSIONS = {1, 2}
 MAX_WORKERS = 32
+DEFAULT_MAX_WORKERS = 4
 MAX_PROMPT_CHARS = 120_000
 MAX_TASKS_PER_PLAN = 128
 MAX_REPAIR_ATTEMPTS = 2
@@ -68,9 +69,10 @@ class ModelConfig:
 
 @dataclass(frozen=True)
 class BatchConfig:
-    max_workers: int = MAX_WORKERS
+    max_workers: int = DEFAULT_MAX_WORKERS
     prefill_step_size: int = 512
     max_prompt_characters: int = MAX_PROMPT_CHARS
+    max_batch_prompt_tokens: int = 32_768
 
 
 @dataclass(frozen=True)
@@ -161,15 +163,36 @@ def load_config(path: Path) -> SwarmConfig:
     )
 
     batch_raw = _object(raw.get("batch", {}), "config.batch")
-    _exact_keys(batch_raw, "config.batch", set(), {"maxWorkers", "prefillStepSize", "maxPromptCharacters"})
+    _exact_keys(
+        batch_raw,
+        "config.batch",
+        set(),
+        {
+            "maxWorkers",
+            "prefillStepSize",
+            "maxPromptCharacters",
+            "maxBatchPromptTokens",
+        },
+    )
     batch = BatchConfig(
-        max_workers=_integer(batch_raw.get("maxWorkers", MAX_WORKERS), "config.batch.maxWorkers", 1, MAX_WORKERS),
+        max_workers=_integer(
+            batch_raw.get("maxWorkers", DEFAULT_MAX_WORKERS),
+            "config.batch.maxWorkers",
+            1,
+            MAX_WORKERS,
+        ),
         prefill_step_size=_integer(batch_raw.get("prefillStepSize", 512), "config.batch.prefillStepSize", 64, 8192),
         max_prompt_characters=_integer(
             batch_raw.get("maxPromptCharacters", MAX_PROMPT_CHARS),
             "config.batch.maxPromptCharacters",
             1024,
             500_000,
+        ),
+        max_batch_prompt_tokens=_integer(
+            batch_raw.get("maxBatchPromptTokens", 32_768),
+            "config.batch.maxBatchPromptTokens",
+            1024,
+            10_000_000,
         ),
     )
 
@@ -394,6 +417,13 @@ def worker_capabilities_payload(
     }
 
 
+def worker_capabilities_from_payload(
+    raw: Any,
+) -> WorkerCapabilityProfile:
+    """Parse a persisted strict worker capability snapshot."""
+    return _parse_worker_capabilities(raw)
+
+
 # ---------------------------------------------------------------------------
 # Plan and tasks
 # ---------------------------------------------------------------------------
@@ -577,10 +607,25 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
             t.get("generationOverride", {}),
             f"{name}.generationOverride",
         )
+        strict_structured_output = (
+            t.get("workerOutputProtocol") == "edit-manifest-v1"
+            or (
+                gate is not None
+                and gate.output_format == "json"
+            )
+        )
+        default_generation_tokens = int(
+            ROLE_DEFAULTS[role]["max_tokens"]
+        )
+        if strict_structured_output:
+            default_generation_tokens = min(
+                default_generation_tokens,
+                800,
+            )
         generation_tokens = int(
             gen_override.get(
                 "max_tokens",
-                ROLE_DEFAULTS[role]["max_tokens"],
+                default_generation_tokens,
             )
         )
         if (

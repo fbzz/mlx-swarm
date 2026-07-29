@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import gc
+import os
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -70,6 +71,26 @@ def _resolve_model_path(config: SwarmConfig) -> Path:
 def _role_generation_config(task: TaskDef, config: SwarmConfig) -> dict[str, Any]:
     """Merge validated role defaults with task-specific overrides."""
     result = ROLE_DEFAULTS.get(task.role, ROLE_DEFAULTS["general"]).copy()
+    strict_json = (
+        task.worker_output_protocol == "edit-manifest-v1"
+        or (
+            task.gate is not None
+            and task.gate.output_format == "json"
+        )
+    )
+    # Deterministic structured outputs are both more reliable for the
+    # calibrated 4B exact editor and sampler-compatible for true MLX batching.
+    # Explicit plan overrides remain authoritative experiments.
+    if strict_json:
+        if "temperature" not in task.generation_override:
+            result["temperature"] = 0.0
+        if "top_p" not in task.generation_override:
+            result["top_p"] = 1.0
+        if "max_tokens" not in task.generation_override:
+            result["max_tokens"] = min(
+                int(result.get("max_tokens", 800)),
+                800,
+            )
     result.update(task.generation_override)
     result.setdefault("temperature", 0.2)
     result.setdefault("top_p", 0.9)
@@ -117,6 +138,18 @@ def _stat_value(stats: Any, name: str, default: float = 0.0) -> float:
     return float(getattr(stats, name, default))
 
 
+class BatchGenerationError(RuntimeError):
+    """Generation failed after some physical calls may have spent tokens."""
+
+    def __init__(
+        self,
+        message: str,
+        statistics: dict[str, Any],
+    ) -> None:
+        super().__init__(message)
+        self.statistics = statistics
+
+
 class MLXBatchBackend:
     """Keep one MLX model resident while executing all waves in a plan."""
 
@@ -135,6 +168,10 @@ class MLXBatchBackend:
         if self.model is not None:
             return
 
+        # Workspace execution forks fixed Git/verification subprocesses after
+        # tokenization. Disable the tokenizer library's own thread pool before
+        # it initializes so those safe forks neither warn nor risk deadlock.
+        os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         import mlx.core as mx
         from mlx_lm import load
         from mlx_lm.generate import batch_generate
@@ -177,6 +214,22 @@ class MLXBatchBackend:
             _render_prompt(self.tokenizer, prompt, gen_cfg)
             for prompt, gen_cfg in zip(prompts, generation_configs)
         ]
+        context_limit = (
+            self.config.worker.capabilities.context_window_tokens
+        )
+        if context_limit > 0:
+            for task, prompt_tokens, gen_cfg in zip(
+                tasks,
+                tokenized,
+                generation_configs,
+            ):
+                requested = int(gen_cfg["max_tokens"])
+                if len(prompt_tokens) + requested > context_limit:
+                    raise RuntimeError(
+                        f"Task {task.id} requires {len(prompt_tokens)} prompt "
+                        f"tokens + {requested} generation tokens, exceeding "
+                        f"the declared {context_limit}-token worker context."
+                    )
 
         # One sampler is shared by an MLX BatchGenerator, so tasks with different
         # sampling parameters are grouped while the model remains loaded.
@@ -194,75 +247,212 @@ class MLXBatchBackend:
         generation_seconds = 0.0
         prompt_tokens = 0
         generation_tokens = 0
+        split_groups = [
+            (
+                key,
+                _split_by_prompt_budget(
+                    sampler_indices,
+                    tokenized,
+                    self.config.batch.max_batch_prompt_tokens,
+                ),
+            )
+            for key, sampler_indices in groups.items()
+        ]
+        planned_physical_batches = sum(
+            len(batches) for _key, batches in split_groups
+        )
 
-        for (temperature, top_p, seed), indices in groups.items():
+        for (temperature, top_p, seed), physical_batches in split_groups:
+            # Seed once per sampler group. Re-seeding every physical chunk
+            # would repeat the same stochastic stream when prompt pressure
+            # splits an otherwise compatible batch.
             self.mx.random.seed(seed)
-            sampler = self.make_sampler_fn(temp=temperature, top_p=top_p)
-            max_tokens = [
-                int(generation_configs[index]["max_tokens"])
-                for index in indices
-            ]
-
-            started = time.perf_counter()
-            response = self.batch_generate_fn(
-                model=self.model,
-                tokenizer=self.tokenizer,
-                prompts=[tokenized[index] for index in indices],
-                max_tokens=max_tokens,
-                verbose=False,
-                sampler=sampler,
-                prefill_step_size=self.config.batch.prefill_step_size,
-                prefill_batch_size=min(8, len(indices)),
-                completion_batch_size=min(
-                    self.config.batch.max_workers,
-                    len(indices),
-                ),
-            )
-            elapsed = time.perf_counter() - started
-            generation_seconds += elapsed
-
-            texts, stats_obj = _response_parts(response)
-            if len(texts) != len(indices):
-                raise RuntimeError(
-                    f"MLX returned {len(texts)} outputs for {len(indices)} prompts."
+            for indices in physical_batches:
+                sampler = self.make_sampler_fn(
+                    temp=temperature,
+                    top_p=top_p,
                 )
-            for index, text in zip(indices, texts):
-                output_texts[index] = text
+                max_tokens = [
+                    int(generation_configs[index]["max_tokens"])
+                    for index in indices
+                ]
 
-            group_prompt_tokens = int(_stat_value(stats_obj, "prompt_tokens"))
-            group_generation_tokens = int(
-                _stat_value(stats_obj, "generation_tokens")
-            )
-            prompt_tokens += group_prompt_tokens
-            generation_tokens += group_generation_tokens
-            group_stats.append({
-                "taskIds": [tasks[index].id for index in indices],
-                "temperature": temperature,
-                "topP": top_p,
-                "seed": seed,
-                "maxTokens": max_tokens,
-                "generationSeconds": elapsed,
-                "promptTokens": group_prompt_tokens,
-                "generationTokens": group_generation_tokens,
-                "generationTokensPerSecond": _stat_value(
-                    stats_obj,
-                    "generation_tps",
-                ),
-            })
+                started = time.perf_counter()
+                try:
+                    response = self.batch_generate_fn(
+                        model=self.model,
+                        tokenizer=self.tokenizer,
+                        prompts=[tokenized[index] for index in indices],
+                        max_tokens=max_tokens,
+                        verbose=False,
+                        sampler=sampler,
+                        prefill_step_size=(
+                            self.config.batch.prefill_step_size
+                        ),
+                        prefill_batch_size=min(8, len(indices)),
+                        completion_batch_size=min(
+                            self.config.batch.max_workers,
+                            len(indices),
+                        ),
+                    )
+                except Exception as exc:
+                    elapsed = time.perf_counter() - started
+                    generation_seconds += elapsed
+                    group_stats.append({
+                        "taskIds": [
+                            tasks[index].id for index in indices
+                        ],
+                        "temperature": temperature,
+                        "topP": top_p,
+                        "seed": seed,
+                        "maxTokens": max_tokens,
+                        "generationSeconds": elapsed,
+                        "renderedPromptTokens": sum(
+                            len(tokenized[index]) for index in indices
+                        ),
+                        "promptTokens": 0,
+                        "generationTokens": 0,
+                        "outputTokenCounts": {},
+                        "hitTokenLimit": {},
+                        "completed": False,
+                        "error": f"{type(exc).__name__}: {exc}",
+                    })
+                    statistics = self._statistics(
+                        tasks=tasks,
+                        tokenized=tokenized,
+                        group_stats=group_stats,
+                        sampler_group_count=len(groups),
+                        planned_physical_batches=(
+                            planned_physical_batches
+                        ),
+                        generation_seconds=generation_seconds,
+                        prompt_tokens=prompt_tokens,
+                        generation_tokens=generation_tokens,
+                        completed=False,
+                    )
+                    raise BatchGenerationError(
+                        f"{type(exc).__name__}: {exc}",
+                        statistics,
+                    ) from exc
+                elapsed = time.perf_counter() - started
+                generation_seconds += elapsed
 
+                texts, stats_obj = _response_parts(response)
+                if len(texts) != len(indices):
+                    raise RuntimeError(
+                        f"MLX returned {len(texts)} outputs for "
+                        f"{len(indices)} prompts."
+                    )
+                output_token_counts: dict[str, int] = {}
+                hit_token_limit: dict[str, bool] = {}
+                for index, text, limit in zip(
+                    indices,
+                    texts,
+                    max_tokens,
+                ):
+                    output_texts[index] = text
+                    count = _text_token_count(self.tokenizer, text)
+                    task_id = tasks[index].id
+                    output_token_counts[task_id] = count
+                    hit_token_limit[task_id] = count >= limit
+
+                group_prompt_tokens = int(
+                    _stat_value(stats_obj, "prompt_tokens")
+                )
+                group_generation_tokens = int(
+                    _stat_value(stats_obj, "generation_tokens")
+                )
+                prompt_tokens += group_prompt_tokens
+                generation_tokens += group_generation_tokens
+                group_stats.append({
+                    "taskIds": [tasks[index].id for index in indices],
+                    "temperature": temperature,
+                    "topP": top_p,
+                    "seed": seed,
+                    "maxTokens": max_tokens,
+                    "generationSeconds": elapsed,
+                    "promptTokens": group_prompt_tokens,
+                    "renderedPromptTokens": sum(
+                        len(tokenized[index]) for index in indices
+                    ),
+                    "generationTokens": group_generation_tokens,
+                    "outputTokenCounts": output_token_counts,
+                    "hitTokenLimit": hit_token_limit,
+                    "generationTokensPerSecond": _stat_value(
+                        stats_obj,
+                        "generation_tps",
+                    ),
+                    "completed": True,
+                })
+
+        stats = self._statistics(
+            tasks=tasks,
+            tokenized=tokenized,
+            group_stats=group_stats,
+            sampler_group_count=len(groups),
+            planned_physical_batches=planned_physical_batches,
+            generation_seconds=generation_seconds,
+            prompt_tokens=prompt_tokens,
+            generation_tokens=generation_tokens,
+            completed=True,
+        )
+        return output_texts, stats
+
+    def _statistics(
+        self,
+        *,
+        tasks: list[TaskDef],
+        tokenized: list[list[int]],
+        group_stats: list[dict[str, Any]],
+        sampler_group_count: int,
+        planned_physical_batches: int,
+        generation_seconds: float,
+        prompt_tokens: int,
+        generation_tokens: int,
+        completed: bool,
+    ) -> dict[str, Any]:
         load_seconds = 0.0 if self._load_reported else self.load_seconds
         self._load_reported = True
+        completed_calls = sum(
+            group.get("completed") is True for group in group_stats
+        )
+        failed_calls = sum(
+            group.get("completed") is False for group in group_stats
+        )
         stats: dict[str, Any] = {
             "loadSeconds": load_seconds,
             "modelReused": load_seconds == 0.0,
             "generationSeconds": generation_seconds,
-            "batchSize": len(tasks),
+            "batchSize": len(tasks) if completed else 0,
             "promptTokens": prompt_tokens,
+            "renderedPromptTokens": sum(map(len, tokenized)),
             "generationTokens": generation_tokens,
+            "generationCalls": len(group_stats),
+            "completedGenerationCalls": completed_calls,
+            "failedGenerationCalls": failed_calls,
+            "samplerGroupCount": sampler_group_count,
+            "physicalBatchCount": len(group_stats),
+            "plannedPhysicalBatchCount": planned_physical_batches,
+            "maxTrueBatchWidth": max(
+                (
+                    len(group["taskIds"])
+                    for group in group_stats
+                ),
+                default=0,
+            ),
+            "samplerFragmented": sampler_group_count > 1,
+            "batchSplitByPromptBudget": (
+                planned_physical_batches > sampler_group_count
+            ),
+            "maxBatchPromptTokens": (
+                self.config.batch.max_batch_prompt_tokens
+            ),
             "peakMemoryGigabytes": float(self.mx.get_peak_memory()) / 1e9,
             "groups": group_stats,
         }
-        return output_texts, stats
+        if not completed:
+            stats["attemptedBatchSize"] = len(tasks)
+        return stats
 
     def close(self) -> None:
         if self.model is None:
@@ -279,6 +469,40 @@ class MLXBatchBackend:
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         self.close()
+
+
+def _split_by_prompt_budget(
+    indices: list[int],
+    tokenized: list[list[int]],
+    maximum_tokens: int,
+) -> list[list[int]]:
+    """Greedily preserve order while bounding aggregate prompt/KV pressure."""
+    batches: list[list[int]] = []
+    current: list[int] = []
+    current_tokens = 0
+    for index in indices:
+        prompt_tokens = len(tokenized[index])
+        if prompt_tokens > maximum_tokens:
+            raise RuntimeError(
+                f"Task prompt has {prompt_tokens} rendered tokens, "
+                f"exceeding maxBatchPromptTokens {maximum_tokens}."
+            )
+        if current and current_tokens + prompt_tokens > maximum_tokens:
+            batches.append(current)
+            current = []
+            current_tokens = 0
+        current.append(index)
+        current_tokens += prompt_tokens
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _text_token_count(tokenizer: Any, text: str) -> int:
+    try:
+        return len(tokenizer.encode(text, add_special_tokens=False))
+    except TypeError:
+        return len(tokenizer.encode(text))
 
 
 def generate_batch(

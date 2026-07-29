@@ -14,28 +14,37 @@ from .commander import (
     CommanderStore,
     canonical_json_sha256,
 )
-from .contracts import ContractError, load_config, load_plan
+from .contracts import (
+    ContractError,
+    load_config,
+    load_plan,
+    worker_capabilities_payload,
+)
 from .evaluation import (
     DEFAULT_PUBLIC_RESULTS_DIR,
     EvaluationError,
     EvaluationRunner,
     EvaluationStore,
     load_evaluation_profile,
+    parse_codex_usage_jsonl,
     preliminary_evaluation_profile,
     profile_payload,
     run_local_replay_calibration,
     update_readme_economics,
 )
 from .executor import execute_plan
+from .model_identity import model_metadata
 from .session import Session, _run_id, _utc_now
 from .skill_install import SkillInstallError, install_bundled_skill
 from .workspace import (
+    APPROVAL_MODES,
+    WORKSPACE_TARGETS,
     WorkspaceError,
-    cleanup_worktree,
+    cleanup_session_worktree,
     execution_preview,
     load_artifact,
     load_workspace_snapshot,
-    prepare_worktree,
+    prepare_workspace,
     submit_artifact_decision,
     workspace_readiness,
 )
@@ -78,6 +87,24 @@ def _parser() -> argparse.ArgumentParser:
         "--approve-execution-digest",
         default=None,
         help="Required displayed execution SHA-256 for a new workspace run.",
+    )
+    run_parser.add_argument(
+        "--approval-mode",
+        choices=sorted(APPROVAL_MODES),
+        default="supervised",
+        help=(
+            "supervised waits for artifact decisions; yolo automatically "
+            "applies digest-bound artifacts and runs allowlisted checks."
+        ),
+    )
+    run_parser.add_argument(
+        "--workspace-target",
+        choices=sorted(WORKSPACE_TARGETS),
+        default="worktree",
+        help=(
+            "Run in an isolated worktree (default) or, with YOLO, commit "
+            "directly to a clean main checkout."
+        ),
     )
 
     inspect_parser = sub.add_parser("inspect", help="Inspect a session.")
@@ -130,6 +157,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     workspace_preview_parser = workspace_sub.add_parser("preview")
     workspace_preview_parser.add_argument("plan", type=Path)
+    workspace_preview_parser.add_argument(
+        "--approval-mode",
+        choices=sorted(APPROVAL_MODES),
+        default="supervised",
+    )
+    workspace_preview_parser.add_argument(
+        "--workspace-target",
+        choices=sorted(WORKSPACE_TARGETS),
+        default="worktree",
+    )
     workspace_status_parser = workspace_sub.add_parser("status")
     workspace_status_parser.add_argument("session_dir", type=Path)
     workspace_cleanup_parser = workspace_sub.add_parser("cleanup")
@@ -394,6 +431,15 @@ def _add_frontier_receipt_options(
         default=None,
     )
     parser.add_argument("--total-tokens", type=_non_negative_int, default=None)
+    parser.add_argument(
+        "--usage-jsonl",
+        type=Path,
+        default=None,
+        help=(
+            "Read exact token totals from Codex --json turn.completed "
+            "events; cannot be combined with manual token flags."
+        ),
+    )
 
 
 def _non_negative_int(value: str) -> int:
@@ -422,16 +468,16 @@ def _print(value: object) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    if argv is None and Path(sys.argv[0]).name == "swarm":
+        print(
+            "Warning: the 'swarm' command is deprecated; use 'mlx-swarm'.",
+            file=sys.stderr,
+        )
+
     parser = _parser()
     args = parser.parse_args(argv)
 
     try:
-        if argv is None and Path(sys.argv[0]).name == "swarm":
-            print(
-                "Warning: the 'swarm' command is deprecated; use 'mlx-swarm'.",
-                file=sys.stderr,
-            )
-
         if args.command == "skill":
             if args.skill_command == "install":
                 installed = install_bundled_skill(
@@ -591,7 +637,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 plan = load_plan(args.plan, config)
                 _print({
                     "planDigest": canonical_json_sha256(plan.raw),
-                    "execution": execution_preview(config, plan),
+                    "execution": execution_preview(
+                        config,
+                        plan,
+                        approval_mode=args.approval_mode,
+                        workspace_target=args.workspace_target,
+                    ),
                 })
                 return 0
             session = Session.load(args.session_dir, config)
@@ -614,7 +665,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise WorkspaceError(
                     "Session worktree was already cleaned up."
                 )
-            cleanup_worktree(snapshot)
+            cleanup_session_worktree(
+                session.dir,
+                snapshot,
+                task_states=session.state.get("tasks", {}),
+                pause_reason=session.state.get("pauseReason"),
+            )
             session.update_workspace(snapshot)
             _print({
                 "cleanedUp": True,
@@ -699,17 +755,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             workspace = workspace_readiness(config)
             try:
                 model_path = _resolve_model_path(config)
+                metadata = model_metadata(
+                    model_path,
+                    declared_context_tokens=(
+                        config.worker.capabilities.context_window_tokens
+                    ),
+                )
                 result = {
                     "ready": (
                         workspace.get("ready", True)
                         if workspace.get("enabled")
                         else True
-                    ),
-                    "model": {"path": str(model_path), "repository": config.model.repository},
+                    ) and metadata.get("contextCompatible") is not False,
+                    "model": {
+                        "path": str(model_path),
+                        "repository": config.model.repository,
+                        "metadata": metadata,
+                    },
                     "batch": {
                         "maxWorkers": config.batch.max_workers,
                         "prefillStepSize": config.batch.prefill_step_size,
                         "maxPromptCharacters": config.batch.max_prompt_characters,
+                        "maxBatchPromptTokens": (
+                            config.batch.max_batch_prompt_tokens
+                        ),
+                    },
+                    "worker": {
+                        "mode": config.worker.mode,
+                        "reasoningMaxTokens": (
+                            config.worker.reasoning_max_tokens
+                        ),
+                        "capabilities": worker_capabilities_payload(
+                            config.worker.capabilities
+                        ),
                     },
                     "artifactsDir": str(config.artifacts_dir),
                     "workspace": workspace,
@@ -725,6 +803,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "run":
             plan = load_plan(args.plan, config)
+            if (
+                not plan.workspace_execution
+                and (
+                    args.approval_mode != "supervised"
+                    or args.workspace_target != "worktree"
+                    or args.approve_plan_digest is not None
+                    or args.approve_execution_digest is not None
+                )
+            ):
+                raise WorkspaceError(
+                    "Execution policy options require a schema-v2 workspace "
+                    "plan."
+                )
             session_dir = args.session_dir
             existing_session = (
                 session_dir is not None
@@ -737,7 +828,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "Workspace run requires the displayed canonical plan "
                         "digest via --approve-plan-digest."
                     )
-                preview = execution_preview(config, plan)
+                preview = execution_preview(
+                    config,
+                    plan,
+                    approval_mode=args.approval_mode,
+                    workspace_target=args.workspace_target,
+                )
                 if (
                     args.approve_execution_digest
                     != preview["executionDigest"]
@@ -755,11 +851,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     session_dir
                     or config.artifacts_dir / plan.plan_id / run_id
                 )
-                snapshot = prepare_worktree(
+                snapshot = prepare_workspace(
                     config,
                     plan,
                     session_id=run_id,
                     expected_execution_digest=preview["executionDigest"],
+                    approval_mode=args.approval_mode,
+                    workspace_target=args.workspace_target,
                 )
                 prepared = Session(
                     session_dir,
@@ -780,6 +878,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "executionDigest": preview["executionDigest"],
                         "workspaceRoot": preview["workspaceRoot"],
                         "baseSha": preview["baseSha"],
+                        "approvalMode": args.approval_mode,
+                        "workspaceTarget": args.workspace_target,
+                        "executionPolicySha256": preview[
+                            "executionPolicySha256"
+                        ],
                         "approvedAt": _utc_now(),
                         "source": "cli",
                     },
@@ -885,13 +988,55 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _receipt_options(args: argparse.Namespace) -> dict[str, Any]:
+    prompt_tokens = args.prompt_tokens
+    completion_tokens = args.completion_tokens
+    total_tokens = args.total_tokens
+    if args.usage_jsonl is not None:
+        if any(
+            value is not None
+            for value in (
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+            )
+        ):
+            raise CommanderError(
+                "--usage-jsonl cannot be combined with manual token flags."
+            )
+        try:
+            usage_size = args.usage_jsonl.stat().st_size
+            if usage_size > 10_000_000:
+                raise CommanderError(
+                    "Codex usage JSONL exceeds 10000000 bytes."
+                )
+            with args.usage_jsonl.open("r", encoding="utf-8") as handle:
+                usage_text = handle.read(10_000_001)
+        except OSError as exc:
+            raise CommanderError(
+                f"Codex usage JSONL is unavailable: {exc}"
+            ) from exc
+        if len(usage_text.encode("utf-8")) > 10_000_000:
+            raise CommanderError("Codex usage JSONL exceeds 10000000 bytes.")
+        usage = parse_codex_usage_jsonl(usage_text)
+        if usage["malformedLines"]:
+            raise CommanderError(
+                "Codex usage JSONL contains malformed lines and cannot be "
+                "treated as exact usage."
+            )
+        if usage["usageStatus"] != "reported":
+            raise CommanderError(
+                "Codex usage JSONL has no turn.completed usage event."
+            )
+        prompt_tokens = usage["promptTokens"]
+        completion_tokens = usage["completionTokens"]
+        total_tokens = usage["totalTokens"]
     return {
         "adapter": args.adapter,
         "provider": args.provider,
         "model": args.model,
-        "prompt_tokens": args.prompt_tokens,
-        "completion_tokens": args.completion_tokens,
-        "total_tokens": args.total_tokens,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
     }
 
 
