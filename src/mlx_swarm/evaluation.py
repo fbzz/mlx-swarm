@@ -2706,6 +2706,16 @@ class EvaluationRunner:
             raise EvaluationError(
                 "Benchmark container differs from the prepared environment."
             )
+        current_runtime = python_runtime_identity()
+        frozen_runtime = detail["environment"].get("runtime", {})
+        frozen_python = {
+            key: frozen_runtime.get(key)
+            for key in ("python", "pythonExecutable", "packages")
+        }
+        if current_runtime != frozen_python:
+            raise EvaluationError(
+                "Python/MLX runtime differs from the prepared environment."
+            )
         state = detail["evaluation"]
         if phase == "measured":
             if state.get("pilotStatus") != "completed":
@@ -6886,12 +6896,7 @@ def environment_fingerprint(
         memory_bytes = os.sysconf("SC_PAGE_SIZE") * os.sysconf("SC_PHYS_PAGES")
     except (AttributeError, OSError, ValueError):
         pass
-    packages: dict[str, str | None] = {}
-    for name in ("mlx", "mlx-lm", "huggingface-hub"):
-        try:
-            packages[name] = importlib.metadata.version(name)
-        except importlib.metadata.PackageNotFoundError:
-            packages[name] = None
+    python_runtime = python_runtime_identity()
     return {
         "schemaVersion": EVALUATION_SCHEMA_VERSION,
         "evaluationProtocolVersion": FAIR_EVALUATION_PROTOCOL_VERSION,
@@ -6923,11 +6928,10 @@ def environment_fingerprint(
             "memoryBytes": memory_bytes,
         },
         "runtime": {
-            "python": sys.version.split()[0],
+            **python_runtime,
             "git": _best_effort_version(["git", "--version"]),
             "uv": _best_effort_version(["uv", "--version"]),
             "benchmarkBuildJobs": BENCHMARK_BUILD_JOBS,
-            "packages": packages,
             "container": container,
         },
         "localModel": {
@@ -6944,6 +6948,21 @@ def environment_fingerprint(
             ),
         },
         "profileSha256": canonical_json_sha256(profile_payload(profile)),
+    }
+
+
+def python_runtime_identity() -> dict[str, Any]:
+    """Return the exact Python and local-inference package identity."""
+    packages: dict[str, str | None] = {}
+    for name in ("mlx", "mlx-lm", "huggingface-hub"):
+        try:
+            packages[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            packages[name] = None
+    return {
+        "python": sys.version.split()[0],
+        "pythonExecutable": str(Path(sys.executable).resolve()),
+        "packages": packages,
     }
 
 

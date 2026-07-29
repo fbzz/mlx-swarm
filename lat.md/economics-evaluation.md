@@ -65,6 +65,9 @@ receives the same frozen task packet as planning and returns
 and review consume stdout as strict JSON, with at most one complete outer JSON
 fence removed. Each call must produce a complete, successful usage receipt
 whose provider/model and token arithmetic match the profile.
+The prepared environment also freezes the resolved Python executable, Python
+version, and installed MLX/MLX-LM/Hugging Face package versions. Execution
+fails closed if any local-runtime field drifts before a phase starts.
 
 Protocol version 4 constructs one deterministic task packet for both arms. It
 contains the objective, failing evidence, fixed acceptance argv, frozen
