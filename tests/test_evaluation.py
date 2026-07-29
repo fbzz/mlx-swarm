@@ -2495,6 +2495,40 @@ def test_frontier_delegation_blueprint_normalizes_contained_source_range(
     }]
 
 
+def test_frontier_delegation_blueprint_normalizes_source_display_prefix(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+    payload = _delegation_blueprint(
+        source_label="SOURCE module.py:L1-L3",
+    )
+
+    parsed = parse_frontier_delegation_blueprint(
+        json.dumps(payload),
+        objective="Repair the frozen failure.",
+        task_packet=(
+            "SOURCE module.py:L1-L3\n"
+            "00001 | def value():\n"
+            "00002 |     return 1\n"
+            "END SOURCE module.py:L1-L3\n"
+        ),
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+        maximum_manifest_characters=3_200,
+    )
+
+    assert parsed["diagnosis"]["evidenceSources"] == [
+        "module.py:L1-L3",
+    ]
+    assert parsed["diagnosis"]["changeEvidenceSources"] == [
+        "module.py:L1-L3",
+    ]
+    assert parsed["edits"][0]["old"] == "    return 1\n"
+
+
 def test_frontier_delegation_blueprint_rejects_range_outside_source(
     tmp_path: Path,
 ) -> None:

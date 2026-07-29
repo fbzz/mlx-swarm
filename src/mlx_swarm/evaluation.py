@@ -56,7 +56,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 7
+FAIR_EVALUATION_PROTOCOL_VERSION = 8
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -6424,8 +6424,9 @@ def frontier_delegation_blueprint_prompt(
         "Rules:\n"
         "- Return JSON only, without prose or a markdown fence.\n"
         "- Use exactly the listed keys; unknown fields are rejected.\n"
-        "- evidenceSources must copy SOURCE labels exactly. Never invent a "
-        "file, symbol, API, source excerpt, or test result.\n"
+        "- evidenceSources must copy the text after `SOURCE ` exactly, without "
+        "including the literal `SOURCE ` display prefix. Never invent a file, "
+        "symbol, API, source excerpt, or test result.\n"
         "- Do not copy SOURCE contents into the diagnosis. Each edit must "
         "identify the smallest sufficient complete-line range inside its "
         "sourceLabel. The harness extracts the exact old text; never return "
@@ -6716,6 +6717,8 @@ def _normalize_evidence_source_label(
     known_sources: set[str],
 ) -> str | None:
     """Canonicalize an exact label or a uniquely contained sealed subrange."""
+    if value.startswith("SOURCE "):
+        value = value.removeprefix("SOURCE ")
     if value in known_sources:
         return value
     match = re.fullmatch(r"(.+):L(\d+)-L(\d+)", value)
