@@ -36,6 +36,7 @@ from mlx_swarm.evaluation import (
     container_path,
     copy_fixed_test_support,
     deterministic_case_context,
+    directory_size,
     docker_connection_environment,
     docker_runtime_argv,
     empty_local_usage,
@@ -2507,3 +2508,15 @@ def test_frontier_delegation_prompt_exposes_small_worker_limits() -> None:
     assert '"maxGenerationTokens": 800' in prompt
     assert "must not discover APIs" in prompt
     assert "compact strict JSON" in prompt
+
+
+def test_directory_size_counts_files_without_following_symlinks(
+    tmp_path: Path,
+) -> None:
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    (tmp_path / "one.bin").write_bytes(b"123")
+    (nested / "two.bin").write_bytes(b"4567")
+    (nested / "loop").symlink_to(tmp_path, target_is_directory=True)
+
+    assert directory_size(tmp_path) == 7

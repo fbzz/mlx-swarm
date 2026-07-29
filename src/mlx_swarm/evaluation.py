@@ -7972,13 +7972,26 @@ def sanitize_environment(value: dict[str, Any]) -> dict[str, Any]:
 
 
 def directory_size(path: Path) -> int:
-    total = 0
     if not path.exists():
         return 0
-    for child in path.rglob("*"):
+    total = 0
+    pending = [os.fspath(path)]
+    while pending:
+        current = pending.pop()
         try:
-            if child.is_file() and not child.is_symlink():
-                total += child.stat().st_size
+            with os.scandir(current) as entries:
+                for entry in entries:
+                    try:
+                        if entry.is_symlink():
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            pending.append(entry.path)
+                        elif entry.is_file(follow_symlinks=False):
+                            total += entry.stat(
+                                follow_symlinks=False
+                            ).st_size
+                    except OSError:
+                        continue
         except OSError:
             continue
     return total
