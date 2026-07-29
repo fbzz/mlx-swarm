@@ -2607,6 +2607,54 @@ def test_frontier_edit_manifest_rejects_new_python_syntax_error(
         )
 
 
+def test_frontier_edit_manifest_rejects_unresolved_bare_callable(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value(item):\n    return item\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvaluationError, match="unresolved bare callable"):
+        materialize_frontier_edit_manifest(
+            json.dumps({
+                "edits": [{
+                    "path": "module.py",
+                    "old": "    return item\n",
+                    "new": "    return invented_helper(item)\n",
+                }],
+            }),
+            repository=tmp_path,
+            approved_write_roots=["module.py"],
+        )
+
+
+def test_frontier_edit_manifest_allows_new_call_to_existing_function(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def normalize(item):\n"
+        "    return str(item)\n\n"
+        "def value(item):\n"
+        "    return item\n",
+        encoding="utf-8",
+    )
+
+    diff = materialize_frontier_edit_manifest(
+        json.dumps({
+            "edits": [{
+                "path": "module.py",
+                "old": "    return item\n",
+                "new": "    return normalize(item)\n",
+            }],
+        }),
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+    )
+
+    assert "+    return normalize(item)" in diff
+
+
 def test_context_ranking_uses_buggy_execution_trace(
     tmp_path: Path,
 ) -> None:

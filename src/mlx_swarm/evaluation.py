@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import ast
+import builtins
 import hashlib
 import importlib.metadata
 import json
@@ -56,7 +57,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 10
+FAIR_EVALUATION_PROTOCOL_VERSION = 11
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -4526,10 +4527,44 @@ def run_local_replay_calibration(
             )
         )
         if not source_plan.is_file():
-            raise EvaluationError(
-                f"{'Adapted' if diagnostic_only else 'Frozen commander'} "
-                f"plan is missing for {case_id}."
-            )
+            case_replay_root = replay_root / case_id
+            case_replay_root.mkdir(parents=True, exist_ok=False)
+            result = {
+                "schemaVersion": 1,
+                "replayId": replay_id,
+                "evaluationId": evaluation_id,
+                "caseId": case_id,
+                "status": "failed",
+                "score": 0,
+                "workerMode": worker_mode,
+                "reasoningMaxTokens": reasoning_max_tokens,
+                "frontierCalls": 0,
+                "planSourceType": (
+                    "capability-adapted"
+                    if diagnostic_only
+                    else "frozen-frontier"
+                ),
+                "diagnosticOnly": diagnostic_only,
+                "sourcePlan": str(source_plan),
+                "sourcePlanSha256": None,
+                "sourcePromptEvidence": [],
+                "sessionDir": None,
+                "elapsedSeconds": 0.0,
+                "localUsage": empty_local_usage(),
+                "taskEvidence": {},
+                "oracle": {
+                    "passed": False,
+                    "exitCode": None,
+                    "evidence": (
+                        f"{'Adapted' if diagnostic_only else 'Frozen commander'} "
+                        f"plan is missing for {case_id}."
+                    ),
+                },
+                "recordedAt": utc_now(),
+            }
+            _exclusive_json(case_replay_root / "result.json", result)
+            results.append(result)
+            continue
         case_replay_root = replay_root / case_id
         repository = fresh_arm_repository(
             Path(runtime["baseSnapshot"]),
@@ -7288,11 +7323,12 @@ def frontier_delegation_blueprint_prompt(
         "in the cited SOURCE block. path must match that SOURCE path. new is "
         "the complete replacement for those lines without display prefixes.\n"
         "- Each edit must declare mustAdd and mustRemove arrays. Every "
-        "mustAdd item must be a non-whitespace exact substring newly present "
-        "in new; every mustRemove item must be a non-whitespace exact "
-        "substring removed from the selected old range. At least one array "
-        "must be non-empty. Quote those literal changes in candidateChange "
-        "so the structured edit demonstrably implements the stated intent.\n"
+        "mustAdd item must be a non-whitespace exact substring present in "
+        "new; at least one mustAdd item must be newly introduced unless a "
+        "mustRemove item proves the change. Every mustRemove item must be an "
+        "exact substring removed from the selected old range. Quote those "
+        "literal changes in candidateChange so the structured edit "
+        "demonstrably implements the stated intent.\n"
         "- Preserve the selected source indentation exactly unless indentation "
         "is the diagnosed cause. Mentally splice new into the complete file "
         "and reject your own candidate if it would not parse as Python.\n"
@@ -7604,11 +7640,20 @@ def _materialize_frontier_range_edits(
         if old.endswith("\n") and new and not new.endswith("\n"):
             new += "\n"
         for value in must_add:
-            if value not in new or value in old:
+            if value not in new:
                 raise EvaluationError(
                     f"Frontier delegation edits[{index}].mustAdd assertion "
-                    "is not newly introduced by new."
+                    "is not present in new."
                 )
+        if (
+            must_add
+            and not any(value not in old for value in must_add)
+            and not must_remove
+        ):
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}] must prove at least one "
+                "newly introduced or removed text assertion."
+            )
         for value in must_remove:
             if value not in old or value in new:
                 raise EvaluationError(
@@ -7918,12 +7963,12 @@ def materialize_frontier_edit_manifest(
             continue
         if path.endswith(".py"):
             try:
-                ast.parse(before, filename=path)
+                before_tree = ast.parse(before, filename=path)
             except SyntaxError:
                 pass
             else:
                 try:
-                    ast.parse(after, filename=path)
+                    after_tree = ast.parse(after, filename=path)
                 except SyntaxError as exc:
                     location = (
                         f" at line {exc.lineno}"
@@ -7934,6 +7979,11 @@ def materialize_frontier_edit_manifest(
                         "Frontier edit manifest introduces invalid Python "
                         f"syntax in {path}{location}: {exc.msg}."
                     ) from exc
+                _validate_python_bare_callables(
+                    before_tree,
+                    after_tree,
+                    path=path,
+                )
         unified = "".join(
             difflib.unified_diff(
                 before.splitlines(keepends=True),
@@ -7957,6 +8007,69 @@ def materialize_frontier_edit_manifest(
     if not diff.endswith("\n"):
         diff += "\n"
     return diff
+
+
+def _validate_python_bare_callables(
+    before: ast.AST,
+    after: ast.AST,
+    *,
+    path: str,
+) -> None:
+    """Reject new bare calls whose names have no evidence in the old file."""
+    before_names = {
+        node.id
+        for node in ast.walk(before)
+        if isinstance(node, ast.Name)
+    }
+    before_bound = _python_bound_names(before)
+    after_bound = _python_bound_names(after)
+    before_calls = {
+        node.func.id
+        for node in ast.walk(before)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+    }
+    after_calls = {
+        node.func.id
+        for node in ast.walk(after)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+    }
+    unresolved = sorted(
+        (after_calls - before_calls)
+        - before_names
+        - before_bound
+        - after_bound
+        - set(dir(builtins))
+    )
+    if unresolved:
+        raise EvaluationError(
+            "Frontier edit manifest introduces unresolved bare callable"
+            f"{'s' if len(unresolved) != 1 else ''} in {path}: "
+            + ", ".join(unresolved)
+            + "."
+        )
+
+
+def _python_bound_names(tree: ast.AST) -> set[str]:
+    """Collect statically visible names without importing edited code."""
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                if alias.name == "*":
+                    continue
+                names.add(alias.asname or alias.name.split(".", 1)[0])
+        elif isinstance(node, ast.arg):
+            names.add(node.arg)
+        elif isinstance(node, ast.Name) and isinstance(
+            node.ctx,
+            (ast.Store, ast.Param),
+        ):
+            names.add(node.id)
+    return names
 
 
 def validate_evaluation_plan(
