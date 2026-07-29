@@ -6159,7 +6159,9 @@ def _render_runtime_local_evidence(
         if not _is_non_production_path(path)
     ]
     query_terms = _context_term_counts(failure_evidence)
-    ranked: list[tuple[float, int, str, str, str]] = []
+    ranked: list[
+        tuple[float, int, str, str, int, int, tuple[str, ...], str]
+    ] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
@@ -6188,14 +6190,15 @@ def _render_runtime_local_evidence(
             ),
             len(source_blocks),
         )
+        observed_strings = _runtime_local_strings(local_values)
         encoded = json.dumps(
-            local_values,
+            _compact_runtime_local_value(local_values),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
         )
-        if len(encoded) > 1_000:
-            encoded = encoded[:960] + "...[locals truncated]"
+        if len(encoded) > 800:
+            encoded = encoded[:760] + "...[locals truncated]"
         evidence_text = f"{path} {function} {encoded}"
         evidence_terms = _context_term_counts(evidence_text)
         score = sum(
@@ -6206,41 +6209,110 @@ def _render_runtime_local_evidence(
             score += 100_000
         if path in failure_evidence:
             score += 10_000
-        for observed in _runtime_local_strings(local_values):
+        for observed in observed_strings:
             if len(observed) >= 6 and observed in failure_evidence:
                 score += 2_000 + min(len(observed), 240)
         row = (
             f"- {path}:L{line} {function} sample={sample} "
             f"locals={encoded}"
         )
-        ranked.append((float(score), source_block, path, function, row))
+        ranked.append((
+            float(score),
+            source_block,
+            path,
+            function,
+            line,
+            sample,
+            tuple(observed_strings),
+            row,
+        ))
     ranked.sort(
-        key=lambda item: (-item[0], item[1], item[2], item[3], item[4])
+        key=lambda item: (
+            -item[0],
+            item[1],
+            item[2],
+            item[3],
+            item[4],
+            item[5],
+            item[7],
+        )
     )
-    ordered: list[tuple[float, int, str, str, str]] = []
+    ordered: list[
+        tuple[float, int, str, str, int, int, tuple[str, ...], str]
+    ] = []
     selected_rows: set[str] = set()
     for source_block in range(len(source_blocks) + 1):
-        selected_functions: set[tuple[str, str]] = set()
+        block_functions: list[tuple[str, str]] = []
         for item in ranked:
-            _score, item_block, path, function, row = item
+            (
+                _score,
+                item_block,
+                path,
+                function,
+                _line,
+                _sample,
+                _has_strings,
+                _row,
+            ) = item
             function_key = (path, function)
             if (
                 item_block != source_block
-                or row in selected_rows
-                or function_key in selected_functions
+                or function_key in block_functions
             ):
                 continue
-            ordered.append(item)
-            selected_rows.add(row)
-            selected_functions.add(function_key)
-            if len(selected_functions) >= 2:
+            block_functions.append(function_key)
+            if len(block_functions) >= 2:
                 break
+        for function_key in block_functions:
+            function_items = [
+                item
+                for item in ranked
+                if (
+                    item[1] == source_block
+                    and (item[2], item[3]) == function_key
+                )
+            ]
+            choices = function_items[:1]
+            observed_signatures = {
+                choice[6] for choice in choices if choice[6]
+            }
+            for candidate in sorted(
+                (
+                    item for item in function_items if item[6]
+                ),
+                key=lambda item: (
+                    item[4],
+                    item[5],
+                    item[7],
+                ),
+            ):
+                if candidate[6] in observed_signatures:
+                    continue
+                choices.append(candidate)
+                observed_signatures.add(candidate[6])
+                if len(choices) >= 3:
+                    break
+            for choice in choices[:3]:
+                row = choice[7]
+                if row in selected_rows:
+                    continue
+                ordered.append(choice)
+                selected_rows.add(row)
     ordered.extend(
-        item for item in ranked if item[4] not in selected_rows
+        item for item in ranked if item[7] not in selected_rows
     )
     rows: list[str] = []
     used = 0
-    for _score, _source_block, _path, _function, row in ordered:
+    for (
+        _score,
+        _source_block,
+        _path,
+        _function,
+        _line,
+        _sample,
+        _observed_strings,
+        row,
+    ) in ordered:
         addition = len(row) + 1
         if used + addition > MAX_TASK_PACKET_RUNTIME_STATE_CHARS:
             rows.append("...[runtime local samples truncated]")
@@ -6269,6 +6341,22 @@ def _runtime_local_strings(value: Any) -> list[str]:
         elif isinstance(current, list):
             pending.extend(current)
     return found
+
+
+def _compact_runtime_local_value(value: Any) -> Any:
+    """Remove noisy identities/items while preserving scalar causal state."""
+    if isinstance(value, dict):
+        return {
+            key: _compact_runtime_local_value(item)
+            for key, item in value.items()
+            if key not in {"items", "keys"}
+        }
+    if isinstance(value, list):
+        return [
+            _compact_runtime_local_value(item)
+            for item in value[:4]
+        ]
+    return value
 
 
 def ensure_pair_contract(
