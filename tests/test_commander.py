@@ -19,9 +19,14 @@ from mlx_swarm.commander import (
     canonical_json_sha256,
     frontier_usage,
 )
-from mlx_swarm.contracts import load_config
+from mlx_swarm.contracts import load_config, load_plan
 from mlx_swarm.session import Session
 from mlx_swarm.skill_install import SkillInstallError, install_bundled_skill
+from mlx_swarm.workspace import (
+    checkout_lease,
+    execution_preview,
+    prepare_workspace,
+)
 
 
 def _workspace(tmp_path: Path):
@@ -156,6 +161,7 @@ def test_plan_prompt_exposes_worker_capability_and_delegation_boundary(
     assert "CANDIDATE CHANGE SPECIFICITY GATE" in prompt
     assert "preservedControlPrediction" in prompt
     assert "narrowest distinguishing property" in prompt
+    assert '"integrationVerification"' not in prompt
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -325,6 +331,71 @@ def test_request_prompt_is_fixed_to_config_workspace(tmp_path: Path) -> None:
         store.create_request("again", request_id="request-fixed")
 
 
+def test_linked_revision_supersedes_safe_predecessor_checkout_lease(
+    tmp_path: Path,
+) -> None:
+    repo, config = _workspace_v2(tmp_path)
+    plan_path = repo / "config" / "predecessor.json"
+    plan_path.write_text(json.dumps(_plan_v2()), encoding="utf-8")
+    _git(repo, "add", "config/predecessor.json")
+    _git(repo, "commit", "-qm", "add predecessor plan")
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_id = "predecessor"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="checkout",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(
+        snapshot,
+        execution_approval={
+            "planSha256": preview["planSha256"],
+            "executionDigest": preview["executionDigest"],
+            "workspaceRoot": preview["workspaceRoot"],
+            "baseSha": preview["baseSha"],
+            "approvalMode": "yolo",
+            "workspaceTarget": "checkout",
+            "executionPolicySha256": preview["executionPolicySha256"],
+        },
+    )
+    session.update_task(
+        "change",
+        status="rejected",
+        error="Superseded before application.",
+    )
+    assert checkout_lease(repo) is not None
+
+    store = CommanderStore(config)
+    detail = store.create_request(
+        "Create the corrected linked plan",
+        revision_of=f"{plan.plan_id}/{session_id}",
+        request_id="successor",
+    )
+
+    assert detail["request"]["revisionOf"] == (
+        f"{plan.plan_id}/{session_id}"
+    )
+    assert checkout_lease(repo) is None
+    predecessor = json.loads(
+        (session_dir / "session.json").read_text(encoding="utf-8")
+    )
+    assert predecessor["supersededByRequestId"] == "successor"
+    assert predecessor["supersessionLeaseStatus"] == "released"
+    assert predecessor["checkoutLeaseReleaseReason"] == "superseded"
+
+
 def test_commander_rejects_unvalidated_causal_hypothesis(
     tmp_path: Path,
 ) -> None:
@@ -385,14 +456,17 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     request_id = created["request"]["requestId"]
     assert created["request"]["workspaceRoot"] == str(repo.resolve())
     prompt = Path(created["planPrompt"]).read_text(encoding="utf-8")
-    assert "schemaVersion must be 2" in prompt
+    assert "schemaVersion must be 3" in prompt
     assert "artifactType" in prompt
     assert "workerOutputProtocol" in prompt
     assert "edit-manifest-v1" in prompt
     assert "verification may contain only these profile IDs: unit" in prompt
     assert "workers never receive or produce command arrays" in prompt
-    assert "edit-manifest-v1, set max_tokens to at" in prompt
+    assert "target 350 to 500 expected output" in prompt
     assert "most 800" in prompt
+    assert "deterministic-edit" in prompt
+    assert "contextRefs" in prompt
+    assert "pairwise disjoint" in prompt
     assert "For review tasks, set max_tokens to at most 1000" in prompt
     assert "For report tasks, set max_tokens to at most 1800" in prompt
 

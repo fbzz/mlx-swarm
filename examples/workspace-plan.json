@@ -1,9 +1,12 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "planId": "workspace-palindrome-demo",
-  "objective": "Create and verify a palindrome module on an isolated MLX Swarm session branch.",
+  "objective": "Create and verify a palindrome module with two disjoint local agents.",
+  "integrationVerification": [
+    "pytest-workspace-demo"
+  ],
   "context": {
-    "objective": "Produce an implementation patch, a test-suite patch, and a structured local review.",
+    "objective": "Produce an implementation, an independent test suite, and a structured local review.",
     "authoritativeSources": [
       {
         "label": "Interface Contract",
@@ -11,80 +14,144 @@
       }
     ],
     "constraints": [
-      "Return text-only unified Git diffs for workspace-changing tasks.",
+      "Use edit-manifest-v1 for workspace-changing tasks.",
+      "Create a missing text file with old set to an empty string.",
       "Do not emit or execute commands.",
       "Use only Python standard-library functionality."
     ],
     "rejectionCriteria": [
-      "A diff touches paths outside the task allowlist.",
-      "A worker proposes a command.",
+      "An edit touches paths outside the task allowlist.",
+      "An agent proposes a command.",
+      "The implementation and tests disagree with the frozen interface.",
       "The review is not exact JSON."
     ],
     "outputProtocol": "Return only the artifact required by the task contract."
   },
   "tasks": [
     {
-      "id": "implementation-patch",
+      "id": "implementation",
       "role": "implementation",
-      "prompt": "Create the palindrome module as a new file. Return one unified Git diff.",
+      "prompt": "Create the module with one edit whose old value is empty and whose new value is the complete file.",
       "artifactType": "patch",
-      "allowedPaths": ["examples/workspace_demo/is_palindrome_module.py"],
+      "workerOutputProtocol": "edit-manifest-v1",
+      "executionMode": "local-agent",
+      "contextRefs": [
+        "Interface Contract"
+      ],
+      "interfaceContract": "The module exports def is_palindrome(s: str) -> bool and ignores case plus non-alphanumeric characters.",
+      "expectedOutputTokens": 450,
+      "allowedPaths": [
+        "examples/workspace_demo/is_palindrome_module.py"
+      ],
       "verification": [],
-      "maxRepairAttempts": 2,
-      "gate": {
-        "requiredPatterns": [
-          {"id": "git-diff", "pattern": "^diff --git "}
-        ],
-        "forbiddenPatterns": [
-          {"id": "no-shell", "pattern": "(?m)^(?:\\$|sudo |rm |git apply )"}
-        ],
-        "maxCharacters": 10000,
-        "format": "text",
-        "stripSingleCodeFence": true,
-        "pythonSyntax": false
-      }
-    },
-    {
-      "id": "test-suite-patch",
-      "role": "test",
-      "prompt": "Add pytest coverage for empty, mixed-case, punctuated, true, and false cases. Return one unified Git diff.",
-      "artifactType": "test-suite",
-      "allowedPaths": ["examples/workspace_demo/test_is_palindrome_module.py"],
-      "verification": ["pytest-workspace-demo"],
-      "dependsOn": ["implementation-patch"],
-      "maxRepairAttempts": 2,
-      "gate": {
-        "requiredPatterns": [
-          {"id": "git-diff", "pattern": "^diff --git "},
-          {"id": "pytest-test", "pattern": "def test_"}
-        ],
-        "forbiddenPatterns": [],
-        "maxCharacters": 12000,
-        "format": "text",
-        "stripSingleCodeFence": true,
-        "pythonSyntax": false
-      }
-    },
-    {
-      "id": "local-review",
-      "role": "review",
-      "prompt": "Review the applied implementation and passing verification evidence. Return keys verdict, findings, and summary.",
-      "artifactType": "review",
-      "allowedPaths": [],
-      "verification": [],
-      "dependsOn": ["test-suite-patch"],
       "maxRepairAttempts": 1,
+      "generationOverride": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": 800
+      },
       "gate": {
         "requiredPatterns": [],
         "forbiddenPatterns": [],
         "maxCharacters": 5000,
         "format": "json",
-        "stripSingleCodeFence": true,
+        "stripSingleCodeFence": false,
         "pythonSyntax": false,
-        "jsonRequiredKeys": ["verdict", "findings", "summary"],
-        "jsonAllowedKeys": ["verdict", "findings", "summary"],
+        "jsonRequiredKeys": [
+          "edits"
+        ],
+        "jsonAllowedKeys": [
+          "edits"
+        ],
+        "jsonFieldEnums": {}
+      }
+    },
+    {
+      "id": "tests",
+      "role": "test",
+      "prompt": "Create the pytest module with one edit whose old value is empty and whose new value covers empty, mixed-case, punctuated, true, and false cases.",
+      "artifactType": "test-suite",
+      "workerOutputProtocol": "edit-manifest-v1",
+      "executionMode": "local-agent",
+      "contextRefs": [
+        "Interface Contract"
+      ],
+      "interfaceContract": "Tests import is_palindrome and assert the same case-insensitive, non-alphanumeric-normalizing behavior.",
+      "expectedOutputTokens": 500,
+      "allowedPaths": [
+        "examples/workspace_demo/test_is_palindrome_module.py"
+      ],
+      "verification": [
+        "pytest-workspace-demo"
+      ],
+      "maxRepairAttempts": 1,
+      "generationOverride": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": 800
+      },
+      "gate": {
+        "requiredPatterns": [],
+        "forbiddenPatterns": [],
+        "maxCharacters": 6000,
+        "format": "json",
+        "stripSingleCodeFence": false,
+        "pythonSyntax": false,
+        "jsonRequiredKeys": [
+          "edits"
+        ],
+        "jsonAllowedKeys": [
+          "edits"
+        ],
+        "jsonFieldEnums": {}
+      }
+    },
+    {
+      "id": "local-review",
+      "role": "review",
+      "prompt": "Review the applied implementation, tests, and passing integration evidence. Return verdict, findings, and summary.",
+      "artifactType": "review",
+      "workerOutputProtocol": "artifact",
+      "executionMode": "local-agent",
+      "contextRefs": [
+        "Interface Contract"
+      ],
+      "interfaceContract": "Approve only when implementation and tests satisfy the frozen is_palindrome interface.",
+      "expectedOutputTokens": 600,
+      "allowedPaths": [],
+      "verification": [],
+      "dependsOn": [
+        "implementation",
+        "tests"
+      ],
+      "maxRepairAttempts": 1,
+      "generationOverride": {
+        "temperature": 0.0,
+        "top_p": 1.0,
+        "max_tokens": 800
+      },
+      "gate": {
+        "requiredPatterns": [],
+        "forbiddenPatterns": [],
+        "maxCharacters": 5000,
+        "format": "json",
+        "stripSingleCodeFence": false,
+        "pythonSyntax": false,
+        "jsonRequiredKeys": [
+          "verdict",
+          "findings",
+          "summary"
+        ],
+        "jsonAllowedKeys": [
+          "verdict",
+          "findings",
+          "summary"
+        ],
         "jsonFieldEnums": {
-          "verdict": ["approve", "reject"]
+          "verdict": [
+            "approve",
+            "reject"
+          ]
         }
       }
     }

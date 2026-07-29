@@ -35,6 +35,13 @@ def compose_prompt(
             _section("WORKER IDENTITY", f"id: {task.id}\nrole: {task.role}"),
             _section("ROLE-SPECIFIC TASK", task.prompt),
         ]
+        if task.interface_contract:
+            parts.append(
+                _section(
+                    "FROZEN INTERFACE CONTRACT",
+                    task.interface_contract,
+                )
+            )
         if session is not None:
             parts.extend(_dependency_sections(task, session))
         if task.gate is not None:
@@ -96,7 +103,15 @@ def compose_prompt(
             )
         )
 
-    for source in context.authoritative_sources:
+    selected_sources = context.authoritative_sources
+    if task.context_refs is not None:
+        selected = set(task.context_refs)
+        selected_sources = tuple(
+            source
+            for source in context.authoritative_sources
+            if source.label in selected
+        )
+    for source in selected_sources:
         sections.append(
             _section(
                 f"AUTHORITATIVE SOURCE: {source.label} [{source.origin}; sha256:{source.sha256}]",
@@ -120,6 +135,10 @@ def compose_prompt(
         ),
         _section("ROLE-SPECIFIC TASK", task.prompt),
     ])
+    if task.interface_contract:
+        sections.append(
+            _section("FROZEN INTERFACE CONTRACT", task.interface_contract)
+        )
 
     if task.gate is not None:
         sections.append(_section("DETERMINISTIC VALIDATION", _gate_requirements(task)))
@@ -229,8 +248,10 @@ def _workspace_artifact_contract(task: TaskDef) -> str:
                 '{"edits":[{"path":"relative/file","old":"exact existing '
                 'text","new":"exact replacement text"}]}.\n'
                 "Each edit must contain exactly path, old, and new. The old "
-                "text must be a non-empty exact source substring that occurs "
-                "once in the current file. Use the smallest sufficient old "
+                "text must be an exact source substring that occurs once in "
+                "the current file. Use old as an empty string only to create "
+                "a currently absent UTF-8 text file, with new containing its "
+                "complete content. Otherwise use the smallest sufficient old "
                 "anchor, preserve indentation and newlines exactly, and do "
                 "not return a Git diff or Markdown fence. The runtime will "
                 "materialize and validate the unified diff before approval.\n"

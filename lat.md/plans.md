@@ -100,17 +100,23 @@ Rules for plan and task field validation.
 - Boolean, output-format, generation-override, and JSON-schema fields are type-checked
 - Task-specific `outputProtocol` overrides the shared context protocol
 
-## Schema-v2 workspace tasks
+## Workspace plan schemas
 
-A plan with `"schemaVersion": 2` requires a schema-v2 config and adds three
-required task fields:
+A plan with `"schemaVersion": 2` requires a schema-v2 config and retains the
+legacy typed-artifact contract. A plan with `"schemaVersion": 3` uses the same
+config authority and adds the delegation and integration contract:
 
 ```json
 {
   "id": "implement",
   "role": "implementation",
-  "prompt": "Return one unified Git diff.",
+  "prompt": "Return exact search/replace edits.",
   "artifactType": "patch",
+  "workerOutputProtocol": "edit-manifest-v1",
+  "executionMode": "local-agent",
+  "contextRefs": ["implementation-source"],
+  "interfaceContract": "Preserve the public API and its return type.",
+  "expectedOutputTokens": 450,
   "allowedPaths": ["src/package"],
   "verification": ["pytest"]
 }
@@ -122,7 +128,24 @@ test-suite tasks require one or more task path ceilings below configured
 profile IDs. Review and report tasks require empty path and verification
 arrays. Plans and workers cannot provide commands.
 
-At most one patch/test-suite task may occur in each topological level. This
-serializes workspace mutations while preserving parallel local generation for
-non-mutating artifacts. Supervised execution waits for a human decision; YOLO
-uses the separately approved execution policy. See [[workspace-execution]].
+Schema v3 requires `edit-manifest-v1` for every local mutating worker and
+validates `expectedOutputTokens` at no more than 70% of that task's generation
+budget. `contextRefs` selects unique labels from
+`context.authoritativeSources`; unselected sources are omitted from the worker
+prompt. `interfaceContract` freezes the boundary the worker must preserve.
+
+When the exact transformation is already known, `executionMode:
+"deterministic-edit"` embeds `deterministicEdits`, permits no generation
+override or repair, and consumes zero local generation calls. Local-agent
+tasks retain bounded repair.
+
+Independent patch/test-suite tasks may occur in one topological level only
+when their `allowedPaths` are pairwise disjoint, including directory-prefix
+overlap. They generate together against the wave base and apply safely only
+while the affected paths remain unchanged. Legacy schema-v2 plans retain the
+one-mutation-per-level rule.
+
+Schema v3 also requires top-level `integrationVerification`, a non-empty list
+of configured profile IDs run against the combined head after every task
+completes. Supervised execution waits for human decisions; YOLO uses the
+separately approved execution policy. See [[workspace-execution]].

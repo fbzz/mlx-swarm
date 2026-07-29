@@ -364,35 +364,63 @@ def build_plan_prompt(
     worker_capability_contract = _worker_capability_contract(config)
     workspace_contract = ""
     task_workspace_fields = ""
+    integration_shape = ""
     schema_version = 1
     if config.workspace is not None:
-        schema_version = 2
-        profiles = ", ".join(
-            sorted(config.workspace.verification_profiles)
-        ) or "(none)"
+        schema_version = 3
+        profile_ids = sorted(config.workspace.verification_profiles)
+        if not profile_ids:
+            raise CommanderError(
+                "Workspace commander plan schema v3 requires at least one "
+                "configured verification profile."
+            )
+        profiles = ", ".join(profile_ids)
+        integration_shape = (
+            '\n  "integrationVerification": ["approved-profile-id"],'
+        )
         roots = ", ".join(config.workspace.write_roots)
         workspace_contract = f"""
 WORKSPACE EXECUTION CONTRACT
 - Every task must declare artifactType, allowedPaths, and verification.
+- Every task must declare executionMode, contextRefs, interfaceContract, and
+  expectedOutputTokens.
 - artifactType is patch, test-suite, review, or report.
-- Every task should declare workerOutputProtocol.
-- For patch and test-suite tasks, prefer workerOutputProtocol
-  edit-manifest-v1: workers return strict exact search/replace JSON and the
-  runtime materializes the operator-visible unified Git diff. Such tasks
-  require a JSON gate whose jsonRequiredKeys and jsonAllowedKeys are both
-  exactly ["edits"].
-- workerOutputProtocol artifact keeps the original direct unified-diff path.
+- executionMode local-agent delegates one bounded operation to MLX.
+- executionMode deterministic-edit embeds already-known exact old/new edits in
+  deterministicEdits. The runtime applies those bytes without loading a model.
+- Every patch and test-suite task must use workerOutputProtocol
+  edit-manifest-v1. Direct unified-diff generation is retired in schema v3.
+- edit-manifest-v1 requires a JSON gate whose jsonRequiredKeys and
+  jsonAllowedKeys are both exactly ["edits"].
 - review and report tasks use workerOutputProtocol artifact.
 - patch and test-suite require at least one allowed path.
 - review and report use empty allowedPaths and verification arrays.
+- contextRefs contains only authoritative source labels needed by that task.
+- interfaceContract freezes the exact behavior shared with sibling tasks.
+- expectedOutputTokens must be zero for deterministic-edit. For a local
+  mutating task it must be positive and no more than 70 percent of max_tokens.
+- deterministic-edit uses maxRepairAttempts 0, expectedOutputTokens 0, no
+  generationOverride, and embeds at least one exact deterministicEdits item.
 - task allowedPaths must stay within configured write roots: {roots}
 - verification may contain only these profile IDs: {profiles}
+- integrationVerification lists allowlisted profiles run once after every task
+  has completed.
 - workers never receive or produce command arrays.
-- at most one patch or test-suite task may exist in each DAG level.
+- Multiple patch or test-suite tasks may share a DAG level only when their
+  allowedPaths are pairwise disjoint and their interface contracts make them
+  semantically independent. The runtime generates them together and applies
+  them in deterministic plan order.
 """
         task_workspace_fields = """
       "artifactType": "patch|test-suite|review|report",
       "workerOutputProtocol": "artifact|edit-manifest-v1",
+      "executionMode": "local-agent|deterministic-edit",
+      "contextRefs": ["authoritative source label"],
+      "interfaceContract": "frozen behavior shared with sibling tasks",
+      "expectedOutputTokens": 400,
+      "deterministicEdits": [
+        {"path": "relative/file", "old": "exact old", "new": "exact new"}
+      ],
       "allowedPaths": ["relative/path"],
       "verification": ["approved-profile-id"],"""
     return f"""You are the frontier commander for MLX Swarm.
@@ -464,9 +492,11 @@ PLAN LIMITS
 - use deterministic gates wherever artifact shape can be checked.
 - no task generationOverride.max_tokens may exceed \
 {config.worker.capabilities.max_generation_tokens}.
-- For patch or test-suite tasks using edit-manifest-v1, set max_tokens to at
-  most {min(800, config.worker.capabilities.max_generation_tokens)}. These
-  workers render exact edits; they do not need a long reasoning allowance.
+- For local-agent patch or test-suite tasks, target 350 to 500 expected output
+  tokens and set max_tokens to at most \
+{min(800, config.worker.capabilities.max_generation_tokens)}.
+- Reject or deterministically split a local task whose expected output would
+  exceed 70 percent of max_tokens.
 - For review tasks, set max_tokens to at most \
 {min(1000, config.worker.capabilities.max_generation_tokens)}.
 - For report tasks, set max_tokens to at most \
@@ -477,7 +507,7 @@ TOP-LEVEL SHAPE
 {{
   "schemaVersion": {schema_version},
   "planId": "lowercase-id",
-  "objective": "string",
+  "objective": "string",{integration_shape}
   "context": {{
     "objective": "string",
     "diagnosis": {{
@@ -543,6 +573,8 @@ def _worker_capability_contract(config: SwarmConfig) -> str:
     delegation_rules = {
         "exact-edit": (
             "- You own the causal diagnosis and edit design.\n"
+            "- If you already know the literal old and new bytes, use "
+            "executionMode deterministic-edit; do not ask MLX to copy them.\n"
             "- Delegate one mechanical, bounded source transformation per "
             "mutating task.\n"
             "- Name exact files and symbols, include exact source anchors, "
@@ -673,6 +705,23 @@ class CommanderStore:
             if request_id is not None
             else _request_id()
         )
+        predecessor = (
+            self._revision_predecessor(revision_of)
+            if revision_of is not None
+            else None
+        )
+        if predecessor is not None:
+            existing_successor = predecessor[1].get(
+                "supersededByRequestId"
+            )
+            if (
+                isinstance(existing_successor, str)
+                and existing_successor != request_id
+            ):
+                raise CommanderError(
+                    "Revision predecessor is already superseded by request "
+                    f"{existing_successor}."
+                )
         request_dir = self._request_dir(request_id)
         try:
             request_dir.mkdir(parents=True, exist_ok=False)
@@ -697,7 +746,112 @@ class CommanderStore:
             request_dir / "plan-prompt.txt",
             build_plan_prompt(request, self.config),
         )
+        if predecessor is not None:
+            self._supersede_revision_predecessor(
+                predecessor,
+                successor_request_id=request_id,
+            )
         return self.request_detail(request_id)
+
+    def _revision_predecessor(
+        self,
+        revision_of: str,
+    ) -> tuple[Path, dict[str, Any]] | None:
+        plan_id, session_id = revision_of.split("/", 1)
+        session_dir = (
+            self.artifacts_root / plan_id / session_id
+        ).resolve()
+        if not _is_within(session_dir, self.artifacts_root):
+            raise CommanderError("Revision predecessor escapes artifacts.")
+        state_path = session_dir / "session.json"
+        if not state_path.is_file():
+            return None
+        state = _required_json(state_path)
+        if (
+            state.get("planId") != plan_id
+            or state.get("sessionId") != session_id
+        ):
+            raise CommanderError("Revision predecessor identity mismatch.")
+        return session_dir, state
+
+    def _supersede_revision_predecessor(
+        self,
+        predecessor: tuple[Path, dict[str, Any]],
+        *,
+        successor_request_id: str,
+    ) -> None:
+        """Retain predecessor evidence while releasing only a safe checkout lease."""
+        session_dir, state = predecessor
+        state["supersededByRequestId"] = successor_request_id
+        state["supersededAt"] = utc_now()
+        snapshot_path = session_dir / "workspace.snapshot.json"
+        if snapshot_path.is_file():
+            from .workspace import (
+                WorkspaceError,
+                checkout_lease,
+                load_workspace_snapshot,
+                release_checkout_lease,
+            )
+
+            try:
+                workspace = load_workspace_snapshot(session_dir)
+                policy = workspace.get("executionPolicy")
+                if (
+                    isinstance(policy, dict)
+                    and policy.get("workspaceTarget") == "checkout"
+                ):
+                    tasks = state.get("tasks", {})
+                    unresolved = any(
+                        isinstance(task, dict)
+                        and task.get("status") in {
+                            "applying",
+                            "verifying",
+                            "verification_failed",
+                        }
+                        for task in tasks.values()
+                    )
+                    for task_id, task in tasks.items():
+                        if not isinstance(task, dict):
+                            unresolved = True
+                            continue
+                        artifact_dir = (
+                            session_dir / "artifacts" / str(task_id)
+                        )
+                        if (
+                            (artifact_dir / "apply-receipt.json").is_file()
+                            and not (
+                                artifact_dir / "revert-receipt.json"
+                            ).is_file()
+                            and task.get("status") != "completed"
+                        ):
+                            unresolved = True
+                    lease = checkout_lease(
+                        Path(workspace["workspaceRoot"])
+                    )
+                    owns_lease = (
+                        isinstance(lease, dict)
+                        and lease.get("planId") == state.get("planId")
+                        and lease.get("sessionId") == state.get("sessionId")
+                    )
+                    if owns_lease and not unresolved:
+                        release_checkout_lease(
+                            workspace,
+                            plan_id=str(state["planId"]),
+                            session_id=str(state["sessionId"]),
+                        )
+                        state["checkoutLeaseReleasedAt"] = utc_now()
+                        state["checkoutLeaseReleaseReason"] = "superseded"
+                        state["supersessionLeaseStatus"] = "released"
+                    elif owns_lease:
+                        state["supersessionLeaseStatus"] = (
+                            "blocked_unresolved_workspace"
+                        )
+                    else:
+                        state["supersessionLeaseStatus"] = "not_owned"
+            except WorkspaceError as exc:
+                state["supersessionLeaseStatus"] = "validation_failed"
+                state["supersessionLeaseError"] = str(exc)
+        _atomic_json(session_dir / "session.json", state)
 
     def list_requests(self) -> list[dict[str, Any]]:
         requests: list[dict[str, Any]] = []
@@ -734,6 +888,7 @@ class CommanderStore:
         if plan_payload is not None and plan.workspace_execution:
             from .workspace import (
                 WorkspaceError,
+                execution_policy,
                 execution_preview as preview,
                 execution_previews as previews,
             )
@@ -753,12 +908,10 @@ class CommanderStore:
                     "executionPolicySha256": approval.get(
                         "executionPolicySha256"
                     ),
-                    "executionPolicy": {
-                        "schemaVersion": 1,
-                        "approvalMode": mode,
-                        "workspaceTarget": target,
-                        "onVerificationFailure": "pause",
-                    },
+                    "executionPolicy": execution_policy(
+                        approval_mode=str(mode),
+                        workspace_target=str(target),
+                    ),
                     "historical": True,
                 }
                 execution_previews = {

@@ -1,7 +1,8 @@
 # Workspace Execution
 
-Workspace execution is the opt-in schema-v2 boundary that converts local model
-output into typed, auditable artifacts. It is implemented in
+Workspace execution uses config schema v2 with plan schema v2 or v3 to convert
+local model output and frontier-known deterministic edits into typed,
+auditable artifacts. It is implemented in
 [[src/mlx_swarm/workspace.py]] and coordinated by [[Executor]], [[Session]],
 [[Commander]], and [[UI]].
 
@@ -27,34 +28,51 @@ Internal Git subprocesses ignore global/system Git configuration and inherited
 The execution digest covers the canonical plan SHA-256, resolved Git root, base
 HEAD SHA, configured write-root snapshot, referenced profile definitions, and
 worktree runtime root. Contract version 2 also binds the operator-owned
-execution policy: `supervised | yolo`, `worktree | checkout`, and the fixed
-verification-failure action `pause`. Checkout is valid only with YOLO.
+execution policy: `supervised | yolo`, `worktree | checkout`, and the
+verification-failure action. Isolated-worktree YOLO uses `repair-once`;
+supervised and checkout execution use `pause`. Checkout is valid only with YOLO.
 Approval submits this digest and the independent canonical plan digest. See
 [[src/mlx_swarm/workspace.py#execution_preview]].
 
 ## Typed task artifacts
 
-Schema-v2 tasks require:
+Workspace tasks require:
 
 - `artifactType`: `patch`, `test-suite`, `review`, or `report`.
 - `allowedPaths`: task-specific relative ceilings, each below a configured
   write root.
 - `verification`: configured profile IDs only.
-- `workerOutputProtocol`: `artifact` (direct artifact text) or
+- `workerOutputProtocol`: `artifact` (legacy schema-v2 direct artifact text) or
   `edit-manifest-v1` for deterministic exact-anchor patch materialization.
 
 `patch` and `test-suite` are mutating unified Git diffs. `review` is a JSON
 object. `report` is non-mutating text or Markdown. Review and report tasks use
-empty path/profile arrays. A DAG level may contain at most one mutating task,
-while non-mutating tasks remain batchable.
+empty path/profile arrays. Plan schema v3 also requires `executionMode`,
+`contextRefs`, `interfaceContract`, and `expectedOutputTokens` for each task,
+plus top-level `integrationVerification`.
 
 For small local models, `edit-manifest-v1` accepts one strict JSON object with
-an `edits` array. Every entry contains exactly `path`, non-empty exact `old`
-text, and replacement `new` text. Paths pass both allowlists and symlink/runtime
-checks; each old anchor must occur exactly once in the selected execution
-target. The runtime applies edits in memory, derives a unified diff, and then
-uses the normal immutable artifact, digest approval, `git apply --check`, and
+an `edits` array. Every entry contains exactly `path`, exact `old` text, and
+replacement `new` text. A non-empty old anchor must occur exactly once. An
+empty old value creates a previously absent text file from the complete,
+non-empty new content. Paths pass both allowlists and symlink/runtime checks.
+The runtime applies edits in memory, derives a unified diff, and then uses the
+normal immutable artifact, digest approval, `git apply --check`, and
 verification lifecycle. The worktree is not changed during materialization.
+
+Schema-v3 local mutations must use edit manifests. If the frontier already
+knows the exact bytes, `executionMode: deterministic-edit` stores the manifest
+in the plan and materializes it with zero model calls or repair attempts.
+Otherwise `executionMode: local-agent` permits bounded worker repair and
+preflights expected output at no more than 70% of the generation ceiling.
+`contextRefs` limits each prompt to its owned authoritative sources and
+`interfaceContract` freezes the boundary it must preserve.
+
+Schema-v3 mutating siblings may share a wave when their path ceilings are
+pairwise disjoint. Overlapping directories are rejected during plan loading.
+Artifacts generated from one wave base are applied sequentially only if prior
+commits have not changed their affected paths. Schema-v2 keeps the legacy
+one-mutation-per-level restriction.
 
 Workers never define a command. Workspace prompts state the output type,
 approved paths, and profile IDs, while treating every dependency artifact as
@@ -127,14 +145,19 @@ and make the attempt fail. In the main checkout they are never automatically
 restored, because that could erase concurrent operator work; all detected
 changes remain visible and the attempt fails.
 
-A failed profile sets `verification_failed` and keeps the applied commit
-visible. YOLO stops as a partial run instead of polling forever. The operator
-may enqueue another run of the same profiles or Reject, which creates an
-explicit revert commit after cleanliness/HEAD checks. No local worker repair or
-frontier call occurs because of human rejection or verification failure.
+A failed profile sets `verification_failed`. Supervised execution and checkout
+YOLO keep the applied commit visible and pause; the operator may enqueue
+another run of the same profiles or Reject, which creates an explicit revert
+commit after cleanliness/HEAD checks. In isolated-worktree YOLO, the first
+failure may consume the remaining repair budget: the runtime creates a revert
+commit, archives the complete artifact attempt and receipts, and requeues the
+worker with bounded failed-verification evidence. Repeated or budget-exhausted
+failure pauses. No frontier call occurs during recovery.
 
 Descendants run only after the artifact is applied and every referenced
-profile passes.
+profile passes. Once all tasks complete, schema-v3
+`integrationVerification` profiles run against the combined head; failure
+keeps the session partial and records a plan-level receipt.
 
 ## Recovery, final packet, and cleanup
 
@@ -142,9 +165,16 @@ The executor owns an exclusive session runner lock while it waits, so the
 resident backend remains loaded.
 
 On resume, an interrupted apply is reconciled against the manifest, commit
-parent, affected paths, and receipt; it is never blindly applied twice. An
-interrupted verification returns to an operator-controlled verify/reject
+parent, affected paths, and receipt; it is never blindly applied twice,
+including when disjoint sibling artifacts were based on an earlier wave head.
+An interrupted verification returns to an operator-controlled verify/reject
 pause.
+
+Commander revisions are linked rather than overwriting a failed request. A new
+request records `revisionOf`; its predecessor records `supersededByRequestId`
+and retains every plan, artifact, receipt, and log. A held main-checkout lease
+is released only when no task is applying/verifying and no applied commit
+remains unresolved.
 
 Completed workspace runs emit `frontier-result.json` schema version 3 with
 base/head/branch lineage, execution approval, applied manifests, apply and

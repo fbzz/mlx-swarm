@@ -27,8 +27,12 @@ See [[src/mlx_swarm/executor.py#execute_plan]].
 
 ## Workspace task flow
 
-For a schema-v2 task, successful deterministic gates are followed by typed
-artifact validation. Non-mutating review/report artifacts complete normally.
+Workspace tasks pass deterministic gates and typed artifact validation before
+they can change state.
+
+Schema-v3 deterministic-edit tasks bypass model loading and materialize their
+frontier-authored manifests directly. Non-mutating review/report artifacts
+complete normally.
 A valid patch/test-suite artifact moves through:
 
 `running → awaiting_approval → applying → verifying → completed`
@@ -42,9 +46,18 @@ frontier call.
 In supervised mode the executor polls the immutable decision ledger while the
 model remains resident. In YOLO mode it writes an equally immutable
 `source: yolo` Apply receipt bound to the artifact and snapshotted execution
-policy digests, then applies and verifies without another frontier call. A
-verification failure ends the active runner as a resumable partial session; it
-never triggers automatic repair or rollback.
+policy digests, then applies and verifies without another frontier call. In an
+isolated worktree, the first verification failure can consume the task's one
+remaining repair: the executor creates an explicit revert commit, archives the
+entire failed attempt, and requeues the task with bounded verification
+feedback. A repeated failure ends as a resumable partial session. Checkout
+YOLO and supervised execution always pause on verification failure.
+
+Schema-v3 disjoint mutating siblings may generate in one physical batch. Their
+artifacts are based on the wave head, then applied sequentially only when the
+current head descends from that base and no earlier commit touched their
+affected paths. After all tasks complete, the executor runs the plan's
+snapshotted integration-verification profiles against the combined head.
 
 The executor holds an exclusive session runner lock. Main-checkout YOLO also
 holds a repository-wide runner lock so two sessions cannot mutate the same

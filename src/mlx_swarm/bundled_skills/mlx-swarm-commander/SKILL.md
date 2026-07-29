@@ -19,13 +19,19 @@ validation, approval, execution, or claim logic in ad hoc scripts.
 3. Read the returned `promptPath`. Inspect only files whose resolved paths are
    below the returned, auto-detected `workspaceRoot`.
 4. Produce exactly one Plan schema JSON object. When the prompt specifies
-   workspace execution, use schema version 2 and declare `artifactType`,
-   `workerOutputProtocol`, `allowedPaths`, and verification profile IDs for
-   every task. Prefer `edit-manifest-v1` for patch and test-suite workers:
-   workers return strict exact search/replace JSON and MLX Swarm materializes
-   the operator-visible unified diff. `artifact` retains direct unified-diff
-   output. Review and report tasks are non-mutating. Never invent or emit
-   command arrays.
+   workspace execution, use schema version 3 and declare `artifactType`,
+   `workerOutputProtocol`, `executionMode`, `contextRefs`,
+   `interfaceContract`, `expectedOutputTokens`, `allowedPaths`, and
+   verification profile IDs for every task. Patch and test-suite workers must
+   use `edit-manifest-v1`: workers return strict exact search/replace JSON and
+   MLX Swarm materializes the operator-visible unified diff. Use
+   `deterministic-edit` with an inline manifest when the exact bytes are already
+   known and no worker judgment is required. Review and report tasks are
+   non-mutating. Assign disjoint path ceilings to independent mutating tasks so
+   they can share a wave; serialize overlapping ownership. Select only the
+   authoritative source labels each task needs, freeze its interface boundary,
+   and keep expected output at or below 70% of its generation ceiling. Declare
+   plan-level integration verification. Never invent or emit command arrays.
    During this same planning call, inspect the supplied failure evidence and
    trace the relevant source path. Populate the mandatory `context.diagnosis`
    with one falsifiable causal hypothesis, its validation method and evidence,

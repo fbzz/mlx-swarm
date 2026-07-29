@@ -42,6 +42,7 @@ from .model_identity import model_metadata
 from .workspace import (
     WorkspaceError,
     cleanup_session_worktree,
+    execution_policy,
     execution_preview,
     execution_previews,
     load_artifact,
@@ -1003,6 +1004,7 @@ def _serialize_plan(
         "planId": plan.plan_id,
         "objective": plan.objective,
         "context": plan.raw.get("context"),
+        "integrationVerification": list(plan.integration_verification),
         "source": str(source),
         "digest": canonical_json_sha256(plan.raw),
         "tasks": [_serialize_task(task) for task in plan.tasks],
@@ -1020,6 +1022,14 @@ def _serialize_task(task: TaskDef) -> dict[str, Any]:
         "role": task.role,
         "artifactType": task.artifact_type,
         "workerOutputProtocol": task.worker_output_protocol,
+        "executionMode": task.execution_mode,
+        "contextRefs": (
+            list(task.context_refs)
+            if task.context_refs is not None
+            else None
+        ),
+        "interfaceContract": task.interface_contract,
+        "expectedOutputTokens": task.expected_output_tokens,
         "allowedPaths": list(task.allowed_paths),
         "verification": list(task.verification),
         "prompt": task.prompt,
@@ -1050,12 +1060,10 @@ def _safe_execution_preview(
     except WorkspaceError as exc:
         return {
             "ready": False,
-            "executionPolicy": {
-                "schemaVersion": 1,
-                "approvalMode": approval_mode,
-                "workspaceTarget": workspace_target,
-                "onVerificationFailure": "pause",
-            },
+            "executionPolicy": execution_policy(
+                approval_mode=approval_mode,
+                workspace_target=workspace_target,
+            ),
             "error": str(exc),
         }
 

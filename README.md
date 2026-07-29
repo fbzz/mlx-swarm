@@ -42,15 +42,17 @@ configuration or point MLX Swarm at another compatible cached MLX model.
 A small model should not have to behave like an entire autonomous engineering
 team in one prompt. MLX Swarm gives it a tighter job:
 
-- **Decompose before inference.** The complete DAG, authoritative context,
-  dependencies, output protocol, and acceptance rules exist before the local
-  model starts.
+- **Decompose before inference.** The complete DAG, task-owned source slices,
+  frozen interface contracts, dependencies, output protocol, and acceptance
+  rules exist before the local model starts.
 - **Specialize every call.** Each agent produces one bounded artifact such as
   a patch, test suite, JSON review, or Markdown report.
 - **Share one resident model.** Independent jobs are batched by compatible
   sampling settings instead of repeatedly loading the model.
 - **Reject bad shape deterministically.** Regex, JSON, enum, size, and Python
   syntax gates catch malformed output without spending a frontier call.
+- **Preflight the delegation.** Expected output must fit safely below the
+  worker's generation ceiling before model loading.
 - **Repair with exact feedback.** A failed agent sees the specific gate
   violations and gets only the plan's limited retry budget.
 - **Escalate a result, not a transcript.** The final reviewer receives a compact
@@ -110,8 +112,8 @@ boundary explicit:
   separately; adapters that cannot report tokens remain explicitly
   `unavailable`.
 
-The framework never runs agent-supplied commands. Schema-v2 workspace plans
-may execute only operator-defined verification profiles. Isolated worktrees
+The framework never runs agent-supplied commands. Workspace plans may execute
+only operator-defined verification profiles. Isolated worktrees
 remain the recommended default; main-checkout execution exists only behind an
 explicit YOLO selection and clean-repository gate.
 
@@ -565,6 +567,8 @@ flowchart LR
     A2 --> H
     F -->|"non-mutating"| I["Durable session"]
     H -->|"pass"| I
+    H -->|"worktree YOLO: first failure"| Y["Revert, archive, and requeue once"]
+    Y --> E
     F -->|"reject + budget remains"| R["Bounded repair prompt"]
     R --> E
     I --> J["frontier-result.json v3"]
@@ -580,10 +584,13 @@ For each topological wave, the executor:
 4. generates with one resident MLX model;
 5. normalizes and gates every artifact;
 6. retries only rejected tasks with remaining repair budget;
-7. for schema-v2 mutating artifacts, either pauses for the operator or seals an
-   automatic YOLO decision according to the approved policy digest;
+7. for workspace mutating artifacts, either pauses for the operator or seals
+   an automatic YOLO decision according to the approved policy digest;
 8. runs only the referenced, snapshotted verification profiles;
-9. atomically persists task, artifact, decision, verification, and batch state.
+9. in isolated-worktree YOLO, reverts, archives, and repairs one failed
+   verification attempt when the plan's budget permits;
+10. runs the plan-level integration profiles after all task artifacts complete;
+11. atomically persists task, artifact, decision, verification, and batch state.
 
 Completed dependency output is injected into downstream prompts as explicitly
 untrusted candidate material. Rejected output never propagates.
@@ -638,8 +645,11 @@ See [`examples/plan.json`](examples/plan.json) for a complete example and
 
 ## Workspace execution boundary
 
-Schema-v1 configs and plans remain generation-only. Schema v2 is opt-in and
-adds operator authority for paths and fixed verification commands:
+Schema-v1 configs and plans remain generation-only. Config schema v2 adds
+operator authority for paths and fixed verification commands. Plan schema v3
+adds the self-driving delegation contract: task-minimal context references,
+frozen interfaces, output-budget preflight, deterministic edits, disjoint
+parallel mutations, and final integration verification.
 
 ```json
 {
@@ -690,6 +700,10 @@ a command:
   "prompt": "Return the smallest exact search/replace edits.",
   "artifactType": "patch",
   "workerOutputProtocol": "edit-manifest-v1",
+  "executionMode": "local-agent",
+  "contextRefs": ["implementation-source"],
+  "interfaceContract": "Preserve the public function signature and return type.",
+  "expectedOutputTokens": 450,
   "allowedPaths": ["src/package"],
   "verification": ["pytest"],
   "generationOverride": {
@@ -719,7 +733,7 @@ The evidence-backed personal-workstation defaults are:
 | --- | ---: |
 | Interactive parallelism | `maxWorkers: 4` |
 | Optional throughput batch | `maxWorkers: 8` |
-| Exact edit manifest | 500–800 output tokens |
+| Exact edit manifest | target 350–500 output tokens and at most 70% of the task ceiling |
 | Structured review JSON | 700–1,000 output tokens |
 | Report/research output | 1,200–1,800 output tokens |
 | 4B reasoning pass | disabled by default |
@@ -743,13 +757,13 @@ four. `maxBatchPromptTokens` is a hard ceiling on the sum of rendered input
 tokens in one physical MLX batch; completion budgets remain independently
 bounded per task and by the declared context window.
 
-Capability calibration is equally important: this checkpoint passed both
-frontier-designed exact-edit cases with one generation and no repair, but
-failed the frozen autonomous-diagnosis cases. That is why the shipped profile
-uses `delegationLevel: "exact-edit"`: the frontier must supply the diagnosis,
-source anchors, and literal transformation. The result supports this narrow
-worker role; it does not support treating the 4B model as a miniature frontier
-coding agent.
+Capability calibration is equally important. The shipped profile is explicitly
+`unmeasured`: its batching behavior is known, but a production-shaped,
+sealed exact-edit suite has not yet established worker quality. Its
+`delegationLevel: "exact-edit"` is therefore a conservative authority ceiling,
+not a benchmark claim. The frontier must supply the diagnosis, source anchors,
+interface contract, and literal transformation until a stronger role is
+supported by reproducible evidence.
 
 Strict JSON tasks default to deterministic sampling and 800 output tokens so
 compatible exact edits share a real MLX batch. Explicit plan overrides remain
@@ -759,12 +773,15 @@ maximum true width, per-task output tokens, token-limit hits, and partial
 usage if a later physical call fails; `batchSize` alone is not treated as
 proof of parallel generation.
 
-`patch` and `test-suite` payloads must be text-only unified Git diffs. `review`
-is structured JSON, while `report` is non-mutating text or Markdown. At most one
-mutating artifact may appear in a DAG level. Small workers can use
-`edit-manifest-v1` to return strict exact-anchor JSON; MLX Swarm materializes
-and validates the unified diff before the operator sees or approves it. The
-persisted artifact is still a diff. Supervised execution pauses before Apply;
+Plan-schema-v3 `patch` and `test-suite` workers return only
+`edit-manifest-v1`: strict exact-anchor JSON that MLX Swarm materializes and
+validates as a unified diff. Legacy schema-v2 plans may still use direct diffs.
+When the frontier already knows the exact bytes, `executionMode:
+"deterministic-edit"` applies the declared manifest with zero worker calls.
+Disjoint mutating path ceilings may share a DAG level and one physical MLX
+batch; overlapping directories are rejected before execution. `review` is
+structured JSON and `report` is non-mutating text or Markdown. The persisted
+mutation artifact remains a diff. Supervised execution pauses before Apply;
 YOLO seals an immutable automatic Apply decision only after the full
 policy-bound execution digest is approved.
 
@@ -797,11 +814,16 @@ A mutating agent result passes through this lifecycle:
    bounded logs, timeouts, and a sanitized environment;
 6. unblock descendants only after every referenced profile passes.
 
-A failed check leaves the applied commit visible and pauses even in YOLO. The
-operator can rerun the same profiles or reject the artifact, which creates an
-explicit revert commit. Cleanup removes only a terminal isolated worktree; its
-branch remains. Main-checkout cleanup is refused. MLX Swarm has no merge,
-cherry-pick, or promotion action.
+A failed supervised check leaves the applied commit visible so the operator can
+rerun the same profiles or reject the artifact with an explicit revert commit.
+In isolated-worktree YOLO, the first failed verification may automatically
+revert the commit, archive the complete attempt evidence, and requeue the task
+for its single bounded repair. A repeated failure pauses. Checkout YOLO always
+pauses instead of rewriting the operator's current branch. After every task
+completes, schema-v3 plans run the snapshotted `integrationVerification`
+profiles against the combined head. Cleanup removes only a terminal isolated
+worktree; its branch remains. Main-checkout cleanup is refused. MLX Swarm has
+no merge, cherry-pick, or promotion action.
 
 Verification receipt v2 binds the bounded merged log by SHA-256 and byte count,
 records timeout/process-group cleanup and workspace cleanliness explicitly,

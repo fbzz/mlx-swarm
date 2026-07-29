@@ -17,7 +17,7 @@ from typing import Any
 CONFIG_SCHEMA_VERSION = 2
 MANIFEST_SCHEMA_VERSION = 2
 SUPPORTED_CONFIG_SCHEMA_VERSIONS = {1, 2}
-SUPPORTED_PLAN_SCHEMA_VERSIONS = {1, 2}
+SUPPORTED_PLAN_SCHEMA_VERSIONS = {1, 2, 3}
 MAX_WORKERS = 32
 DEFAULT_MAX_WORKERS = 4
 MAX_PROMPT_CHARS = 120_000
@@ -33,6 +33,7 @@ _ENVIRONMENT_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ARTIFACT_TYPES = {"patch", "test-suite", "review", "report"}
 MUTATING_ARTIFACT_TYPES = {"patch", "test-suite"}
 WORKER_OUTPUT_PROTOCOLS = {"artifact", "edit-manifest-v1"}
+TASK_EXECUTION_MODES = {"local-agent", "deterministic-edit"}
 WORKER_MODES = {"direct", "reasoning-edit"}
 WORKER_SPECIALIZATIONS = {"unknown", "general", "code", "mixed"}
 WORKER_DELEGATION_LEVELS = {
@@ -443,6 +444,11 @@ class TaskDef:
     allowed_paths: tuple[str, ...] = ()
     verification: tuple[str, ...] = ()
     worker_output_protocol: str = "artifact"
+    execution_mode: str = "local-agent"
+    context_refs: tuple[str, ...] | None = None
+    interface_contract: str = ""
+    expected_output_tokens: int | None = None
+    deterministic_edits: tuple[dict[str, str], ...] = ()
 
     @property
     def mutates_workspace(self) -> bool:
@@ -515,10 +521,11 @@ class Plan:
     tasks: tuple[TaskDef, ...]
     raw: dict[str, Any]
     schema_version: int = 1
+    integration_verification: tuple[str, ...] = ()
 
     @property
     def workspace_execution(self) -> bool:
-        return self.schema_version == 2
+        return self.schema_version >= 2
 
     def topological_order(self) -> list[list[TaskDef]]:
         """Return tasks grouped by dependency level for batch execution."""
@@ -540,13 +547,18 @@ class Plan:
 def load_plan(path: Path, config: SwarmConfig) -> Plan:
     """Load and validate a plan JSON file."""
     raw = _read_json(path)
-    _exact_keys(raw, "plan", {"planId", "objective", "tasks"}, {"context", "schemaVersion"})
     schema_version = _integer(raw.get("schemaVersion", 1), "plan.schemaVersion", 1, 100)
     if schema_version not in SUPPORTED_PLAN_SCHEMA_VERSIONS:
         raise ContractError(f"Unsupported plan schema version: {schema_version}")
-    if schema_version == 2 and config.workspace is None:
+    plan_required = {"planId", "objective", "tasks"}
+    plan_optional = {"context", "schemaVersion", "integrationVerification"}
+    if schema_version == 3:
+        plan_required.add("integrationVerification")
+    _exact_keys(raw, "plan", plan_required, plan_optional)
+    if schema_version >= 2 and config.workspace is None:
         raise ContractError(
-            "Plan schema version 2 requires config schema version 2 workspace settings."
+            f"Plan schema version {schema_version} requires config schema "
+            "version 2 workspace settings."
         )
 
     plan_id = _identifier(raw["planId"], "plan.planId")
@@ -555,6 +567,42 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
     context: TaskContext | None = None
     if "context" in raw:
         context = _parse_context(raw["context"], config)
+    known_context_labels = (
+        {source.label for source in context.authoritative_sources}
+        if context is not None
+        else set()
+    )
+    integration_verification = tuple(
+        _identifier(value, f"plan.integrationVerification[{index}]")
+        for index, value in enumerate(
+            _list(
+                raw.get("integrationVerification", []),
+                "plan.integrationVerification",
+                minimum=1 if schema_version == 3 else 0,
+                maximum=MAX_VERIFICATION_PROFILES,
+            )
+        )
+    )
+    if len(set(integration_verification)) != len(
+        integration_verification
+    ):
+        raise ContractError(
+            "plan.integrationVerification must not contain duplicates."
+        )
+    if integration_verification:
+        if config.workspace is None:
+            raise ContractError(
+                "plan.integrationVerification requires workspace execution."
+            )
+        unknown_profiles = (
+            set(integration_verification)
+            - set(config.workspace.verification_profiles)
+        )
+        if unknown_profiles:
+            raise ContractError(
+                "plan.integrationVerification references unknown profiles: "
+                + ", ".join(sorted(unknown_profiles))
+            )
 
     task_list = raw["tasks"]
     if not isinstance(task_list, list):
@@ -575,11 +623,20 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
             "generationOverride",
             "outputProtocol",
         }
-        if schema_version == 2:
+        if schema_version >= 2:
             task_required.update(
                 {"artifactType", "allowedPaths", "verification"}
             )
             task_optional.add("workerOutputProtocol")
+        if schema_version == 3:
+            task_required.update({
+                "workerOutputProtocol",
+                "executionMode",
+                "contextRefs",
+                "interfaceContract",
+                "expectedOutputTokens",
+            })
+            task_optional.add("deterministicEdits")
         _exact_keys(t, name, task_required, task_optional)
         tid = _identifier(t["id"], f"{name}.id")
         if tid in task_ids:
@@ -636,11 +693,52 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                 f"{name}.generationOverride.max_tokens exceeds the worker "
                 "capability maxGenerationTokens."
             )
+        execution_mode = _text(
+            t.get("executionMode", "local-agent"),
+            f"{name}.executionMode",
+        )
+        if execution_mode not in TASK_EXECUTION_MODES:
+            raise ContractError(
+                f"{name}.executionMode must be one of: "
+                + ", ".join(sorted(TASK_EXECUTION_MODES))
+            )
+        context_refs = (
+            _unique_text_array(
+                t["contextRefs"],
+                f"{name}.contextRefs",
+            )
+            if "contextRefs" in t
+            else None
+        )
+        if context_refs is not None:
+            unknown_context_refs = set(context_refs) - known_context_labels
+            if unknown_context_refs:
+                raise ContractError(
+                    f"{name}.contextRefs references unknown authoritative "
+                    "source labels: "
+                    + ", ".join(sorted(unknown_context_refs))
+                )
+        interface_contract = _text(
+            t.get("interfaceContract", ""),
+            f"{name}.interfaceContract",
+            allow_empty=schema_version < 3,
+        )
+        expected_output_tokens = (
+            _integer(
+                t["expectedOutputTokens"],
+                f"{name}.expectedOutputTokens",
+                0,
+                config.worker.capabilities.max_generation_tokens,
+            )
+            if "expectedOutputTokens" in t
+            else None
+        )
         artifact_type = "report"
         allowed_paths: tuple[str, ...] = ()
         verification: tuple[str, ...] = ()
         worker_output_protocol = "artifact"
-        if schema_version == 2:
+        deterministic_edits: tuple[dict[str, str], ...] = ()
+        if schema_version >= 2:
             artifact_type = _text(
                 t["artifactType"],
                 f"{name}.artifactType",
@@ -727,6 +825,75 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                         "requires jsonRequiredKeys and jsonAllowedKeys to "
                         "contain exactly edits."
                     )
+            if "deterministicEdits" in t:
+                deterministic_edits = _parse_deterministic_edits(
+                    t["deterministicEdits"],
+                    f"{name}.deterministicEdits",
+                    allowed_paths=allowed_paths,
+                )
+            if execution_mode == "deterministic-edit":
+                if artifact_type not in MUTATING_ARTIFACT_TYPES:
+                    raise ContractError(
+                        f"{name}.executionMode deterministic-edit requires "
+                        "a patch or test-suite artifact."
+                    )
+                if worker_output_protocol != "edit-manifest-v1":
+                    raise ContractError(
+                        f"{name}.executionMode deterministic-edit requires "
+                        "workerOutputProtocol edit-manifest-v1."
+                    )
+                if not deterministic_edits:
+                    raise ContractError(
+                        f"{name}.executionMode deterministic-edit requires "
+                        "deterministicEdits."
+                    )
+                if gen_override:
+                    raise ContractError(
+                        f"{name}.executionMode deterministic-edit cannot "
+                        "declare generationOverride."
+                    )
+                if expected_output_tokens not in {None, 0}:
+                    raise ContractError(
+                        f"{name}.executionMode deterministic-edit requires "
+                        "expectedOutputTokens 0."
+                    )
+                if max_repair:
+                    raise ContractError(
+                        f"{name}.executionMode deterministic-edit requires "
+                        "maxRepairAttempts 0."
+                    )
+            elif deterministic_edits:
+                raise ContractError(
+                    f"{name}.deterministicEdits requires executionMode "
+                    "deterministic-edit."
+                )
+            if schema_version == 3:
+                if (
+                    artifact_type in MUTATING_ARTIFACT_TYPES
+                    and worker_output_protocol != "edit-manifest-v1"
+                ):
+                    raise ContractError(
+                        f"{name} schema-v3 mutating local work must use "
+                        "workerOutputProtocol edit-manifest-v1."
+                    )
+                assert expected_output_tokens is not None
+                if execution_mode == "local-agent":
+                    budget_limit = generation_tokens
+                    if artifact_type in MUTATING_ARTIFACT_TYPES:
+                        budget_limit = max(
+                            1,
+                            int(generation_tokens * 0.7),
+                        )
+                    if expected_output_tokens < 1:
+                        raise ContractError(
+                            f"{name}.expectedOutputTokens must be positive "
+                            "for local-agent execution."
+                        )
+                    if expected_output_tokens > budget_limit:
+                        raise ContractError(
+                            f"{name}.expectedOutputTokens exceeds the "
+                            f"preflight budget of {budget_limit} tokens."
+                        )
         tasks.append(
             TaskDef(
                 id=tid,
@@ -745,10 +912,19 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                 allowed_paths=allowed_paths,
                 verification=verification,
                 worker_output_protocol=worker_output_protocol,
+                execution_mode=execution_mode,
+                context_refs=context_refs,
+                interface_contract=interface_contract,
+                expected_output_tokens=expected_output_tokens,
+                deterministic_edits=deterministic_edits,
             )
         )
 
     # Validate all depends_on targets exist
+    if integration_verification and "plan-integration" in task_ids:
+        raise ContractError(
+            "Task id plan-integration is reserved for final verification."
+        )
     for t in tasks:
         for dep in t.depends_on:
             if dep not in task_ids:
@@ -762,6 +938,7 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
         context=context,
         tasks=tuple(tasks),
         raw=raw,
+        integration_verification=integration_verification,
     )
     levels = plan.topological_order()
     if schema_version == 2:
@@ -773,6 +950,29 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                     f"artifact per DAG level; level {level_index} has: "
                     f"{', '.join(mutating)}"
                 )
+    elif schema_version == 3:
+        for level_index, level in enumerate(levels):
+            mutating = [task for task in level if task.mutates_workspace]
+            for index, left in enumerate(mutating):
+                for right in mutating[index + 1:]:
+                    overlaps = sorted({
+                        path
+                        for left_path in left.allowed_paths
+                        for right_path in right.allowed_paths
+                        for path in (left_path, right_path)
+                        if (
+                            _relative_path_within(left_path, right_path)
+                            or _relative_path_within(right_path, left_path)
+                        )
+                    })
+                    if overlaps:
+                        raise ContractError(
+                            "Plan schema version 3 permits parallel mutating "
+                            "tasks only for disjoint allowedPaths; level "
+                            f"{level_index} tasks {left.id} and {right.id} "
+                            "overlap: "
+                            + ", ".join(overlaps)
+                        )
     return plan
 
 
@@ -898,6 +1098,11 @@ def _parse_context(raw: Any, config: SwarmConfig) -> TaskContext:
                 origin="inline",
                 sha256=hashlib.sha256(content.encode()).hexdigest(),
             )
+        )
+    source_labels = [source.label for source in sources]
+    if len(set(source_labels)) != len(source_labels):
+        raise ContractError(
+            "context.authoritativeSources labels must be unique."
         )
     diagnosis = None
     if "diagnosis" in ctx:
@@ -1312,6 +1517,43 @@ def _path_array(
     if len(set(paths)) != len(paths):
         raise ContractError(f"{name} must not contain duplicates.")
     return paths
+
+
+def _parse_deterministic_edits(
+    value: Any,
+    name: str,
+    *,
+    allowed_paths: tuple[str, ...],
+) -> tuple[dict[str, str], ...]:
+    edits: list[dict[str, str]] = []
+    for index, raw_edit in enumerate(
+        _list(value, name, minimum=1, maximum=64)
+    ):
+        edit_name = f"{name}[{index}]"
+        edit = _object(raw_edit, edit_name)
+        _exact_keys(edit, edit_name, {"path", "old", "new"})
+        path = _relative_path(edit["path"], f"{edit_name}.path")
+        old = edit["old"]
+        new = edit["new"]
+        if not isinstance(old, str):
+            raise ContractError(f"{edit_name}.old must be a string.")
+        if not isinstance(new, str):
+            raise ContractError(f"{edit_name}.new must be a string.")
+        if old == new:
+            raise ContractError(f"{edit_name} must not be a no-op.")
+        if not old and not new:
+            raise ContractError(
+                f"{edit_name} new-file content must not be empty."
+            )
+        if not any(
+            _relative_path_within(path, allowed)
+            for allowed in allowed_paths
+        ):
+            raise ContractError(
+                f"{edit_name}.path is outside task.allowedPaths: {path}"
+            )
+        edits.append({"path": path, "old": old, "new": new})
+    return tuple(edits)
 
 
 def _relative_path_within(path: str, root: str) -> bool:

@@ -378,10 +378,12 @@ checkout.
 
 ### Contracts and execution digest
 
-Strict workspace config/profile fields, schema-v2 typed tasks, write-root
-intersection, profile references, one mutating task per level, schema-v1
-generation-only compatibility, plan binding, and HEAD-sensitive execution
-digests are covered.
+Contract tests cover workspace authority, compatibility, delegation, and
+execution-digest binding.
+
+The cases include schema-v3 context slicing, output-budget preflight,
+deterministic edits, disjoint mutating siblings, write-root intersection, and
+profile references, plus schema-v1 generation-only and schema-v2 compatibility.
 
 ### Worktrees and lineage
 
@@ -403,8 +405,8 @@ loop.
 
 Strict `edit-manifest-v1` contracts require an exact JSON gate. Exact unique
 anchors materialize into an immutable unified diff without changing the
-worktree; malformed keys, ambiguous anchors, no-ops, and escaped paths fail
-before artifact approval.
+worktree; empty anchors create new text files, while malformed keys, ambiguous
+anchors, no-ops, and escaped paths fail before artifact approval.
 
 ### Human decisions and recovery
 

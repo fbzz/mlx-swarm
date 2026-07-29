@@ -264,7 +264,7 @@ def test_model_metadata_detects_context_overstatement(
     assert "exceeds checkpoint metadata" in overstated["warnings"][0]
 
 
-def test_generation_attempts_are_immutable_and_repeated_repair_changes_feedback(
+def test_generation_attempts_stop_after_repeated_rejected_output(
     tmp_path: Path,
 ) -> None:
     task = TaskDef(
@@ -289,10 +289,13 @@ def test_generation_attempts_are_immutable_and_repeated_repair_changes_feedback(
     )
 
     attempts = session.state["tasks"]["task"]["generationAttempts"]
-    assert len(attempts) == 3
+    assert len(attempts) == 2
     assert attempts[0]["repeatedOutput"] is False
     assert attempts[1]["repeatedOutput"] is True
-    assert "exactly repeated" in backend.calls[2][1][0]
+    assert session.get_task_status("task") == "failed"
+    assert "further repairs were stopped" in session.state["tasks"]["task"][
+        "error"
+    ].lower()
     records = [
         json.loads((session.dir / attempt["path"]).read_text())
         for attempt in attempts
@@ -300,12 +303,10 @@ def test_generation_attempts_are_immutable_and_repeated_repair_changes_feedback(
     assert [record["phase"] for record in records] == [
         "generation",
         "repair-1",
-        "repair-2",
     ]
     assert [record["output"] for record in records] == [
         "bad output",
         "bad output",
-        "different but still bad",
     ]
     assert records[1]["promptSha256"] == attempts[1]["promptSha256"]
 

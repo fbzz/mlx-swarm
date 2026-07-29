@@ -52,6 +52,42 @@ def test_compose_prompt_with_context() -> None:
     assert "Return code only." in prompt
 
 
+def test_task_context_refs_exclude_unrelated_authoritative_sources() -> None:
+    context = TaskContext(
+        objective="Update one independent module",
+        authoritative_sources=(
+            ContextSource(
+                label="needed",
+                content="VALUE = 1",
+                origin="inline",
+                sha256="a",
+            ),
+            ContextSource(
+                label="unrelated",
+                content="SECRET_DISTRACTOR = 99",
+                origin="inline",
+                sha256="b",
+            ),
+        ),
+        constraints=("Preserve the interface.",),
+        rejection_criteria=("Unrelated paths change.",),
+    )
+    task = TaskDef(
+        id="edit",
+        role="implementation",
+        prompt="Update VALUE.",
+        context_refs=("needed",),
+        interface_contract="VALUE remains an integer constant.",
+    )
+
+    prompt = compose_prompt(context, task)
+
+    assert "VALUE = 1" in prompt
+    assert "SECRET_DISTRACTOR" not in prompt
+    assert "FROZEN INTERFACE CONTRACT" in prompt
+    assert "VALUE remains an integer constant." in prompt
+
+
 def test_compose_prompt_with_dependency() -> None:
     task = TaskDef(id="t2", role="test", prompt="Test it", depends_on=("t1",))
     session = _mock_session({"t1": "def foo(): pass"})

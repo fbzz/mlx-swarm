@@ -29,7 +29,7 @@ from .contracts import (
 WORKSPACE_CONTRACT_VERSION = 2
 ARTIFACT_SCHEMA_VERSION = 1
 DECISION_SCHEMA_VERSION = 1
-EXECUTION_POLICY_VERSION = 1
+EXECUTION_POLICY_VERSION = 2
 CHECKOUT_LEASE_SCHEMA_VERSION = 2
 VERIFICATION_RECEIPT_SCHEMA_VERSION = 2
 APPROVAL_MODES = {"supervised", "yolo"}
@@ -131,6 +131,7 @@ def execution_preview(
             for task in plan.tasks
             for identifier in task.verification
         }
+        | set(plan.integration_verification)
     )
     profiles: dict[str, Any] = {}
     for identifier in referenced:
@@ -168,6 +169,7 @@ def execution_policy(
     *,
     approval_mode: str = DEFAULT_APPROVAL_MODE,
     workspace_target: str = DEFAULT_WORKSPACE_TARGET,
+    policy_version: int = EXECUTION_POLICY_VERSION,
 ) -> dict[str, Any]:
     """Validate the operator-owned run policy that is bound into approval."""
     if (
@@ -190,11 +192,19 @@ def execution_policy(
         raise WorkspaceError(
             "The main checkout is available only with explicit YOLO mode."
         )
+    if policy_version not in {1, EXECUTION_POLICY_VERSION}:
+        raise WorkspaceError("Unsupported execution policy version.")
     return {
-        "schemaVersion": EXECUTION_POLICY_VERSION,
+        "schemaVersion": policy_version,
         "approvalMode": approval_mode,
         "workspaceTarget": workspace_target,
-        "onVerificationFailure": "pause",
+        "onVerificationFailure": (
+            "repair-once"
+            if policy_version >= 2
+            and approval_mode == "yolo"
+            and workspace_target == "worktree"
+            else "pause"
+        ),
     }
 
 
@@ -254,6 +264,7 @@ def validate_execution_snapshot(
     policy = execution_policy(
         approval_mode=raw_policy.get("approvalMode"),
         workspace_target=raw_policy.get("workspaceTarget"),
+        policy_version=raw_policy.get("schemaVersion", 1),
     )
     if raw_policy != policy:
         raise WorkspaceError("Execution policy snapshot is invalid.")
@@ -337,14 +348,13 @@ def execution_previews(
                     workspace_target=workspace_target,
                 )
             except WorkspaceError as exc:
+                policy = execution_policy(
+                    approval_mode=approval_mode,
+                    workspace_target=workspace_target,
+                )
                 result[approval_mode][workspace_target] = {
                     "ready": False,
-                    "executionPolicy": {
-                        "schemaVersion": EXECUTION_POLICY_VERSION,
-                        "approvalMode": approval_mode,
-                        "workspaceTarget": workspace_target,
-                        "onVerificationFailure": "pause",
-                    },
+                    "executionPolicy": policy,
                     "error": str(exc),
                 }
     return result
@@ -860,6 +870,7 @@ def materialize_edit_manifest(
     originals: dict[str, str] = {}
     modified: dict[str, str] = {}
     order: list[str] = []
+    created_paths: set[str] = set()
     for index, raw_edit in enumerate(edits):
         if not isinstance(raw_edit, dict) or set(raw_edit) != {
             "path",
@@ -877,10 +888,12 @@ def materialize_edit_manifest(
                 f"Edit {index + 1} path, old, and new must be strings."
             )
         path = _safe_patch_path(path_value)
-        if not old:
-            raise WorkspaceError(f"Edit {index + 1} old text must not be empty.")
         if old == new:
             raise WorkspaceError(f"Edit {index + 1} is a no-op.")
+        if not old and not new:
+            raise WorkspaceError(
+                f"Edit {index + 1} new-file content must not be empty."
+            )
         if not any(_path_within(path, value) for value in task.allowed_paths):
             raise WorkspaceError(
                 f"Edit path is outside task.allowedPaths: {path}"
@@ -902,6 +915,20 @@ def materialize_edit_manifest(
             )
         candidate = worktree / path
         _reject_symlink_components(worktree, candidate, path)
+        if not old:
+            if candidate.exists():
+                raise WorkspaceError(
+                    f"Edit {index + 1} new-file path already exists: {path}"
+                )
+            if path in originals:
+                raise WorkspaceError(
+                    f"Edit {index + 1} duplicates new-file path: {path}"
+                )
+            originals[path] = ""
+            modified[path] = new
+            order.append(path)
+            created_paths.add(path)
+            continue
         if not candidate.is_file():
             raise WorkspaceError(f"Edit path is not a regular file: {path}")
         if path not in originals:
@@ -934,7 +961,11 @@ def materialize_edit_manifest(
             difflib.unified_diff(
                 before.splitlines(keepends=True),
                 after.splitlines(keepends=True),
-                fromfile=f"a/{path}",
+                fromfile=(
+                    "/dev/null"
+                    if path in created_paths
+                    else f"a/{path}"
+                ),
                 tofile=f"b/{path}",
                 n=3,
                 lineterm="\n",
@@ -942,7 +973,10 @@ def materialize_edit_manifest(
         )
         if not unified:
             raise WorkspaceError(f"Could not materialize edit diff: {path}")
-        sections.append(f"diff --git a/{path} b/{path}\n{unified}")
+        mode = "new file mode 100644\n" if path in created_paths else ""
+        sections.append(
+            f"diff --git a/{path} b/{path}\n{mode}{unified}"
+        )
     if not sections:
         raise WorkspaceError("Edit manifest produced no workspace changes.")
     diff = "".join(sections)
@@ -1339,6 +1373,54 @@ def _validate_decision(
     return value
 
 
+def _artifact_apply_head(
+    manifest: dict[str, Any],
+    workspace: dict[str, Any],
+) -> str:
+    """Permit rebasing only across earlier commits on disjoint owned paths."""
+    worktree = _execution_path(workspace)
+    actual_head = _workspace_head(workspace)
+    base_commit = manifest.get("baseCommit")
+    if actual_head == base_commit:
+        return actual_head
+    if not isinstance(base_commit, str):
+        raise WorkspaceError("Artifact base commit is invalid.")
+    ancestor = _git(
+        worktree,
+        ["merge-base", "--is-ancestor", base_commit, actual_head],
+        check=False,
+    )
+    if ancestor.returncode != 0:
+        raise WorkspaceError(
+            "Session worktree HEAD is not a descendant of the artifact base."
+        )
+    affected = manifest.get("affectedPaths")
+    if not isinstance(affected, list) or not all(
+        isinstance(path, str) for path in affected
+    ):
+        raise WorkspaceError("Artifact affected paths are invalid.")
+    changed = _nul_paths(
+        _git(
+            worktree,
+            [
+                "diff",
+                "--name-only",
+                "-z",
+                base_commit,
+                actual_head,
+                "--",
+                *affected,
+            ],
+        ).stdout
+    )
+    if changed:
+        raise WorkspaceError(
+            "A prior artifact changed this task's owned paths: "
+            + ", ".join(changed)
+        )
+    return actual_head
+
+
 def apply_artifact(
     session_dir: Path,
     task: TaskDef,
@@ -1360,9 +1442,7 @@ def apply_artifact(
     if manifest.get("decisionStatus") not in {"awaiting_approval", "applying"}:
         raise WorkspaceError("Artifact is not awaiting application.")
     worktree = _execution_path(workspace)
-    expected_head = manifest.get("baseCommit")
-    if _workspace_head(workspace) != expected_head:
-        raise WorkspaceError("Session worktree HEAD changed after artifact generation.")
+    expected_head = _artifact_apply_head(manifest, workspace)
     _require_clean_tracked_worktree(worktree)
     validate_patch(payload, task=task, workspace=workspace)
     _git(
@@ -1424,11 +1504,9 @@ def recover_artifact_application(
         workspace["headSha"] = actual_head
         return {"state": "applied", "receipt": receipt}
 
-    if actual_head == base_commit:
-        changes = _worktree_status_entries(worktree)
-        if not changes:
-            workspace["headSha"] = actual_head
-            return {"state": "not_applied", "receipt": None}
+    changes = _worktree_status_entries(worktree)
+    if changes:
+        application_head = _artifact_apply_head(manifest, workspace)
         staged_paths = _nul_paths(
             _git(
                 worktree,
@@ -1456,7 +1534,7 @@ def recover_artifact_application(
         expected_tree = _expected_patched_tree(
             session_dir,
             worktree,
-            str(base_commit),
+            application_head,
             payload,
         )
         staged_tree = _git_text(worktree, ["write-tree"])
@@ -1472,7 +1550,7 @@ def recover_artifact_application(
                 task,
                 workspace,
                 manifest,
-                expected_head=str(base_commit),
+                expected_head=application_head,
                 payload=payload,
                 recovered_after_crash=True,
             )
@@ -1481,6 +1559,10 @@ def recover_artifact_application(
             "Interrupted artifact left workspace changes that do not exactly "
             "match the sealed patch."
         )
+
+    if actual_head == base_commit:
+        workspace["headSha"] = actual_head
+        return {"state": "not_applied", "receipt": None}
 
     parent = _git_text(worktree, ["rev-parse", f"{actual_head}^"])
     changed_result = _git(
@@ -1500,7 +1582,11 @@ def recover_artifact_application(
         if value
     )
     if (
-        parent != base_commit
+        _git(
+            worktree,
+            ["merge-base", "--is-ancestor", str(base_commit), parent],
+            check=False,
+        ).returncode != 0
         or changed_paths != sorted(manifest.get("affectedPaths", []))
         or _git_text(
             worktree,
@@ -1509,19 +1595,24 @@ def recover_artifact_application(
         != _expected_patched_tree(
             session_dir,
             worktree,
-            str(base_commit),
+            parent,
             payload,
         )
     ):
-        raise WorkspaceError(
-            "Worktree lineage changed during artifact application."
-        )
+        try:
+            _artifact_apply_head(manifest, workspace)
+        except WorkspaceError as exc:
+            raise WorkspaceError(
+                "Worktree lineage changed during artifact application."
+            ) from exc
+        workspace["headSha"] = actual_head
+        return {"state": "not_applied", "receipt": None}
     _require_clean_tracked_worktree(worktree)
     receipt = {
         "schemaVersion": DECISION_SCHEMA_VERSION,
         "taskId": task.id,
         "artifactSha256": manifest["sha256"],
-        "baseCommit": base_commit,
+        "baseCommit": parent,
         "commitSha": actual_head,
         "appliedAt": utc_now(),
         "recoveredAfterCrash": True,
@@ -2097,6 +2188,56 @@ def revert_applied_artifact(
     _exclusive_json(revert_path, receipt)
     workspace["headSha"] = revert_sha
     return receipt
+
+
+def archive_artifact_attempt(
+    session_dir: Path,
+    task_id: str,
+    *,
+    attempt: int,
+    reason: str,
+) -> dict[str, Any]:
+    """Move one resolved artifact aside before a bounded replacement attempt."""
+    if attempt < 1:
+        raise WorkspaceError("Artifact archive attempt must be positive.")
+    source = session_dir / "artifacts" / task_id
+    if source.is_symlink() or not source.is_dir():
+        raise WorkspaceError("Artifact archive source is invalid.")
+    destination = (
+        session_dir
+        / "artifact-history"
+        / task_id
+        / f"attempt-{attempt:03d}"
+    )
+    if destination.exists():
+        raise WorkspaceError("Artifact archive destination already exists.")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    source.rename(destination)
+    digest = hashlib.sha256()
+    files: list[str] = []
+    for path in sorted(
+        item
+        for item in destination.rglob("*")
+        if item.is_file() and not item.is_symlink()
+    ):
+        relative = path.relative_to(destination).as_posix()
+        files.append(relative)
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    record = {
+        "schemaVersion": 1,
+        "taskId": task_id,
+        "attempt": attempt,
+        "reason": reason,
+        "path": str(destination.relative_to(session_dir)),
+        "files": files,
+        "sha256": digest.hexdigest(),
+        "archivedAt": utc_now(),
+    }
+    _exclusive_json(destination / "archive-receipt.json", record)
+    return record
 
 
 def _validate_revert_receipt(

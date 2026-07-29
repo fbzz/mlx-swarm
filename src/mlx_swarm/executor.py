@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import fcntl
 import importlib.metadata
+import json
 import platform
 import sys
 import time
@@ -33,6 +34,7 @@ from .session import Session, _run_id, _utc_now
 from .workspace import (
     WorkspaceError,
     apply_artifact,
+    archive_artifact_attempt,
     checkout_runner_lock_path,
     load_artifact,
     load_completed_artifact_evidence,
@@ -177,6 +179,11 @@ def _execute_plan_unlocked(
         plan,
         poll_seconds=approval_poll_seconds,
     )
+    _execute_ready_deterministic_tasks(
+        session,
+        plan,
+        poll_seconds=approval_poll_seconds,
+    )
 
     if _session_needs_generation(session, plan, max_repair):
         worker_strategy = {
@@ -254,6 +261,23 @@ def _execute_plan_unlocked(
                     for task in level_tasks
                     if session.get_task_status(task.id) == "pending"
                     and _dependencies_completed(session, task)
+                ]
+                deterministic_tasks = [
+                    task
+                    for task in initial_tasks
+                    if task.execution_mode == "deterministic-edit"
+                ]
+                if deterministic_tasks:
+                    _execute_deterministic_chunk(
+                        session,
+                        deterministic_tasks,
+                        level_idx=level_idx,
+                        poll_seconds=approval_poll_seconds,
+                    )
+                initial_tasks = [
+                    task
+                    for task in initial_tasks
+                    if task.execution_mode == "local-agent"
                 ]
                 for chunk_idx, tasks in enumerate(
                     _chunked(initial_tasks, config.batch.max_workers)
@@ -504,15 +528,111 @@ def _session_needs_generation(
         status = session.get_task_status(task.id)
         if not _dependencies_completed(session, task):
             continue
-        if status == "pending":
+        if status == "pending" and task.execution_mode == "local-agent":
             return True
         if (
             status == "rejected"
+            and task.execution_mode == "local-agent"
             and session.state["tasks"][task.id]["repairAttempts"]
             < _repair_limit(task, max_repair)
         ):
             return True
     return False
+
+
+def _execute_ready_deterministic_tasks(
+    session: Session,
+    plan: Plan,
+    *,
+    poll_seconds: float,
+) -> None:
+    """Materialize frontier-known edits without loading the local model."""
+    progressed = True
+    while progressed:
+        progressed = False
+        for level_idx, level_tasks in enumerate(plan.topological_order()):
+            ready = [
+                task
+                for task in level_tasks
+                if task.execution_mode == "deterministic-edit"
+                and session.get_task_status(task.id) == "pending"
+                and _dependencies_completed(session, task)
+            ]
+            if not ready:
+                continue
+            _execute_deterministic_chunk(
+                session,
+                ready,
+                level_idx=level_idx,
+                poll_seconds=poll_seconds,
+            )
+            progressed = True
+
+
+def _execute_deterministic_chunk(
+    session: Session,
+    tasks: list[TaskDef],
+    *,
+    level_idx: int,
+    poll_seconds: float,
+) -> None:
+    record: dict[str, Any] = {
+        "levelIndex": level_idx,
+        "chunkIndex": 0,
+        "phase": "deterministic-edit",
+        "taskIds": [task.id for task in tasks],
+        "startedAt": _utc_now(),
+        "statistics": {
+            "batchSize": 0,
+            "generationCalls": 0,
+            "promptTokens": 0,
+            "generationTokens": 0,
+        },
+    }
+    started = time.perf_counter()
+    for task in tasks:
+        session.update_task(
+            task.id,
+            status="running",
+            batchIndex=level_idx,
+        )
+        payload = json.dumps(
+            {"edits": list(task.deterministic_edits)},
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        _process_task_output(
+            session,
+            task,
+            payload,
+            prompt="",
+            phase="deterministic-edit",
+            statistics=record["statistics"],
+        )
+        if session.get_task_status(task.id) == "rejected":
+            session.update_task(
+                task.id,
+                status="failed",
+                error=(
+                    "Frontier-authored deterministic edits failed structural "
+                    "workspace validation."
+                ),
+            )
+    record["generationFinishedAt"] = _utc_now()
+    record["generationElapsedSeconds"] = time.perf_counter() - started
+    record["state"] = "awaiting-workspace-actions"
+    record_index = session.add_batch_record(record)
+    _await_workspace_tasks(
+        session,
+        tasks,
+        poll_seconds=poll_seconds,
+    )
+    session.update_batch_record(
+        record_index,
+        state="completed",
+        finishedAt=_utc_now(),
+        elapsedSeconds=time.perf_counter() - started,
+    )
 
 
 def _block_tasks_with_failed_dependencies(
@@ -1174,6 +1294,21 @@ def _process_task_output(
         and previous_output == output
     )
     gate_result = evaluate_gate(output, task.gate)
+    reject_repeated = bool(
+        session.state["tasks"][task.id].get("rejectRepeatedOutput")
+    )
+    if repeated_output and (
+        not gate_result["passed"] or reject_repeated
+    ):
+        gate_result["passed"] = False
+        gate_result.setdefault("violations", []).append({
+            "id": "repeated-output",
+            "kind": "repair",
+            "message": (
+                "The response exactly repeated the previous ineffective "
+                "output. Further repairs are stopped."
+            ),
+        })
     normalized, _ = normalize_output(output, task.gate)
     artifact = None
     if gate_result["passed"] and session.plan.workspace_execution:
@@ -1200,16 +1335,14 @@ def _process_task_output(
                 "kind": "workspace",
                 "message": str(exc),
             })
-    if repeated_output and not gate_result["passed"]:
-        gate_result.setdefault("violations", []).append({
-            "id": "repeated-output",
-            "kind": "repair",
-            "message": (
-                "The response exactly repeated the previous rejected output. "
-                "Return a materially corrected artifact."
-            ),
-        })
     status = "completed" if gate_result["passed"] else "rejected"
+    error = None
+    if repeated_output and not gate_result["passed"]:
+        status = "failed"
+        error = (
+            "Local generation repeated the previous rejected output; "
+            "further repairs were stopped."
+        )
     if (
         gate_result["passed"]
         and task.mutates_workspace
@@ -1234,7 +1367,7 @@ def _process_task_output(
         normalizedOutput=normalized,
         gateResult=gate_result,
         artifact=artifact,
-        error=None,
+        error=error,
     )
 
 
@@ -1348,6 +1481,11 @@ def _await_workspace_tasks(
                     continue
                 if action is None:
                     if _approval_mode(session) == "yolo":
+                        if _attempt_yolo_verification_recovery(
+                            session,
+                            task,
+                        ):
+                            continue
                         session.state["pauseReason"] = (
                             "verification_failed"
                         )
@@ -1392,6 +1530,120 @@ def _await_workspace_tasks(
                     time.sleep(poll_seconds)
     if session.state.get("status") == "awaiting_approval":
         session.set_status("running")
+
+
+def _attempt_yolo_verification_recovery(
+    session: Session,
+    task: TaskDef,
+) -> bool:
+    """Revert and requeue one failed worktree artifact within its repair cap."""
+    workspace = session.workspace_snapshot()
+    if workspace is None:
+        return False
+    policy = workspace.get("executionPolicy")
+    if (
+        not isinstance(policy, dict)
+        or policy.get("onVerificationFailure") != "repair-once"
+        or policy.get("workspaceTarget") != "worktree"
+    ):
+        return False
+    state = session.state["tasks"][task.id]
+    attempts = int(state.get("verificationRecoveryAttempts", 0))
+    if attempts >= 1:
+        return False
+    max_repair = int(session.state.get("maxRepair", 0))
+    if state.get("repairAttempts", 0) >= _repair_limit(task, max_repair):
+        return False
+    manifest = state.get("artifact")
+    digest = manifest.get("sha256") if isinstance(manifest, dict) else None
+    if not isinstance(digest, str):
+        return False
+    verification_results = state.get("verificationResults", [])
+    failed_result = next(
+        (
+            result
+            for result in reversed(verification_results)
+            if isinstance(result, dict)
+            and result.get("passed") is False
+        ),
+        None,
+    )
+    output = (
+        str(failed_result.get("output", ""))[:4000]
+        if failed_result is not None
+        else ""
+    )
+    profile_id = (
+        str(failed_result.get("profileId", "unknown"))
+        if failed_result is not None
+        else "unknown"
+    )
+    try:
+        revert_receipt = revert_applied_artifact(
+            session.dir,
+            task,
+            workspace,
+            expected_artifact_sha256=digest,
+        )
+        session.update_workspace(workspace)
+        archive = archive_artifact_attempt(
+            session.dir,
+            task.id,
+            attempt=attempts + 1,
+            reason="yolo-verification-recovery",
+        )
+    except WorkspaceError as exc:
+        session.state["pauseReason"] = "workspace_action_failed"
+        session.update_task(
+            task.id,
+            status="verification_failed",
+            error=(
+                "YOLO could not safely revert and archive the failed "
+                f"artifact: {exc}"
+            ),
+        )
+        return False
+
+    histories = list(state.get("artifactHistory", []))
+    histories.append({
+        **archive,
+        "artifactSha256": digest,
+        "revertReceipt": revert_receipt,
+        "verificationResults": verification_results,
+    })
+    gate_result = {
+        "configured": task.gate is not None,
+        "passed": False,
+        "violations": [{
+            "id": "verification-failed",
+            "kind": "verification",
+            "message": (
+                f"Allowlisted verification profile {profile_id} failed. "
+                "Return a materially corrected artifact. Bounded output:\n"
+                f"{output}"
+            ),
+        }],
+        "normalizations": [],
+    }
+    session.state.pop("pauseReason", None)
+    session.update_task(
+        task.id,
+        status="rejected",
+        gateResult=gate_result,
+        artifact=None,
+        decision=None,
+        applyReceipt=None,
+        revertReceipt=revert_receipt,
+        verificationResults=[],
+        artifactHistory=histories,
+        verificationRecoveryAttempts=attempts + 1,
+        rejectRepeatedOutput=True,
+        error=(
+            "YOLO reverted the failed artifact and queued one bounded "
+            "verification-guided repair."
+        ),
+    )
+    return True
 
 
 def _process_initial_decision(
@@ -1701,6 +1953,63 @@ def _finalize_session(session: Session, plan: Plan) -> Session:
     _reconcile_batch_records(session)
     _block_all_remaining_descendants(session, plan)
     statuses = [session.get_task_status(task.id) for task in plan.tasks]
+    if (
+        statuses
+        and all(status == "completed" for status in statuses)
+        and plan.integration_verification
+    ):
+        previous = session.state.get("integrationVerificationResults", [])
+        if not (
+            isinstance(previous, list)
+            and previous
+            and all(
+                isinstance(result, dict)
+                and result.get("passed") is True
+                for result in previous
+            )
+        ):
+            workspace = session.workspace_snapshot()
+            if workspace is None:
+                session.state["integrationVerificationError"] = (
+                    "Integration verification requires a workspace snapshot."
+                )
+            else:
+                integration_task = TaskDef(
+                    id="plan-integration",
+                    role="test",
+                    prompt="Run final allowlisted integration verification.",
+                    artifact_type="report",
+                    verification=plan.integration_verification,
+                )
+                try:
+                    results = run_verifications(
+                        session.dir,
+                        integration_task,
+                        workspace,
+                    )
+                except WorkspaceError as exc:
+                    session.state["integrationVerificationResults"] = []
+                    session.state["integrationVerificationError"] = str(exc)
+                else:
+                    session.state["integrationVerificationResults"] = results
+                    if results and all(
+                        result.get("passed") is True
+                        for result in results
+                    ):
+                        session.state.pop(
+                            "integrationVerificationError",
+                            None,
+                        )
+                    else:
+                        session.state["integrationVerificationError"] = (
+                            "Final integration verification failed."
+                        )
+            if session.state.get("integrationVerificationError"):
+                session.state["pauseReason"] = (
+                    "integration_verification_failed"
+                )
+                session._save()
+                statuses = [*statuses, "verification_failed"]
     if all(status == "completed" for status in statuses):
         desired_status = "completed"
     elif any(status == "failed" for status in statuses):

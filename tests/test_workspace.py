@@ -193,6 +193,51 @@ def test_edit_manifest_plan_contract_requires_exact_json_gate(
         load_plan(plan_path, config)
 
 
+def test_edit_manifest_can_create_one_bounded_new_text_file(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    raw = json.loads(_edit_manifest_plan_file(repo).read_text())
+    raw["tasks"][0]["allowedPaths"] = ["src/new_value.py"]
+    raw["tasks"][0]["verification"] = []
+    plan_path = repo / "config" / "new-file-plan.json"
+    plan_path.write_text(json.dumps(raw), encoding="utf-8")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(config, plan)
+    snapshot = prepare_worktree(
+        config,
+        plan,
+        session_id="new-file",
+        expected_execution_digest=preview["executionDigest"],
+    )
+
+    diff = materialize_edit_manifest(
+        json.dumps({"edits": [{
+            "path": "src/new_value.py",
+            "old": "",
+            "new": "VALUE = 2\n",
+        }]}),
+        task=plan.tasks[0],
+        workspace=snapshot,
+    )
+
+    assert "diff --git a/src/new_value.py b/src/new_value.py" in diff
+    assert "+VALUE = 2" in diff
+    assert not Path(
+        snapshot["worktreePath"],
+        "src/new_value.py",
+    ).exists()
+    session_dir = config.artifacts_dir / plan.plan_id / "new-file"
+    manifest = persist_artifact(
+        session_dir,
+        plan.tasks[0],
+        diff,
+        snapshot,
+    )
+    assert manifest["affectedPaths"] == ["src/new_value.py"]
+
+
 def test_edit_manifest_materializes_and_executes_as_reviewable_diff(
     tmp_path: Path,
 ) -> None:
@@ -392,11 +437,14 @@ def test_execution_digest_binds_yolo_and_selected_target(
         yolo_checkout["executionDigest"],
     }) == 3
     assert yolo_checkout["executionPolicy"] == {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "approvalMode": "yolo",
         "workspaceTarget": "checkout",
         "onVerificationFailure": "pause",
     }
+    assert yolo_worktree["executionPolicy"][
+        "onVerificationFailure"
+    ] == "repair-once"
     with pytest.raises(WorkspaceError, match="only with explicit YOLO"):
         execution_preview(
             config,
@@ -1243,6 +1291,227 @@ class _SequenceBackend(_Backend):
         return [self.outputs.pop(0)], {"batchSize": 1}
 
 
+def _v3_edit_task(
+    task_id: str,
+    path: str,
+    source_label: str,
+    *,
+    execution_mode: str = "local-agent",
+    edits: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    task: dict[str, Any] = {
+        "id": task_id,
+        "role": "implementation",
+        "prompt": f"Update {path} with one exact edit manifest.",
+        "artifactType": "patch",
+        "workerOutputProtocol": "edit-manifest-v1",
+        "executionMode": execution_mode,
+        "contextRefs": [source_label],
+        "interfaceContract": "The module continues to expose one integer constant.",
+        "expectedOutputTokens": 400,
+        "allowedPaths": [path],
+        "verification": [],
+        "maxRepairAttempts": 1,
+        "generationOverride": {
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": 800,
+        },
+        "gate": {
+            "requiredPatterns": [],
+            "forbiddenPatterns": [],
+            "maxCharacters": 4000,
+            "format": "json",
+            "stripSingleCodeFence": False,
+            "pythonSyntax": False,
+            "jsonRequiredKeys": ["edits"],
+            "jsonAllowedKeys": ["edits"],
+            "jsonFieldEnums": {},
+        },
+    }
+    if execution_mode == "deterministic-edit":
+        task["expectedOutputTokens"] = 0
+        task["maxRepairAttempts"] = 0
+        task["deterministicEdits"] = edits or []
+        task.pop("generationOverride")
+    return task
+
+
+def test_schema_v3_deterministic_edit_bypasses_local_model(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    plan_path = repo / "config" / "deterministic-plan.json"
+    plan_path.write_text(json.dumps({
+        "schemaVersion": 3,
+        "planId": "deterministic-plan",
+        "objective": "Apply already-known exact bytes.",
+        "integrationVerification": ["syntax"],
+        "context": {
+            "objective": "Change VALUE to 2.",
+            "authoritativeSources": [{
+                "label": "value-source",
+                "content": "src/value.py contains VALUE = 1.",
+            }],
+            "constraints": ["Do not load a local model."],
+            "rejectionCriteria": ["VALUE is not 2."],
+            "outputProtocol": "Return only the contracted artifact.",
+        },
+        "tasks": [_v3_edit_task(
+            "change",
+            "src/value.py",
+            "value-source",
+            execution_mode="deterministic-edit",
+            edits=[{
+                "path": "src/value.py",
+                "old": "VALUE = 1",
+                "new": "VALUE = 2",
+            }],
+        )],
+    }), encoding="utf-8")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "deterministic"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(snapshot, execution_approval=_approval(preview))
+
+    with patch(
+        "mlx_swarm.executor.MLXBatchBackend",
+        side_effect=AssertionError("deterministic edit must not load MLX"),
+    ) as model:
+        outcome = execute_plan(
+            config,
+            plan,
+            session_dir=session_dir,
+            approval_poll_seconds=0.01,
+        )
+
+    model.assert_not_called()
+    assert outcome.state["status"] == "completed"
+    assert outcome.local_usage()["generationCalls"] == 0
+    assert outcome.state["integrationVerificationResults"][0]["passed"]
+    assert Path(snapshot["worktreePath"], "src/value.py").read_text() == (
+        "VALUE = 2\n"
+    )
+
+
+def test_schema_v3_batches_disjoint_mutations_and_verifies_final_state(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    (repo / "src" / "left.py").write_text("LEFT = 1\n", encoding="utf-8")
+    (repo / "src" / "right.py").write_text("RIGHT = 1\n", encoding="utf-8")
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_config["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        (
+            "from pathlib import Path; "
+            "assert 'LEFT = 2' in Path('src/left.py').read_text(); "
+            "assert 'RIGHT = 2' in Path('src/right.py').read_text()"
+        ),
+    ]
+    config_path.write_text(json.dumps(raw_config), encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-qm", "add parallel fixtures")
+    plan_path = repo / "config" / "parallel-plan.json"
+    plan_path.write_text(json.dumps({
+        "schemaVersion": 3,
+        "planId": "parallel-plan",
+        "objective": "Update two disjoint modules.",
+        "integrationVerification": ["syntax"],
+        "context": {
+            "objective": "Update independent constants.",
+            "authoritativeSources": [
+                {"label": "left-source", "content": "LEFT = 1"},
+                {"label": "right-source", "content": "RIGHT = 1"},
+            ],
+            "constraints": ["Keep paths disjoint."],
+            "rejectionCriteria": ["Either constant remains 1."],
+            "outputProtocol": "Return only strict JSON.",
+        },
+        "tasks": [
+            _v3_edit_task("left", "src/left.py", "left-source"),
+            _v3_edit_task("right", "src/right.py", "right-source"),
+        ],
+    }), encoding="utf-8")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "parallel"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(snapshot, execution_approval=_approval(preview))
+
+    class ParallelBackend(_Backend):
+        def generate(self, tasks, prompts):
+            self.calls += 1
+            assert [task.id for task in tasks] == ["left", "right"]
+            assert "RIGHT = 1" not in prompts[0]
+            assert "LEFT = 1" not in prompts[1]
+            return [
+                json.dumps({"edits": [{
+                    "path": "src/left.py",
+                    "old": "LEFT = 1",
+                    "new": "LEFT = 2",
+                }]}),
+                json.dumps({"edits": [{
+                    "path": "src/right.py",
+                    "old": "RIGHT = 1",
+                    "new": "RIGHT = 2",
+                }]}),
+            ], {"batchSize": 2, "generationCalls": 1}
+
+    backend = ParallelBackend()
+    outcome = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=backend,
+        approval_poll_seconds=0.01,
+    )
+
+    assert outcome.state["status"] == "completed"
+    assert backend.calls == 1
+    assert outcome.state["integrationVerificationResults"][0]["passed"]
+    assert Path(snapshot["worktreePath"], "src/left.py").read_text() == (
+        "LEFT = 2\n"
+    )
+    assert Path(snapshot["worktreePath"], "src/right.py").read_text() == (
+        "RIGHT = 2\n"
+    )
+
+
 def test_yolo_auto_applies_digest_bound_artifact_and_verifies(
     tmp_path: Path,
 ) -> None:
@@ -1432,6 +1701,80 @@ def test_yolo_verification_failure_pauses_without_another_generation(
     assert outcome.state["pauseReason"] == "verification_failed"
     assert outcome.state["reviewStatus"] == "not_eligible"
     assert backend.calls == 1
+
+
+def test_yolo_worktree_reverts_repairs_once_and_preserves_failed_artifact(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_config["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        (
+            "from pathlib import Path; "
+            "assert 'VALUE = 3' in Path('src/value.py').read_text()"
+        ),
+    ]
+    config_path.write_text(json.dumps(raw_config), encoding="utf-8")
+    plan_path = _edit_manifest_plan_file(repo)
+    raw_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    raw_plan["tasks"][0]["maxRepairAttempts"] = 1
+    plan_path.write_text(json.dumps(raw_plan), encoding="utf-8")
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "yolo-repair"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan.source)
+    session.attach_workspace(snapshot, execution_approval=_approval(preview))
+    backend = _SequenceBackend([
+        json.dumps({"edits": [{
+            "path": "src/value.py",
+            "old": "VALUE = 1",
+            "new": "VALUE = 2",
+        }]}),
+        json.dumps({"edits": [{
+            "path": "src/value.py",
+            "old": "VALUE = 1",
+            "new": "VALUE = 3",
+        }]}),
+    ])
+
+    outcome = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        backend=backend,
+        approval_poll_seconds=0.01,
+    )
+
+    task = outcome.state["tasks"]["change"]
+    assert outcome.state["status"] == "completed"
+    assert backend.calls == 2
+    assert task["repairAttempts"] == 1
+    assert task["verificationRecoveryAttempts"] == 1
+    assert len(task["artifactHistory"]) == 1
+    history = task["artifactHistory"][0]
+    assert history["revertReceipt"]["revertCommit"]
+    assert (session_dir / history["path"] / "manifest.json").is_file()
+    assert Path(snapshot["worktreePath"], "src/value.py").read_text() == (
+        "VALUE = 3\n"
+    )
 
 
 def test_existing_session_rejects_changed_same_id_plan(

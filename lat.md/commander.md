@@ -12,7 +12,7 @@ The cockpit or CLI creates a request below
 For schema v1, the config directory is the approved inspection root. For
 schema v2, MLX Swarm resolves and displays the nearest Git top-level above the
 config directory. A deterministic prompt describes the objective, constraints,
-Plan schema, typed artifact fields, configured write roots/profile IDs, and
+Plan schema v3, typed artifact fields, configured write roots/profile IDs, and
 local runtime limits. It also contains a strict worker capability contract:
 model parameter scale, context window, prompt and generation ceilings,
 specialization, execution mode, observed strengths/limitations, calibration
@@ -23,6 +23,10 @@ At `exact-edit`, the frontier retains causal diagnosis and edit design. Each
 mutating task names an exact file and symbol, supplies exact source anchors,
 and specifies one mechanical old-to-new transformation. The local model is
 not asked to discover APIs, select a repair, or recover missing context.
+The frontier also assigns task-owned `contextRefs`, freezes an
+`interfaceContract`, predicts `expectedOutputTokens`, selects local-agent or
+deterministic execution, separates disjoint path ownership into parallel
+siblings, and declares final integration verification.
 
 The planning response must include `context.diagnosis`. During that same
 frontier call, the commander traces the observed failure through exact
@@ -49,8 +53,12 @@ atomically only after their complete contents are durable. One optional outer
 JSON fence is normalized; the result must then satisfy the existing strict
 [[Plans]] contract.
 
-An accepted plan receives a canonical JSON SHA-256. The cockpit submits that
-digest when the operator chooses **Approve and run**. A workspace plan also
+An accepted plan receives a canonical JSON SHA-256. A requested correction is
+created as a linked revision: the predecessor is marked superseded, but its
+plan, claims, artifacts, receipts, and logs remain immutable. A main-checkout
+lease is released only when doing so cannot strand an in-flight apply,
+verification, or unresolved commit. The cockpit submits that digest when the
+operator chooses **Approve and run**. A workspace plan also
 requires the displayed [[workspace-execution|execution digest]], binding its
 Git root, base HEAD, paths, and verification profiles. The session snapshots
 the validated plan, approval, planning receipt, execution contract, and any

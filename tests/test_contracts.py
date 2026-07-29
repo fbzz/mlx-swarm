@@ -238,6 +238,228 @@ def test_exact_edit_default_fits_eight_hundred_token_cap(
     assert plan.tasks[0].generation_override == {}
 
 
+def _schema_v3_config(tmp_path: Path) -> SwarmConfig:
+    return load_config(_write_config(tmp_path, {
+        "schemaVersion": 2,
+        "worker": {
+            "capabilities": {
+                "maxGenerationTokens": 800,
+            },
+        },
+        "workspace": {
+            "writeRoots": ["src", "tests"],
+            "verificationProfiles": {
+                "unit": {
+                    "argv": ["python", "-m", "pytest", "-q"],
+                },
+            },
+        },
+    }))
+
+
+def _schema_v3_task(
+    task_id: str,
+    path: str,
+    *,
+    context_ref: str,
+) -> dict:
+    return {
+        "id": task_id,
+        "role": "implementation",
+        "prompt": f"Update {path}.",
+        "artifactType": "patch",
+        "workerOutputProtocol": "edit-manifest-v1",
+        "executionMode": "local-agent",
+        "contextRefs": [context_ref],
+        "interfaceContract": "Keep public function result() -> int.",
+        "expectedOutputTokens": 400,
+        "allowedPaths": [path],
+        "verification": [],
+        "maxRepairAttempts": 1,
+        "generationOverride": {
+            "temperature": 0.0,
+            "top_p": 1.0,
+            "max_tokens": 800,
+        },
+        "gate": {
+            "requiredPatterns": [],
+            "forbiddenPatterns": [],
+            "maxCharacters": 4000,
+            "format": "json",
+            "jsonRequiredKeys": ["edits"],
+            "jsonAllowedKeys": ["edits"],
+        },
+    }
+
+
+def test_schema_v3_allows_disjoint_mutating_agents_with_minimal_context(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    plan_path = _write_plan(tmp_path, {
+        "schemaVersion": 3,
+        "integrationVerification": ["unit"],
+        "context": {
+            "objective": "Update two independent modules.",
+            "authoritativeSources": [
+                {"label": "left", "content": "src/left.py has LEFT = 1."},
+                {"label": "right", "content": "src/right.py has RIGHT = 1."},
+            ],
+            "constraints": ["Keep the frozen interface."],
+            "rejectionCriteria": ["A task changes the other task's path."],
+            "outputProtocol": "Return only the requested artifact.",
+        },
+        "tasks": [
+            _schema_v3_task("left", "src/left.py", context_ref="left"),
+            _schema_v3_task("right", "src/right.py", context_ref="right"),
+        ],
+    })
+
+    plan = load_plan(plan_path, config)
+
+    assert plan.schema_version == 3
+    assert plan.integration_verification == ("unit",)
+    assert len(plan.topological_order()[0]) == 2
+    assert plan.tasks[0].context_refs == ("left",)
+    assert plan.tasks[1].expected_output_tokens == 400
+
+
+def test_schema_v3_rejects_overlapping_paths_and_oversized_output(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    context = {
+        "objective": "Update modules.",
+        "authoritativeSources": [
+            {"label": "source", "content": "src/value.py has VALUE = 1."},
+        ],
+        "constraints": [],
+        "rejectionCriteria": ["Paths overlap."],
+        "outputProtocol": "Return only JSON.",
+    }
+    left = _schema_v3_task("left", "src", context_ref="source")
+    right = _schema_v3_task(
+        "right",
+        "src/value.py",
+        context_ref="source",
+    )
+    with pytest.raises(ContractError, match="disjoint allowedPaths"):
+        load_plan(_write_plan(tmp_path, {
+            "schemaVersion": 3,
+            "integrationVerification": ["unit"],
+            "context": context,
+            "tasks": [left, right],
+        }), config)
+
+    right["allowedPaths"] = ["src/right.py"]
+    right["expectedOutputTokens"] = 561
+    with pytest.raises(ContractError, match="preflight budget"):
+        load_plan(_write_plan(tmp_path, {
+            "schemaVersion": 3,
+            "integrationVerification": ["unit"],
+            "context": context,
+            "tasks": [left, right],
+        }), config)
+
+
+def test_schema_v3_requires_final_integration_profile(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    with pytest.raises(
+        ContractError,
+        match="integrationVerification must contain 1",
+    ):
+        load_plan(_write_plan(tmp_path, {
+            "schemaVersion": 3,
+            "integrationVerification": [],
+            "tasks": [],
+        }), config)
+
+
+def test_schema_v3_deterministic_edit_requires_no_local_generation(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    task = _schema_v3_task(
+        "known-edit",
+        "src/value.py",
+        context_ref="source",
+    )
+    task.update({
+        "executionMode": "deterministic-edit",
+        "expectedOutputTokens": 0,
+        "maxRepairAttempts": 0,
+        "deterministicEdits": [{
+            "path": "src/value.py",
+            "old": "VALUE = 1",
+            "new": "VALUE = 2",
+        }],
+    })
+    task.pop("generationOverride")
+    plan = load_plan(_write_plan(tmp_path, {
+        "schemaVersion": 3,
+        "integrationVerification": ["unit"],
+        "context": {
+            "objective": "Apply a known edit.",
+            "authoritativeSources": [{
+                "label": "source",
+                "content": "src/value.py has VALUE = 1.",
+            }],
+            "constraints": [],
+            "rejectionCriteria": ["The exact edit is not applied."],
+            "outputProtocol": "Return only JSON.",
+        },
+        "tasks": [task],
+    }), config)
+
+    assert plan.tasks[0].execution_mode == "deterministic-edit"
+    assert plan.tasks[0].deterministic_edits[0]["new"] == "VALUE = 2"
+
+
+def test_schema_v3_deterministic_edit_preserves_exact_whitespace(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    task = _schema_v3_task(
+        "known-edit",
+        "src/value.py",
+        context_ref="source",
+    )
+    task.update({
+        "executionMode": "deterministic-edit",
+        "expectedOutputTokens": 0,
+        "maxRepairAttempts": 0,
+        "deterministicEdits": [{
+            "path": "src/value.py",
+            "old": "  VALUE = 1\n",
+            "new": "\n  VALUE = 2\n\n",
+        }],
+    })
+    task.pop("generationOverride")
+    plan = load_plan(_write_plan(tmp_path, {
+        "schemaVersion": 3,
+        "integrationVerification": ["unit"],
+        "context": {
+            "objective": "Apply exact whitespace.",
+            "authoritativeSources": [{
+                "label": "source",
+                "content": "The source has an indented constant.",
+            }],
+            "constraints": [],
+            "rejectionCriteria": ["Whitespace changes unexpectedly."],
+            "outputProtocol": "Return only JSON.",
+        },
+        "tasks": [task],
+    }), config)
+
+    assert plan.tasks[0].deterministic_edits[0] == {
+        "path": "src/value.py",
+        "old": "  VALUE = 1\n",
+        "new": "\n  VALUE = 2\n\n",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Plan
 # ---------------------------------------------------------------------------

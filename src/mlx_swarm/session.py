@@ -639,7 +639,24 @@ class Session:
             "status": status_override or self.state["status"],
             "launchSource": self.state.get("launchSource", "cli"),
             "retryOf": self.state.get("retryOf"),
+            "supersededByRequestId": self.state.get(
+                "supersededByRequestId"
+            ),
+            "supersededAt": self.state.get("supersededAt"),
+            "supersessionLeaseStatus": self.state.get(
+                "supersessionLeaseStatus"
+            ),
             "executionPolicy": self.state.get("executionPolicy"),
+            "integrationVerification": list(
+                self.plan.integration_verification
+            ),
+            "integrationVerificationResults": self.state.get(
+                "integrationVerificationResults",
+                [],
+            ),
+            "integrationVerificationError": self.state.get(
+                "integrationVerificationError"
+            ),
             "tasks": {
                 tid: {
                     "id": tid,
@@ -648,6 +665,10 @@ class Session:
                     "workerOutputProtocol": t.get(
                         "workerOutputProtocol",
                         "artifact",
+                    ),
+                    "executionMode": t.get(
+                        "executionMode",
+                        "local-agent",
                     ),
                     "status": t["status"],
                     "gatePassed": t.get("gateResult", {}).get("passed") if t.get("gateResult") else None,
@@ -665,6 +686,11 @@ class Session:
                     "applyReceipt": t.get("applyReceipt"),
                     "revertReceipt": t.get("revertReceipt"),
                     "verificationResults": t.get("verificationResults", []),
+                    "verificationRecoveryAttempts": t.get(
+                        "verificationRecoveryAttempts",
+                        0,
+                    ),
+                    "artifactHistory": t.get("artifactHistory", []),
                     "decision": t.get("decision"),
                 }
                 for tid, t in self.state["tasks"].items()
@@ -904,6 +930,14 @@ def _initial_task_state(task: TaskDef) -> dict[str, Any]:
         "role": task.role,
         "artifactType": task.artifact_type,
         "workerOutputProtocol": task.worker_output_protocol,
+        "executionMode": task.execution_mode,
+        "contextRefs": (
+            list(task.context_refs)
+            if task.context_refs is not None
+            else None
+        ),
+        "interfaceContract": task.interface_contract,
+        "expectedOutputTokens": task.expected_output_tokens,
         "allowedPaths": list(task.allowed_paths),
         "verification": list(task.verification),
         "status": "pending",
@@ -912,6 +946,8 @@ def _initial_task_state(task: TaskDef) -> dict[str, Any]:
         "normalizedOutput": None,
         "gateResult": None,
         "repairAttempts": 0,
+        "verificationRecoveryAttempts": 0,
+        "artifactHistory": [],
         "generationAttempts": [],
         "batchIndex": None,
     }

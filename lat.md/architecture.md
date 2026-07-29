@@ -35,10 +35,10 @@ How a plan moves from config to completed session.
 
 1. [[Commander]] records an objective and accepts one strict [[Plans|plan JSON]]
 2. The [[UI]] previews the full DAG and records approval of its canonical
-   digest; schema-v2 plans also require the [[workspace-execution|execution
+   digest; workspace plans also require the [[workspace-execution|execution
    digest]]
 3. [[workspace-execution]] creates an isolated branch/worktree and snapshots
-   path/verification authority for schema-v2 runs
+   path/verification authority for workspace runs
 4. [[Executor]] snapshots the approved plan and sorts tasks into dependency levels
 5. For each level: block unsuccessful descendants, compose prompts, run bounded MLX batches, and evaluate [[Gates]]
 6. Rejected structural output with repair budget gets deterministic local gate

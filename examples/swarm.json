@@ -55,19 +55,19 @@
       "specialization": "code",
       "delegationLevel": "exact-edit",
       "strengths": [
-        "Passed both capability-adapted exact-edit calibration cases with one generation and no repair.",
         "True MLX batching at four compatible tasks per worker wave."
       ],
       "limitations": [
         "Failed both frozen autonomous-diagnosis calibration cases.",
+        "Production-shaped calibration for new files, multi-hunk edits, malformed fences, and near-limit output is not yet sealed.",
         "Must not be asked to discover APIs, choose a causal fix, or inspect missing source.",
-        "Use 500-800 generation tokens for exact edits; reserve larger budgets for review or report artifacts."
+        "Use 350-500 expected output tokens for exact edits and preflight them below 70 percent of the generation ceiling."
       ],
       "calibration": {
-        "status": "passed",
-        "passedCases": 2,
-        "totalCases": 2,
-        "evidenceSha256": "b998dbbc3c868e7b17b82d789fc97d72c24de0ff8b48fc55c2c3538a8bee18ee"
+        "status": "unmeasured",
+        "passedCases": 0,
+        "totalCases": 0,
+        "evidenceSha256": ""
       }
     }
   },
