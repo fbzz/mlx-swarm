@@ -32,8 +32,10 @@ from mlx_swarm.evaluation import (
     bootstrap_mean_interval,
     build_task_packet,
     capability_diagnostic_gate,
+    collect_buggy_execution_trace,
     container_path,
     copy_fixed_test_support,
+    deterministic_case_context,
     docker_connection_environment,
     docker_runtime_argv,
     empty_local_usage,
@@ -43,6 +45,7 @@ from mlx_swarm.evaluation import (
     exclusive_case_lock,
     fresh_arm_repository,
     frontier_alone_response_prompt,
+    frontier_delegation_blueprint_prompt,
     hermes_command,
     inspect_codex_version,
     inspect_frontier_version,
@@ -53,12 +56,14 @@ from mlx_swarm.evaluation import (
     local_replay_promotion_gate,
     make_arm_result,
     materialize_frontier_edit_manifest,
+    materialize_frontier_delegation_plan,
     mlx_swarm_source_revision,
     normalize_setup_parallelism,
     oracle_infrastructure_failure,
     parse_benchmark_commands,
     parse_codex_usage_jsonl,
     parse_hermes_usage_json,
+    parse_frontier_delegation_blueprint,
     patch_metadata,
     preliminary_study_subset,
     preliminary_evaluation_profile,
@@ -2305,3 +2310,200 @@ def test_local_swarm_subprocess_contains_no_frontier_invocation(
     assert "codex" not in argv
     assert kwargs["shell"] is False
     assert result.returncode == 0
+
+
+def _delegation_blueprint(
+    *,
+    source_label: str = "module.py:L1-L3",
+) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "planId": "repair-module",
+        "objective": "Repair the frozen failure.",
+        "diagnosis": {
+            "observedFailure": "The frozen assertion receives one.",
+            "causalHypothesis": "value() returns the wrong literal.",
+            "validationEvidence": "The cited source returns one directly.",
+            "falsificationCondition": "The return is produced elsewhere.",
+            "evidenceSources": [source_label],
+            "candidateChange": "Return two instead of one.",
+            "failingPathPrediction": "The assertion receives two.",
+            "preservedControlPrediction": "The function signature is unchanged.",
+            "minimalityEvidence": "Only the observed literal changes.",
+            "changeEvidenceSources": [source_label],
+        },
+        "edits": [{
+            "path": "module.py",
+            "old": "    return 1",
+            "new": "    return 2",
+        }],
+    }
+
+
+def test_frontier_delegation_blueprint_materializes_strict_worker_plan(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n\n",
+        encoding="utf-8",
+    )
+    task_packet = (
+        "SOURCE module.py:L1-L3\n"
+        "00001 | def value():\n"
+        "00002 |     return 1\n"
+        "00003 | \n"
+        "END SOURCE module.py:L1-L3\n"
+    )
+    raw = json.dumps(_delegation_blueprint())
+    blueprint = parse_frontier_delegation_blueprint(
+        raw,
+        objective="Repair the frozen failure.",
+        task_packet=task_packet,
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+        maximum_manifest_characters=3_200,
+    )
+    plan = materialize_frontier_delegation_plan(
+        blueprint,
+        task_packet=task_packet,
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+        max_repair=2,
+        max_generation_tokens=800,
+    )
+
+    task = plan["tasks"][0]
+    assert task["workerOutputProtocol"] == "edit-manifest-v1"
+    assert task["allowedPaths"] == ["module.py"]
+    assert task["verification"] == ["bugsinpy-acceptance"]
+    assert '"path":"module.py"' in task["prompt"]
+    assert '"file"' not in task["prompt"]
+    assert plan["context"]["authoritativeSources"][0] == {
+        "label": "module.py:L1-L3",
+        "content": "def value():\n    return 1\n",
+    }
+
+
+def test_frontier_delegation_blueprint_rejects_unknown_source(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+    response = json.dumps(_delegation_blueprint(
+        source_label="invented.py:L1-L3",
+    ))
+    with pytest.raises(EvaluationError, match="unknown SOURCE"):
+        parse_frontier_delegation_blueprint(
+            response,
+            objective="Repair the frozen failure.",
+            task_packet="SOURCE module.py:L1-L2\n",
+            repository=tmp_path,
+            approved_write_roots=["module.py"],
+            maximum_manifest_characters=3_200,
+        )
+
+
+def test_context_ranking_uses_buggy_execution_trace(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "module.py"
+    source.write_text(
+        "\n".join(
+            f"value_{index} = {index}"
+            for index in range(1, 301)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_module.py").write_text(
+        "def test_failure():\n    assert False\n",
+        encoding="utf-8",
+    )
+    runtime = {
+        "baseSnapshot": str(tmp_path),
+        "failureEvidence": "test_failure assertion failed",
+        "executedSourceLines": {"module.py": [245, 246]},
+    }
+    case = {
+        "testFiles": ["tests/test_module.py"],
+        "verificationArgv": [["pytest", "tests/test_module.py::test_failure"]],
+    }
+
+    _tree, context = deterministic_case_context(case, runtime)
+
+    assert "SOURCE module.py:L151-L250" in context
+    assert "00245 | value_245 = 245" in context
+
+
+def test_buggy_execution_trace_uses_first_approved_argv_without_shell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluation_root = tmp_path / "evaluation"
+    workspace = evaluation_root / "cases" / "case" / "base"
+    environment = evaluation_root / "cache" / "environment"
+    workspace.mkdir(parents=True)
+    environment.mkdir(parents=True)
+    (workspace / "module.py").write_text(
+        "def repair():\n    return 1\n",
+        encoding="utf-8",
+    )
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> CommandResult:
+        calls.append(argv)
+        return CommandResult(
+            argv=tuple(argv),
+            returncode=1,
+            stdout=(
+                "functions called:\n"
+                "filename: /evaluation/cases/case/base/module.py, "
+                "modulename: module, funcname: repair\n"
+            ),
+            stderr="",
+            elapsed_seconds=0.1,
+            timed_out=False,
+        )
+
+    monkeypatch.setattr("mlx_swarm.evaluation.run_command", fake_run)
+    traced = collect_buggy_execution_trace(
+        {
+            "verificationArgv": [
+                ["pytest", "tests/test_module.py::test_failure"],
+                ["python", "-c", "must-not-run"],
+            ],
+        },
+        evaluation_root=evaluation_root,
+        workspace=workspace,
+        environment=environment,
+        profile=profile,
+    )
+
+    assert traced == {"module.py": [1, 2]}
+    assert len(calls) == 1
+    assert "--network" in calls[0]
+    assert "none" in calls[0]
+    assert "--module" in calls[0]
+    assert "pytest" in calls[0]
+    assert "must-not-run" not in calls[0]
+    assert all(";" not in value for value in calls[0])
+
+
+def test_frontier_delegation_prompt_exposes_small_worker_limits() -> None:
+    prompt = frontier_delegation_blueprint_prompt(
+        "SOURCE module.py:L1-L2\n",
+        worker_capabilities={
+            "parameterScale": "4B",
+            "maxGenerationTokens": 800,
+            "delegationLevel": "exact-edit",
+        },
+    )
+    assert '"parameterScale": "4B"' in prompt
+    assert '"maxGenerationTokens": 800' in prompt
+    assert "must not discover APIs" in prompt
+    assert "compact strict JSON" in prompt

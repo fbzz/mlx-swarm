@@ -226,8 +226,10 @@ ceiling, and a 15 GiB free-space reserve.
 
 Fair-protocol evaluations additionally freeze one shared task packet and one
 shared set of production write roots for both arms. The packet contains the
-objective, failing evidence, acceptance argv, repository tree, and exact
-relevant test/traceback source. Frontier plans may not narrow the local arm’s
+objective, failing evidence, acceptance argv, repository tree, requested test
+excerpts, and line-numbered production windows ranked from buggy-revision
+evidence and an approved-verifier execution trace. Fixed-revision content never
+participates in context selection. Frontier plans may not narrow the local arm’s
 path authority, and every workspace excerpt given to a local agent must match
 one contiguous region of the buggy checkout. Git may safely recount incorrect
 hunk line metadata, but it never changes the proposed additions or removals.
@@ -263,7 +265,11 @@ completion-token ceiling. GLM reasoning is explicitly disabled in the profile
 instead of inheriting the provider's unbounded default. Prompts are passed by
 file rather than process
 arguments. The direct arm returns `edit-manifest-v1`; the swarm arm returns one
-validated plan and, only after eligible local completion, one structured
+compact delegation blueprint citing frozen `SOURCE` labels. The harness
+validates its diagnosis and exact edits, then deterministically expands it into
+the full Plan v2 contract for the 4B exact-edit worker. This avoids asking GLM
+to echo large source excerpts and mechanical gate boilerplate inside JSON.
+Only after eligible local completion does the swarm arm request one structured
 review. Missing, incomplete, mismatched-provider/model, multi-call, or
 arithmetically inconsistent usage receipts invalidate the measurement rather
 than becoming zero. Preparation and execution fail closed if the command

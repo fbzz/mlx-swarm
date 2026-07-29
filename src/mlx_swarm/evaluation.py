@@ -56,14 +56,15 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 4
+FAIR_EVALUATION_PROTOCOL_VERSION = 5
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
 README_END = "<!-- END MLX-SWARM-ECONOMICS -->"
 MAX_LOG_BYTES = 1_000_000
-MAX_TASK_PACKET_TREE_CHARS = 20_000
-MAX_TASK_PACKET_SOURCE_CHARS = 60_000
+MAX_TASK_PACKET_TREE_CHARS = 10_000
+MAX_TASK_PACKET_SOURCE_CHARS = 70_000
+MAX_FRONTIER_DELEGATION_EDITS = 8
 BENCHMARK_BUILD_JOBS = 4
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,95}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -88,6 +89,8 @@ _NON_PRODUCTION_PREFIXES = (
     ".github/",
     "doc/",
     "docs/",
+    "pending_tests/",
+    "scripts/",
     "test/",
     "tests/",
     "testing/",
@@ -105,6 +108,32 @@ _NON_PRODUCTION_NAMES = {
     "setup.cfg",
     "setup.py",
     "tox.ini",
+}
+_CONTEXT_STOP_WORDS = {
+    "actual",
+    "assert",
+    "class",
+    "command",
+    "error",
+    "expected",
+    "false",
+    "file",
+    "from",
+    "function",
+    "import",
+    "line",
+    "none",
+    "object",
+    "python",
+    "return",
+    "self",
+    "string",
+    "test",
+    "tests",
+    "that",
+    "this",
+    "true",
+    "with",
 }
 
 
@@ -3039,6 +3068,14 @@ class EvaluationRunner:
                     "Buggy snapshot passed after fixed-oracle validation."
                 )
             failure_evidence = stable_buggy_result["evidence"][:40_000]
+            executed_source_lines = collect_buggy_execution_trace(
+                case,
+                evaluation_root=evaluation_dir,
+                workspace=base_snapshot,
+                environment=environment,
+                profile=self.profile,
+            )
+            _remove_generated_state(base_snapshot)
             runtime = {
                 "schemaVersion": 1,
                 "caseId": case["caseId"],
@@ -3055,6 +3092,7 @@ class EvaluationRunner:
                 ),
                 "verifierManifest": str(case_root / "verifier.json"),
                 "failureEvidence": failure_evidence,
+                "executedSourceLines": executed_source_lines,
                 "preparationSeconds": time.perf_counter() - started,
                 "buggyOracleSeconds": (
                     buggy_result["elapsedSeconds"]
@@ -3549,6 +3587,7 @@ class EvaluationRunner:
         evidence_root = arm_root / "evidence"
         evidence_root.mkdir(parents=True, exist_ok=True)
         plan_response = evidence_root / "plan-response.json"
+        plan_blueprint_response = evidence_root / "plan-blueprint.raw.json"
         started = time.perf_counter()
         deadline = started + self.profile.frontier.arm_timeout_seconds
         is_hermes = self.profile.frontier.adapter == "hermes-completion"
@@ -3556,12 +3595,26 @@ class EvaluationRunner:
             encoding="utf-8"
         )
         if is_hermes:
+            plan_prompt_text = frontier_delegation_blueprint_prompt(
+                task_packet,
+                worker_capabilities=worker_capabilities_payload(
+                    eval_config.worker.capabilities
+                ),
+            )
+            Path(claim["promptPath"]).write_text(
+                plan_prompt_text,
+                encoding="utf-8",
+            )
+            (evidence_root / "plan-prompt.txt").write_text(
+                plan_prompt_text,
+                encoding="utf-8",
+            )
             plan_usage_file = evidence_root / "plan-usage.json"
             plan_command = frontier_command(
                 self.profile,
                 cwd=repository,
                 sandbox="",
-                output_last_message=plan_response,
+                output_last_message=plan_blueprint_response,
                 usage_file=plan_usage_file,
                 prompt_file=Path(claim["promptPath"]),
                 request_timeout_seconds=(
@@ -3599,7 +3652,7 @@ class EvaluationRunner:
                 and plan_frontier_result.returncode == 0
                 and plan_frontier_result.stdout.strip()
             ):
-                plan_response.write_text(
+                plan_blueprint_response.write_text(
                     strip_one_json_fence(plan_frontier_result.stdout),
                     encoding="utf-8",
                 )
@@ -3636,7 +3689,11 @@ class EvaluationRunner:
         if (
             plan_timed_out
             or plan_returncode != 0
-            or not plan_response.is_file()
+            or not (
+                plan_blueprint_response.is_file()
+                if is_hermes
+                else plan_response.is_file()
+            )
             or not plan_usage_valid
         ):
             return make_arm_result(
@@ -3669,6 +3726,90 @@ class EvaluationRunner:
                     ),
                 },
             )
+        if is_hermes:
+            try:
+                raw_blueprint = plan_blueprint_response.read_text(
+                    encoding="utf-8"
+                )
+                blueprint = parse_frontier_delegation_blueprint(
+                    raw_blueprint,
+                    objective=case["objective"],
+                    task_packet=task_packet,
+                    repository=repository,
+                    approved_write_roots=approved_write_roots,
+                    maximum_manifest_characters=(
+                        eval_config.worker.capabilities.max_generation_tokens
+                        * 4
+                    ),
+                )
+                materialized_plan = materialize_frontier_delegation_plan(
+                    blueprint,
+                    task_packet=task_packet,
+                    repository=repository,
+                    approved_write_roots=approved_write_roots,
+                    max_repair=self.profile.max_repair,
+                    max_generation_tokens=(
+                        eval_config.worker.capabilities.max_generation_tokens
+                    ),
+                )
+                plan_response.write_text(
+                    json.dumps(
+                        materialized_plan,
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+                (evidence_root / "plan-materialization.json").write_text(
+                    json.dumps(
+                        {
+                            "schemaVersion": 1,
+                            "blueprintSha256": hashlib.sha256(
+                                raw_blueprint.encode("utf-8")
+                            ).hexdigest(),
+                            "materializedPlanSha256": canonical_json_sha256(
+                                materialized_plan
+                            ),
+                            "workerDelegation": (
+                                eval_config.worker.capabilities.delegation_level
+                            ),
+                        },
+                        indent=2,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except (EvaluationError, OSError, ValueError) as exc:
+                (evidence_root / "plan-materialization.error.txt").write_text(
+                    str(exc) + "\n",
+                    encoding="utf-8",
+                )
+                return make_arm_result(
+                    case=case,
+                    arm="mlx-swarm",
+                    status="failed",
+                    completed=False,
+                    score=0,
+                    elapsed_seconds=time.perf_counter() - started,
+                    phase_seconds={"planning": plan_elapsed},
+                    frontier_usage=usage_with_phases([
+                        ("planning", plan_usage),
+                    ]),
+                    local_usage=empty_local_usage(),
+                    repairs=0,
+                    model_loads=0,
+                    review_verdict=None,
+                    patch={"sha256": None, "changedFiles": 0},
+                    oracle={
+                        "passed": False,
+                        "exitCode": None,
+                        "evidence": (
+                            "Frontier delegation blueprint was rejected: "
+                            f"{exc}"
+                        ),
+                    },
+                )
         try:
             imported = store.import_plan(
                 request["request"]["requestId"],
@@ -4810,6 +4951,110 @@ def task_verification_infrastructure_error(
     return oracle_infrastructure_failure({"evidence": evidence})
 
 
+def collect_buggy_execution_trace(
+    case: dict[str, Any],
+    *,
+    evaluation_root: Path,
+    workspace: Path,
+    environment: Path,
+    profile: EvaluationProfile,
+) -> dict[str, list[int]]:
+    """Collect buggy-revision called functions using only approved test argv."""
+    evaluation_root = evaluation_root.resolve()
+    workspace = workspace.resolve()
+    environment = environment.resolve()
+    container_environment = Path(
+        container_path(environment, evaluation_root)
+    )
+    python = str(container_environment / "bin" / "python")
+    commands = case.get("verificationArgv", [])
+    if not isinstance(commands, list) or not commands:
+        return {}
+    raw_command = commands[0]
+    if not isinstance(raw_command, list) or not raw_command:
+        return {}
+    executable = raw_command[0]
+    rest = list(raw_command[1:])
+    if executable in {"python", "python3"}:
+        target = rest
+    elif executable in {"pytest", "py.test"}:
+        target = ["-m", "pytest", *rest]
+    else:
+        return {}
+    argv = [
+        python,
+        "-m",
+        "trace",
+        "--listfuncs",
+        f"--ignore-dir={container_environment}:/usr",
+        *(
+            ["--module", target[1], *target[2:]]
+            if len(target) >= 2 and target[0] == "-m"
+            else target
+        ),
+    ]
+    result = run_command(
+        docker_runtime_argv(
+            image=profile.container.image,
+            platform_name=profile.container.platform,
+            evaluation_root=evaluation_root,
+            cwd=workspace,
+            argv=argv,
+            network="none",
+        ),
+        cwd=evaluation_root,
+        timeout=min(
+            profile.frontier.local_timeout_seconds,
+            1_800,
+        ),
+        max_output_bytes=5_000_000,
+    )
+    if result.timed_out:
+        return {}
+    called: dict[str, set[str]] = {}
+    prefix = container_path(workspace, evaluation_root).rstrip("/") + "/"
+    pattern = re.compile(
+        r"^filename: (.+), modulename: .*?, funcname: (.+)$"
+    )
+    for line in result.stdout.splitlines():
+        match = pattern.fullmatch(line.strip())
+        if match is None:
+            continue
+        filename, function_name = match.groups()
+        if not filename.startswith(prefix):
+            continue
+        relative = filename[len(prefix):]
+        if _is_non_production_path(relative):
+            continue
+        called.setdefault(relative, set()).add(function_name)
+    traced: dict[str, list[int]] = {}
+    for relative, functions in called.items():
+        source = workspace / relative
+        if not source.is_file() or source.suffix not in {".py", ".pyi"}:
+            continue
+        try:
+            tree = ast.parse(source.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        lines: set[int] = set()
+        for node in ast.walk(tree):
+            if not isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            ):
+                continue
+            if node.name not in functions:
+                continue
+            start = max(1, node.lineno)
+            end = max(start, getattr(node, "end_lineno", start))
+            lines.update(range(start, min(end, start + 300) + 1))
+        if "<module>" in functions:
+            lines.update(range(1, 101))
+        if lines:
+            traced[relative] = sorted(lines)[:10_000]
+    return dict(sorted(traced.items()))
+
+
 def run_case_verifier(
     manifest_path: Path,
     workspace: Path,
@@ -5320,7 +5565,7 @@ def build_task_packet(
         "FROZEN RELEVANT TEST AND TRACEBACK SOURCE CONTEXT:\n"
         f"{sources}\n"
         "INITIAL FAILURE EVIDENCE:\n"
-        f"{runtime['failureEvidence'][:40_000]}"
+        f"{runtime['failureEvidence'][:20_000]}"
     )
     if len(packet) <= maximum_characters:
         return packet
@@ -5372,7 +5617,14 @@ def deterministic_case_context(
     case: dict[str, Any],
     runtime: dict[str, Any],
 ) -> tuple[str, str]:
-    """Build the identical, non-future evidence packet supplied to both arms."""
+    """Build identical non-future evidence with ranked implementation windows.
+
+    Whole production files are actively harmful here: a large file consumes
+    the packet from line one and can hide the implementation exercised by the
+    failing test. Requested tests remain authoritative input, while production
+    windows are ranked only from buggy-revision test text and failure evidence.
+    No fixed-revision content participates in selection.
+    """
     base_value = runtime.get("baseSnapshot")
     if not isinstance(base_value, str):
         return "(unavailable)", "(unavailable)"
@@ -5402,10 +5654,23 @@ def deterministic_case_context(
         if isinstance(value, str)
     }
     failure = str(runtime.get("failureEvidence", ""))
-    requested.update(path for path in relative if path in failure)
+    requested.update(
+        path
+        for path in relative
+        if path in failure and _is_non_production_path(path)
+    )
     blocks: list[str] = []
     used = 0
     by_relative = dict(zip(relative, files))
+    initial_query = failure + "\n" + json.dumps(
+        case.get("verificationArgv", [])
+    )
+    query_parts = [initial_query]
+    requested_budget = min(30_000, MAX_TASK_PACKET_SOURCE_CHARS // 2)
+    per_requested = max(
+        4_000,
+        requested_budget // max(1, len(requested)),
+    )
     for path in sorted(requested):
         child = by_relative.get(path)
         if child is None:
@@ -5414,19 +5679,271 @@ def deterministic_case_context(
             content = child.read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-        header = f"FILE {path}\n"
-        footer = f"\nEND FILE {path}\n"
-        remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
-        if remaining <= len(header) + len(footer):
-            break
-        body = content[:remaining - len(header) - len(footer)]
-        block = header + body + footer
-        blocks.append(block)
-        used += len(block)
-        if len(body) < len(content):
-            blocks.append("...[source context truncated deterministically]\n")
-            break
+        query_parts.append(content)
+        lines = content.splitlines()
+        requested_windows = _requested_source_windows(
+            lines,
+            initial_query,
+            maximum_characters=per_requested,
+        )
+        for start, end, body in requested_windows:
+            label = f"{path}:L{start}-L{end}"
+            header = f"SOURCE {label}\n"
+            footer = f"\nEND SOURCE {label}\n"
+            remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
+            if remaining <= len(header) + len(footer):
+                break
+            block = header + body + footer
+            if len(block) > remaining:
+                continue
+            blocks.append(block)
+            used += len(block)
+        if requested_windows and not (
+            len(requested_windows) == 1
+            and requested_windows[0][0] == 1
+            and requested_windows[0][1] == max(1, len(lines))
+        ):
+            blocks.append(
+                "...[requested source truncated deterministically]\n"
+            )
+
+    remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
+    if remaining > 0:
+        ranked = _rank_production_windows(
+            files,
+            relative,
+            "\n".join(query_parts),
+            executed_lines=runtime.get("executedSourceLines", {}),
+        )
+        for path, start, end, content in ranked:
+            label = f"{path}:L{start}-L{end}"
+            header = f"SOURCE {label}\n"
+            footer = f"\nEND SOURCE {label}\n"
+            block = header + content + footer
+            if len(block) > remaining:
+                continue
+            blocks.append(block)
+            used += len(block)
+            remaining -= len(block)
+            if remaining < 500:
+                break
     return tree or "(empty)", "".join(blocks) or "(none referenced)"
+
+
+def _is_non_production_path(path: str) -> bool:
+    lowered = path.lower()
+    return (
+        lowered.startswith(_NON_PRODUCTION_PREFIXES)
+        or Path(lowered).name in _NON_PRODUCTION_NAMES
+    )
+
+
+def _numbered_source_lines(
+    lines: Sequence[str],
+    start: int,
+    end: int,
+) -> str:
+    if not lines:
+        return "00001 | "
+    bounded_start = max(1, start)
+    bounded_end = min(len(lines), max(bounded_start, end))
+    return "\n".join(
+        f"{line_number:05d} | {lines[line_number - 1]}"
+        for line_number in range(bounded_start, bounded_end + 1)
+    )
+
+
+def _requested_source_windows(
+    lines: Sequence[str],
+    query: str,
+    *,
+    maximum_characters: int,
+) -> list[tuple[int, int, str]]:
+    normalized = list(lines) or [""]
+    complete = _numbered_source_lines(normalized, 1, len(normalized))
+    if len(complete) <= maximum_characters:
+        return [(1, len(normalized), complete)]
+    query_terms = _context_term_counts(query)
+    candidates: list[tuple[float, int, int]] = []
+    for offset in range(0, len(normalized), 50):
+        end = min(len(normalized), offset + 100)
+        window_text = "\n".join(normalized[offset:end])
+        window_terms = _context_term_counts(window_text)
+        score = sum(
+            (
+                min(query_terms.get(term, 0), 8)
+                * min(count, 3)
+                * (
+                    12
+                    if term.startswith("test_")
+                    else 4
+                    if "_" in term
+                    else 1
+                )
+            )
+            for term, count in window_terms.items()
+        )
+        candidates.append((float(score), offset + 1, end))
+        if end == len(normalized):
+            break
+    candidates.sort(key=lambda item: (-item[0], item[1]))
+    selected: list[tuple[int, int, str]] = []
+    used = 0
+    for _score, start, end in candidates:
+        if any(
+            start <= prior_end and end >= prior_start
+            for prior_start, prior_end, _body in selected
+        ):
+            continue
+        body = "\n".join(
+            f"{start + index:05d} | {line}"
+            for index, line in enumerate(normalized[start - 1:end])
+        )
+        if selected and used + len(body) > maximum_characters:
+            continue
+        if not selected and len(body) > maximum_characters:
+            body = body[:maximum_characters]
+        selected.append((start, end, body))
+        used += len(body)
+        if used >= maximum_characters:
+            break
+    return sorted(selected, key=lambda item: item[0])
+
+
+def _context_term_counts(text: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for raw in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", text):
+        term = raw.lower()
+        if term in _CONTEXT_STOP_WORDS:
+            continue
+        counts[term] = counts.get(term, 0) + 1
+    return counts
+
+
+def _rank_production_windows(
+    files: Sequence[Path],
+    relative: Sequence[str],
+    query: str,
+    *,
+    executed_lines: Any = None,
+    window_lines: int = 100,
+    stride_lines: int = 50,
+    maximum_windows: int = 20,
+) -> list[tuple[str, int, int, str]]:
+    """Rank buggy-revision source windows by test/failure lexical evidence."""
+    query_terms = _context_term_counts(query)
+    if not query_terms:
+        return []
+    traced = executed_lines if isinstance(executed_lines, dict) else {}
+    candidates: list[
+        tuple[str, int, int, list[str], set[str]]
+    ] = []
+    for path, child in zip(relative, files):
+        if _is_non_production_path(path):
+            continue
+        if Path(path).suffix not in {".py", ".pyi"}:
+            continue
+        try:
+            lines = child.read_text(encoding="utf-8").splitlines()
+        except (UnicodeDecodeError, OSError):
+            continue
+        if not lines:
+            continue
+        for offset in range(0, len(lines), stride_lines):
+            end_offset = min(len(lines), offset + window_lines)
+            window = lines[offset:end_offset]
+            terms = set(_context_term_counts("\n".join(window)))
+            matching = terms.intersection(query_terms)
+            raw_traced_lines = traced.get(path, [])
+            has_trace = (
+                isinstance(raw_traced_lines, list)
+                and any(
+                    isinstance(line_number, int)
+                    and offset + 1 <= line_number <= end_offset
+                    for line_number in raw_traced_lines
+                )
+            )
+            if matching or has_trace:
+                candidates.append(
+                    (path, offset + 1, end_offset, window, matching)
+                )
+            if end_offset == len(lines):
+                break
+    if not candidates:
+        return []
+    document_frequency: dict[str, int] = {}
+    for *_prefix, matching in candidates:
+        for term in matching:
+            document_frequency[term] = (
+                document_frequency.get(term, 0) + 1
+            )
+    total = len(candidates)
+    scored: list[
+        tuple[float, str, int, int, list[str]]
+    ] = []
+    for path, start, end, window, matching in candidates:
+        score = sum(
+            (
+                1.0
+                + math.log1p(min(query_terms[term], 8))
+                + (3.0 if "_" in term else 0.0)
+            )
+            * (
+                1.0
+                + math.log(
+                    (total + 1) / (document_frequency[term] + 1)
+                )
+            )
+            for term in matching
+        )
+        raw_traced_lines = traced.get(path, [])
+        if isinstance(raw_traced_lines, list):
+            executed_count = sum(
+                1
+                for line_number in raw_traced_lines
+                if isinstance(line_number, int)
+                and start <= line_number <= end
+            )
+            score += 10.0 * math.sqrt(executed_count)
+        scored.append((score, path, start, end, window))
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    best_by_path: dict[str, float] = {}
+    for score, path, _start, _end, _window in scored:
+        best_by_path[path] = max(score, best_by_path.get(path, 0.0))
+    selected_paths = {
+        path
+        for path, _score in sorted(
+            best_by_path.items(),
+            key=lambda item: (-item[1], item[0]),
+        )[:8]
+    }
+    scored = [item for item in scored if item[1] in selected_paths]
+    selected: list[tuple[str, int, int, str]] = []
+    occupied: dict[str, list[tuple[int, int]]] = {}
+    for _score, path, start, end, window in scored:
+        if len(occupied.get(path, [])) >= 4:
+            continue
+        overlaps = any(
+            start <= prior_end and end >= prior_start
+            for prior_start, prior_end in occupied.get(path, [])
+        )
+        if overlaps:
+            continue
+        occupied.setdefault(path, []).append((start, end))
+        selected.append(
+            (
+                path,
+                start,
+                end,
+                "\n".join(
+                    f"{start + index:05d} | {line}"
+                    for index, line in enumerate(window)
+                ),
+            )
+        )
+        if len(selected) >= maximum_windows:
+            break
+    return selected
 
 
 def frontier_alone_prompt(task_packet: str) -> str:
@@ -5463,6 +5980,334 @@ def frontier_alone_response_prompt(task_packet: str) -> str:
         "fences. Do not include explanations.\n\n"
         f"{task_packet}"
     )
+
+
+def frontier_delegation_blueprint_prompt(
+    task_packet: str,
+    *,
+    worker_capabilities: dict[str, Any],
+) -> str:
+    """Ask the frontier for the compact authority a small worker needs.
+
+    The frontier performs diagnosis and exact-edit selection. The harness
+    expands the accepted blueprint into the verbose Plan v2 contract so the
+    model never has to echo source excerpts or mechanical gate boilerplate.
+    """
+    capability_json = json.dumps(
+        worker_capabilities,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return (
+        "You are the frontier commander in a paired code-repair study.\n"
+        "You have exactly one planning response. There are no frontier calls "
+        "between local worker waves.\n\n"
+        "The local worker is deliberately small. Its frozen capability "
+        f"contract is:\n{capability_json}\n\n"
+        "You—not the local worker—must diagnose the failure, validate one "
+        "falsifiable causal hypothesis against the supplied SOURCE windows, "
+        "choose the narrowest supported change, and encode exact edits. The "
+        "worker can copy and apply exact old/new anchors; it must not discover "
+        "APIs, inspect missing source, choose a causal fix, or run commands.\n\n"
+        "Return one compact strict JSON object with exactly this shape:\n"
+        "{\n"
+        '  "schemaVersion": 1,\n'
+        '  "planId": "lowercase-id",\n'
+        '  "objective": "exact objective from the task packet",\n'
+        '  "diagnosis": {\n'
+        '    "observedFailure": "string",\n'
+        '    "causalHypothesis": "falsifiable string",\n'
+        '    "validationEvidence": "source-trace explanation",\n'
+        '    "falsificationCondition": "string",\n'
+        '    "evidenceSources": ["exact SOURCE label"],\n'
+        '    "candidateChange": "exact behavioral effect",\n'
+        '    "failingPathPrediction": "string",\n'
+        '    "preservedControlPrediction": "string",\n'
+        '    "minimalityEvidence": "string",\n'
+        '    "changeEvidenceSources": ["exact SOURCE label"]\n'
+        "  },\n"
+        '  "edits": [\n'
+        '    {"path": "relative/path.py", "old": "exact unique text", '
+        '"new": "replacement text"}\n'
+        "  ]\n"
+        "}\n\n"
+        "Rules:\n"
+        "- Return JSON only, without prose or a markdown fence.\n"
+        "- Use exactly the listed keys; unknown fields are rejected.\n"
+        "- evidenceSources must copy SOURCE labels exactly. Never invent a "
+        "file, symbol, API, source excerpt, or test result.\n"
+        "- Do not copy SOURCE contents into the diagnosis. Only old/new edit "
+        "anchors may reproduce source text.\n"
+        "- Each old anchor must be the smallest useful exact contiguous text "
+        "shown in a SOURCE window and must occur exactly once in its file.\n"
+        "- Use path, never file, as the edit path key.\n"
+        "- Keep the combined edit manifest short enough for the worker's "
+        "frozen maximum generation budget.\n"
+        "- Modify production code only and stay inside approved write roots.\n"
+        "- If the evidence does not support a causal change, return no "
+        "speculative substitute; an empty edits list will be rejected and "
+        "the measurement will record planning failure.\n\n"
+        f"{task_packet}"
+    )
+
+
+def parse_frontier_delegation_blueprint(
+    response: str,
+    *,
+    objective: str,
+    task_packet: str,
+    repository: Path,
+    approved_write_roots: Sequence[str],
+    maximum_manifest_characters: int,
+) -> dict[str, Any]:
+    """Validate a compact frontier response before plan materialization."""
+    payload = strip_one_json_fence(response)
+    if len(payload.encode("utf-8")) > _MAX_FRONTIER_RESPONSE_BYTES:
+        raise EvaluationError("Frontier delegation blueprint exceeds size limit.")
+    try:
+        blueprint = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise EvaluationError(
+            f"Frontier delegation blueprint is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(blueprint, dict) or set(blueprint) != {
+        "schemaVersion",
+        "planId",
+        "objective",
+        "diagnosis",
+        "edits",
+    }:
+        raise EvaluationError(
+            "Frontier delegation blueprint has unknown or missing top-level "
+            "fields."
+        )
+    if blueprint["schemaVersion"] != 1:
+        raise EvaluationError(
+            "Frontier delegation blueprint schemaVersion must be 1."
+        )
+    plan_id = blueprint["planId"]
+    if not isinstance(plan_id, str) or not _IDENTIFIER.fullmatch(plan_id):
+        raise EvaluationError(
+            "Frontier delegation blueprint planId is invalid."
+        )
+    if blueprint["objective"] != objective:
+        raise EvaluationError(
+            "Frontier delegation blueprint objective differs from the "
+            "frozen case objective."
+        )
+    diagnosis = blueprint["diagnosis"]
+    diagnosis_keys = {
+        "observedFailure",
+        "causalHypothesis",
+        "validationEvidence",
+        "falsificationCondition",
+        "evidenceSources",
+        "candidateChange",
+        "failingPathPrediction",
+        "preservedControlPrediction",
+        "minimalityEvidence",
+        "changeEvidenceSources",
+    }
+    if not isinstance(diagnosis, dict) or set(diagnosis) != diagnosis_keys:
+        raise EvaluationError(
+            "Frontier delegation diagnosis has unknown or missing fields."
+        )
+    text_fields = diagnosis_keys - {
+        "evidenceSources",
+        "changeEvidenceSources",
+    }
+    for name in sorted(text_fields):
+        value = diagnosis[name]
+        if not isinstance(value, str) or not value.strip():
+            raise EvaluationError(
+                f"Frontier delegation diagnosis.{name} must be non-empty text."
+            )
+    known_sources = set(
+        re.findall(r"(?m)^SOURCE ([^\n]+)$", task_packet)
+    )
+    for name in ("evidenceSources", "changeEvidenceSources"):
+        values = diagnosis[name]
+        if (
+            not isinstance(values, list)
+            or not values
+            or not all(isinstance(value, str) for value in values)
+            or len(set(values)) != len(values)
+        ):
+            raise EvaluationError(
+                f"Frontier delegation diagnosis.{name} must contain unique "
+                "source labels."
+            )
+        unknown = set(values) - known_sources
+        if unknown:
+            raise EvaluationError(
+                f"Frontier delegation diagnosis.{name} references unknown "
+                f"SOURCE labels: {', '.join(sorted(unknown))}"
+            )
+    edits = blueprint["edits"]
+    if not isinstance(edits, list) or not (
+        1 <= len(edits) <= MAX_FRONTIER_DELEGATION_EDITS
+    ):
+        raise EvaluationError(
+            "Frontier delegation blueprint must contain 1 to "
+            f"{MAX_FRONTIER_DELEGATION_EDITS} edits."
+        )
+    manifest = {"edits": edits}
+    manifest_text = json.dumps(
+        manifest,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if len(manifest_text) > maximum_manifest_characters:
+        raise EvaluationError(
+            "Frontier delegation edit manifest exceeds the frozen local "
+            "worker generation budget."
+        )
+    materialize_frontier_edit_manifest(
+        manifest_text,
+        repository=repository,
+        approved_write_roots=approved_write_roots,
+    )
+    return blueprint
+
+
+def materialize_frontier_delegation_plan(
+    blueprint: dict[str, Any],
+    *,
+    task_packet: str,
+    repository: Path,
+    approved_write_roots: Sequence[str],
+    max_repair: int,
+    max_generation_tokens: int,
+) -> dict[str, Any]:
+    """Expand a validated compact blueprint into the strict Plan v2 contract."""
+    diagnosis = blueprint["diagnosis"]
+    evidence_labels = list(dict.fromkeys([
+        *diagnosis["evidenceSources"],
+        *diagnosis["changeEvidenceSources"],
+    ]))
+    authoritative_sources = [
+        {
+            "label": label,
+            "content": _read_labeled_source(repository, label),
+        }
+        for label in evidence_labels
+    ]
+    for index, edit in enumerate(blueprint["edits"], start=1):
+        authoritative_sources.append({
+            "label": f"approved-edit-{index}-old:{edit['path']}",
+            "content": edit["old"],
+        })
+    manifest_text = json.dumps(
+        {"edits": blueprint["edits"]},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    worker_prompt = (
+        "Perform the frontier-approved exact edit delegation. Return exactly "
+        "the following edit-manifest-v1 JSON object and nothing else. Do not "
+        "add prose, markdown, keys, edits, or commands.\n\n"
+        f"{manifest_text}"
+    )
+    return {
+        "schemaVersion": 2,
+        "planId": blueprint["planId"],
+        "objective": blueprint["objective"],
+        "context": {
+            "objective": blueprint["objective"],
+            "diagnosis": {
+                "observedFailure": diagnosis["observedFailure"],
+                "causalHypothesis": diagnosis["causalHypothesis"],
+                "validationMethod": "source-trace",
+                "validationEvidence": diagnosis["validationEvidence"],
+                "falsificationCondition": diagnosis[
+                    "falsificationCondition"
+                ],
+                "evidenceSources": diagnosis["evidenceSources"],
+                "changeValidation": {
+                    "candidateChange": diagnosis["candidateChange"],
+                    "failingPathPrediction": diagnosis[
+                        "failingPathPrediction"
+                    ],
+                    "preservedControlPrediction": diagnosis[
+                        "preservedControlPrediction"
+                    ],
+                    "minimalityEvidence": diagnosis["minimalityEvidence"],
+                    "evidenceSources": diagnosis[
+                        "changeEvidenceSources"
+                    ],
+                },
+            },
+            "authoritativeSources": authoritative_sources,
+            "constraints": [
+                "Modify production code only.",
+                "Apply only the frontier-approved exact edit manifest.",
+                "Use only the configured verification profile.",
+            ],
+            "rejectionCriteria": [
+                "Any path is outside the frozen approved write roots.",
+                "Any old anchor is not unique at the frozen base revision.",
+                "Worker output differs from edit-manifest-v1.",
+            ],
+            "outputProtocol": "edit-manifest-v1",
+        },
+        "tasks": [{
+            "id": "apply-frontier-edits",
+            "role": "implementation",
+            "prompt": worker_prompt,
+            "dependsOn": [],
+            "artifactType": "patch",
+            "workerOutputProtocol": "edit-manifest-v1",
+            "allowedPaths": list(approved_write_roots),
+            "verification": ["bugsinpy-acceptance"],
+            "maxRepairAttempts": max(0, min(5, max_repair)),
+            "outputProtocol": "edit-manifest-v1",
+            "generationOverride": {
+                "temperature": 0.0,
+                "top_p": 1.0,
+                "enable_thinking": False,
+                "max_tokens": max_generation_tokens,
+            },
+            "gate": {
+                "requiredPatterns": [],
+                "forbiddenPatterns": [],
+                "maxCharacters": max(20_000, len(manifest_text) * 2),
+                "format": "json",
+                "stripSingleCodeFence": True,
+                "pythonSyntax": False,
+                "jsonRequiredKeys": ["edits"],
+                "jsonAllowedKeys": ["edits"],
+                "jsonFieldEnums": {},
+            },
+        }],
+    }
+
+
+def _read_labeled_source(repository: Path, label: str) -> str:
+    match = re.fullmatch(r"(.+):L([1-9][0-9]*)-L([1-9][0-9]*)", label)
+    if match is None:
+        raise EvaluationError(f"Invalid frozen SOURCE label: {label}")
+    path_text, start_text, end_text = match.groups()
+    relative = Path(path_text)
+    if relative.is_absolute() or ".." in relative.parts or ".git" in relative.parts:
+        raise EvaluationError(f"Unsafe frozen SOURCE label: {label}")
+    candidate = (repository / relative).resolve()
+    try:
+        candidate.relative_to(repository.resolve())
+    except ValueError as exc:
+        raise EvaluationError(f"Frozen SOURCE label escapes repository: {label}") from exc
+    if not candidate.is_file() or candidate.is_symlink():
+        raise EvaluationError(f"Frozen SOURCE label is unavailable: {label}")
+    try:
+        lines = candidate.read_text(encoding="utf-8").splitlines()
+    except (UnicodeDecodeError, OSError) as exc:
+        raise EvaluationError(
+            f"Frozen SOURCE label is not readable UTF-8 text: {label}"
+        ) from exc
+    start = int(start_text)
+    end = int(end_text)
+    if start > end or end > len(lines):
+        raise EvaluationError(f"Frozen SOURCE label range is invalid: {label}")
+    return "\n".join(lines[start - 1:end])
 
 
 def strip_one_json_fence(text: str) -> str:

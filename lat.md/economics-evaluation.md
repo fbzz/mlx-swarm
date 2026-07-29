@@ -70,9 +70,12 @@ The prepared environment also freezes the resolved Python executable, Python
 version, and installed MLX/MLX-LM/Hugging Face package versions. Execution
 fails closed if any local-runtime field drifts before a phase starts.
 
-Protocol version 4 constructs one deterministic task packet for both arms. It
+Protocol version 5 constructs one deterministic task packet for both arms. It
 contains the objective, failing evidence, fixed acceptance argv, frozen
-repository tree, and exact relevant test/traceback source context. Both arms
+repository tree, requested test excerpts, and ranked line-numbered production
+windows. The ranking uses only buggy-revision test text, failure evidence, and
+an optional execution trace collected by rerunning the approved verifier argv;
+fixed-revision content never participates. Both arms
 receive the same production write roots. Every mutating plan task must preserve
 that complete root set instead of narrowing local authority.
 The harness writes this authority once as immutable `pair-contract.json`, then
@@ -83,7 +86,16 @@ source excerpt must be an exact contiguous substring, and a mutating task that
 names a file cannot rely on a rewritten or elided version of that file. This
 prevents source summaries from becoming non-applicable diff context.
 
-Protocol-v4 evaluation plans also require `edit-manifest-v1` mutating workers
+For the stateless Hermes adapter, protocol v5 asks the frontier for a compact
+delegation blueprint instead of making it reproduce the full Plan schema and
+large source excerpts. The strict blueprint cites only frozen `SOURCE` labels,
+contains the evidence-backed diagnosis and exact `path`/`old`/`new` edits, and
+rejects unknown labels, non-unique anchors, unsafe paths, or a manifest larger
+than the local generation budget. The harness deterministically materializes
+the accepted blueprint into Plan v2 with typed artifacts, gates, path authority,
+verification profile, and authoritative excerpts.
+
+Protocol-v5 evaluation plans require `edit-manifest-v1` mutating workers
 with deterministic sampling, thinking disabled, and at most 800 generation
 tokens. The worker returns bounded exact old/new anchors; the runtime derives
 the candidate unified diff and runs the same workspace checks. This keeps the
