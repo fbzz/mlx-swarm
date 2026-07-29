@@ -70,6 +70,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt-file", type=Path, required=True)
     parser.add_argument("--usage-file", type=Path, required=True)
     parser.add_argument("--max-completion-tokens", type=int, required=True)
+    parser.add_argument(
+        "--reasoning-effort",
+        choices=("none", "low", "medium", "high"),
+        required=True,
+    )
     parser.add_argument("--request-timeout-seconds", type=int, required=True)
     return parser
 
@@ -134,6 +139,7 @@ def main() -> int:
             temperature=0,
             max_tokens=args.max_completion_tokens,
             response_format={"type": "json_object"},
+            reasoning_effort=args.reasoning_effort,
         )
         usage = response.usage
         if usage is None:

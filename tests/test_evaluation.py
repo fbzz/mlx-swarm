@@ -189,6 +189,7 @@ def _hermes_profile_payload() -> dict[str, Any]:
         "model": "glm-5.2",
         "contextWindowTokens": 262144,
         "maxCompletionTokens": 16384,
+        "reasoningEffort": "none",
         "toolsets": [],
         "armTimeoutSeconds": 2700,
         "planningTimeoutSeconds": 600,
@@ -308,6 +309,7 @@ def test_hermes_profile_is_strict_pinned_and_round_trips(
     assert profile.frontier.model == "glm-5.2"
     assert profile.frontier.context_window == 262144
     assert profile.frontier.max_completion_tokens == 16384
+    assert profile.frontier.reasoning_effort == "none"
     assert profile.frontier.toolsets == ()
     assert profile_payload(profile) == payload
 
@@ -316,6 +318,7 @@ def test_hermes_profile_is_strict_pinned_and_round_trips(
     legacy["frontier"]["adapter"] = "hermes-oneshot"
     legacy["frontier"]["toolsets"] = ["todo"]
     del legacy["frontier"]["maxCompletionTokens"]
+    del legacy["frontier"]["reasoningEffort"]
     legacy_profile = load_evaluation_profile(
         _write_profile(tmp_path, legacy)
     )
@@ -346,6 +349,11 @@ def test_hermes_profile_is_strict_pinned_and_round_trips(
     del missing_limit["frontier"]["maxCompletionTokens"]
     with pytest.raises(EvaluationError, match="missing fields"):
         load_evaluation_profile(_write_profile(tmp_path, missing_limit))
+
+    invalid_effort = _hermes_profile_payload()
+    invalid_effort["frontier"]["reasoningEffort"] = "extreme"
+    with pytest.raises(EvaluationError, match="reasoningEffort"):
+        load_evaluation_profile(_write_profile(tmp_path, invalid_effort))
 
 
 def test_hermes_command_and_version_pin_are_deterministic(
@@ -391,6 +399,8 @@ def test_hermes_command_and_version_pin_are_deterministic(
         str(usage_file),
         "--max-completion-tokens",
         "16384",
+        "--reasoning-effort",
+        "none",
         "--request-timeout-seconds",
         "600",
     ]
@@ -488,6 +498,8 @@ def test_hermes_completion_bridge_makes_one_tool_free_request(
             str(usage),
             "--max-completion-tokens",
             "16384",
+            "--reasoning-effort",
+            "none",
             "--request-timeout-seconds",
             "600",
         ],
@@ -498,6 +510,7 @@ def test_hermes_completion_bridge_makes_one_tool_free_request(
     call = calls[0]
     assert call["model"] == "glm-5.2"
     assert call["max_tokens"] == 16384
+    assert call["reasoning_effort"] == "none"
     assert call["response_format"] == {"type": "json_object"}
     assert "tools" not in call
     receipt = json.loads(usage.read_text(encoding="utf-8"))

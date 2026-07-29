@@ -465,6 +465,7 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
                 "model",
                 "contextWindowTokens",
                 "maxCompletionTokens",
+                "reasoningEffort",
                 "toolsets",
                 *timeout_fields,
             },
@@ -482,7 +483,11 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
             "profile.frontier.commandVersion",
         )
         codex_version = ""
-        reasoning_effort = ""
+        reasoning_effort = _enum(
+            frontier_raw["reasoningEffort"],
+            "profile.frontier.reasoningEffort",
+            {"none", "low", "medium", "high"},
+        )
         toolsets = _unique_text_array(
             frontier_raw["toolsets"],
             "profile.frontier.toolsets",
@@ -742,6 +747,7 @@ def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
             "maxCompletionTokens": (
                 profile.frontier.max_completion_tokens
             ),
+            "reasoningEffort": profile.frontier.reasoning_effort,
             "toolsets": list(profile.frontier.toolsets),
             **timeouts,
         }
@@ -5816,6 +5822,8 @@ def hermes_command(
         str(usage_file),
         "--max-completion-tokens",
         str(profile.frontier.max_completion_tokens),
+        "--reasoning-effort",
+        profile.frontier.reasoning_effort,
         "--request-timeout-seconds",
         str(request_timeout_seconds),
     ]

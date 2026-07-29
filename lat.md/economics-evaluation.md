@@ -58,8 +58,9 @@ The `hermes-completion` adapter uses the pinned Hermes installation only to
 resolve provider credentials and its OpenAI-compatible endpoint. A packaged
 bridge bypasses the Hermes agent loop and makes exactly one completion request
 per phase, with no tool schema, no automatic model retry, JSON-object response
-mode, and the profile's explicit maximum completion-token ceiling. The prompt
-is passed by file instead of appearing in process arguments. The direct arm
+mode, and the profile's explicit reasoning-effort and maximum
+completion-token ceilings. The prompt is passed by file instead of appearing
+in process arguments. The direct arm
 receives the same frozen task packet as planning and returns
 `edit-manifest-v1`; the harness materializes and validates the diff. Planning
 and review consume stdout as strict JSON, with at most one complete outer JSON
