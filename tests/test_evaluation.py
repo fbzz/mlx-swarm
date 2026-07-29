@@ -24,6 +24,7 @@ from mlx_swarm.contracts import (
 from mlx_swarm.evaluation import (
     FAIR_EVALUATION_PROTOCOL_VERSION,
     _remove_timed_out_docker_container,
+    _requested_source_windows,
     CommandResult,
     EvaluationError,
     EvaluationStore,
@@ -2436,8 +2437,32 @@ def test_context_ranking_uses_buggy_execution_trace(
 
     _tree, context = deterministic_case_context(case, runtime)
 
-    assert "SOURCE module.py:L151-L250" in context
+    assert "SOURCE module.py:L" in context
     assert "00245 | value_245 = 245" in context
+
+
+def test_requested_source_windows_prioritize_exact_test_identifier() -> None:
+    lines = [
+        f"def generic_case_{index}():\n    assert value == {index}"
+        for index in range(1, 301)
+    ]
+    lines.insert(
+        180,
+        "def test_comment_contents_are_preserved():\n"
+        "    assert comments == expected",
+    )
+
+    windows = _requested_source_windows(
+        "\n".join(lines).splitlines(),
+        (
+            "pytest tests/test_black.py::"
+            "test_comment_contents_are_preserved"
+        ),
+        maximum_characters=4_000,
+    )
+
+    selected = "\n".join(content for _start, _end, content in windows)
+    assert "def test_comment_contents_are_preserved" in selected
 
 
 def test_buggy_execution_trace_uses_first_approved_argv_without_shell(

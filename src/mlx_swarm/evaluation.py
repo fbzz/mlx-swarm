@@ -5709,6 +5709,25 @@ def deterministic_case_context(
 
     remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
     if remaining > 0:
+        traced_functions = _rank_traced_function_windows(
+            files,
+            relative,
+            "\n".join(query_parts),
+            executed_lines=runtime.get("executedSourceLines", {}),
+        )
+        for path, start, end, content in traced_functions:
+            label = f"{path}:L{start}-L{end}"
+            header = f"SOURCE {label}\n"
+            footer = f"\nEND SOURCE {label}\n"
+            block = header + content + footer
+            if len(block) > remaining:
+                continue
+            blocks.append(block)
+            used += len(block)
+            remaining -= len(block)
+            if remaining < 500:
+                break
+    if remaining > 0:
         ranked = _rank_production_windows(
             files,
             relative,
@@ -5764,6 +5783,9 @@ def _requested_source_windows(
     if len(complete) <= maximum_characters:
         return [(1, len(normalized), complete)]
     query_terms = _context_term_counts(query)
+    priority_terms = {
+        term for term in query_terms if term.startswith("test_")
+    }
     candidates: list[tuple[float, int, int]] = []
     for offset in range(0, len(normalized), 50):
         end = min(len(normalized), offset + 100)
@@ -5783,6 +5805,7 @@ def _requested_source_windows(
             )
             for term, count in window_terms.items()
         )
+        score += 10_000 * len(priority_terms.intersection(window_terms))
         candidates.append((float(score), offset + 1, end))
         if end == len(normalized):
             break
@@ -5813,11 +5836,114 @@ def _requested_source_windows(
 def _context_term_counts(text: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for raw in re.findall(r"[A-Za-z_][A-Za-z0-9_]{3,}", text):
-        term = raw.lower()
-        if term in _CONTEXT_STOP_WORDS:
-            continue
-        counts[term] = counts.get(term, 0) + 1
+        terms = [raw.lower(), *raw.lower().split("_")]
+        for term in terms:
+            if len(term) < 4 or term in _CONTEXT_STOP_WORDS:
+                continue
+            counts[term] = counts.get(term, 0) + 1
+            singular = (
+                term[:-2]
+                if term.endswith("es") and len(term) > 5
+                else term[:-1]
+                if term.endswith("s") and len(term) > 4
+                else term
+            )
+            if singular != term and singular not in _CONTEXT_STOP_WORDS:
+                counts[singular] = counts.get(singular, 0) + 1
     return counts
+
+
+def _rank_traced_function_windows(
+    files: Sequence[Path],
+    relative: Sequence[str],
+    query: str,
+    *,
+    executed_lines: Any,
+    maximum_windows: int = 8,
+    maximum_lines: int = 80,
+) -> list[tuple[str, int, int, str]]:
+    """Select called function bodies whose names/code match failure evidence."""
+    if not isinstance(executed_lines, dict):
+        return []
+    query_terms = _context_term_counts(query)
+    if not query_terms:
+        return []
+    by_relative = dict(zip(relative, files))
+    candidates: list[
+        tuple[float, str, int, int, list[str]]
+    ] = []
+    for path, raw_lines in executed_lines.items():
+        child = by_relative.get(path)
+        if (
+            child is None
+            or _is_non_production_path(path)
+            or not isinstance(raw_lines, list)
+        ):
+            continue
+        traced = {
+            value
+            for value in raw_lines
+            if isinstance(value, int) and value > 0
+        }
+        if not traced:
+            continue
+        try:
+            content = child.read_text(encoding="utf-8")
+            source_lines = content.splitlines()
+            tree = ast.parse(content)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(
+                node,
+                (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+            ):
+                continue
+            start = max(1, node.lineno)
+            full_end = max(start, getattr(node, "end_lineno", start))
+            if not any(start <= value <= full_end for value in traced):
+                continue
+            end = min(full_end, start + maximum_lines - 1)
+            window = source_lines[start - 1:end]
+            name_terms = _context_term_counts(node.name)
+            body_terms = _context_term_counts("\n".join(window))
+            name_score = sum(
+                12.0 * (1.0 + math.log1p(query_terms[term]))
+                for term in name_terms
+                if term in query_terms
+            )
+            body_score = sum(
+                1.0 + math.log1p(query_terms[term])
+                for term in body_terms
+                if term in query_terms
+            )
+            if name_score + body_score <= 0:
+                continue
+            candidates.append(
+                (name_score + body_score, path, start, end, window)
+            )
+    candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
+    selected: list[tuple[str, int, int, str]] = []
+    occupied: dict[str, list[tuple[int, int]]] = {}
+    for _score, path, start, end, window in candidates:
+        if any(
+            start <= prior_end and end >= prior_start
+            for prior_start, prior_end in occupied.get(path, [])
+        ):
+            continue
+        occupied.setdefault(path, []).append((start, end))
+        selected.append((
+            path,
+            start,
+            end,
+            "\n".join(
+                f"{start + index:05d} | {line}"
+                for index, line in enumerate(window)
+            ),
+        ))
+        if len(selected) >= maximum_windows:
+            break
+    return selected
 
 
 def _rank_production_windows(
@@ -5826,9 +5952,9 @@ def _rank_production_windows(
     query: str,
     *,
     executed_lines: Any = None,
-    window_lines: int = 100,
-    stride_lines: int = 50,
-    maximum_windows: int = 20,
+    window_lines: int = 60,
+    stride_lines: int = 30,
+    maximum_windows: int = 24,
 ) -> list[tuple[str, int, int, str]]:
     """Rank buggy-revision source windows by test/failure lexical evidence."""
     query_terms = _context_term_counts(query)
@@ -5908,16 +6034,64 @@ def _rank_production_windows(
         scored.append((score, path, start, end, window))
     scored.sort(key=lambda item: (-item[0], item[1], item[2]))
     best_by_path: dict[str, float] = {}
+    matching_terms_by_path: dict[str, set[str]] = {}
+    for path, _start, _end, _window, matching in candidates:
+        matching_terms_by_path.setdefault(path, set()).update(matching)
     for score, path, _start, _end, _window in scored:
         best_by_path[path] = max(score, best_by_path.get(path, 0.0))
-    selected_paths = {
+    query_lower = query.lower()
+    eligible_paths: set[str] = set()
+    for path in best_by_path:
+        raw_traced_lines = traced.get(path, [])
+        if isinstance(raw_traced_lines, list) and raw_traced_lines:
+            best_by_path[path] += 15.0 * math.log1p(
+                len(raw_traced_lines)
+            )
+            eligible_paths.add(path)
+        normalized_path = path.lower()
+        basename = Path(path).name.lower()
+        stem = Path(path).stem.lower()
+        path_is_referenced = (
+            normalized_path in query_lower
+            or basename in query_lower
+            or (
+                len(stem) >= 4
+                and re.search(
+                    rf"(?<![a-z0-9_]){re.escape(stem)}"
+                    r"(?![a-z0-9_])",
+                    query_lower,
+                )
+                is not None
+            )
+        )
+        if path_is_referenced:
+            best_by_path[path] += 30.0
+            eligible_paths.add(path)
+        if len(matching_terms_by_path.get(path, set())) >= 2:
+            eligible_paths.add(path)
+    selected_path_order = [
         path
         for path, _score in sorted(
             best_by_path.items(),
             key=lambda item: (-item[1], item[0]),
-        )[:8]
-    }
-    scored = [item for item in scored if item[1] in selected_paths]
+        )
+        if path in eligible_paths
+    ][:4]
+    by_path: dict[
+        str,
+        list[tuple[float, str, int, int, list[str]]],
+    ] = {path: [] for path in selected_path_order}
+    for item in scored:
+        if item[1] in by_path:
+            by_path[item[1]].append(item)
+    round_robin: list[
+        tuple[float, str, int, int, list[str]]
+    ] = []
+    for rank in range(4):
+        for path in selected_path_order:
+            if rank < len(by_path[path]):
+                round_robin.append(by_path[path][rank])
+    scored = round_robin
     selected: list[tuple[str, int, int, str]] = []
     occupied: dict[str, list[tuple[int, int]]] = {}
     for _score, path, start, end, window in scored:
