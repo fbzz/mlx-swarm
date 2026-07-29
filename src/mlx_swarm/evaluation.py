@@ -2040,7 +2040,6 @@ class EvaluationStore:
                 name
                 for name in (
                     "evaluation.json",
-                    "suite.json",
                     "environment.json",
                 )
                 if (evaluation_dir / name).exists()
@@ -2065,6 +2064,43 @@ class EvaluationStore:
                 raise EvaluationError(
                     "Evaluation profile differs from the interrupted snapshot."
                 )
+            suite_path = evaluation_dir / "suite.json"
+            if suite_path.is_file():
+                suite = _read_json(suite_path)
+                validate_suite(suite, profile)
+                for case in suite["cases"]:
+                    runtime_path = (
+                        evaluation_dir
+                        / "cases"
+                        / case["caseId"]
+                        / "runtime.json"
+                    )
+                    if not runtime_path.is_file():
+                        raise EvaluationError(
+                            "Interrupted finalization is missing a selected "
+                            f"case runtime: {case['caseId']}."
+                        )
+                remove_sensitive_preparation_sources(evaluation_dir)
+                state = {
+                    "schemaVersion": EVALUATION_SCHEMA_VERSION,
+                    "evaluationId": evaluation_id,
+                    "status": "prepared",
+                    "pilotStatus": "pending",
+                    "measuredStatus": "locked",
+                    "createdAt": utc_now(),
+                    "updatedAt": utc_now(),
+                    "results": {},
+                }
+                _atomic_json(evaluation_dir / "evaluation.json", state)
+                _atomic_json(
+                    evaluation_dir / "environment.json",
+                    environment_fingerprint(
+                        self.config,
+                        profile,
+                        container=container,
+                    ),
+                )
+                return self.detail(evaluation_id)
             metadata_root = evaluation_dir / "benchmark"
             if not metadata_root.is_dir():
                 raise EvaluationError(

@@ -1105,6 +1105,107 @@ def test_prepare_resumes_unsealed_evaluation_and_reuses_case_runtimes(
         )
 
 
+def test_prepare_resumes_after_suite_write_before_sensitive_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = load_config(_write_config(tmp_path))
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    store = EvaluationStore(config, root=tmp_path / "evaluations")
+    evaluation_id = "interrupted-finalization"
+    evaluation_dir = store.root / evaluation_id
+    benchmark = evaluation_dir / "benchmark"
+    mirrors = evaluation_dir / "cache" / "repositories"
+    benchmark.mkdir(parents=True)
+    mirrors.mkdir(parents=True)
+    (benchmark / ".DS_Store").write_text("race", encoding="utf-8")
+    (mirrors / "future.git").mkdir()
+    (evaluation_dir / "profile.snapshot.json").write_text(
+        json.dumps(profile_payload(profile)),
+        encoding="utf-8",
+    )
+    candidates = [
+        _case(f"{project}-{index}", project, stratum)
+        for project in ("alpha", "beta", "gamma")
+        for index, stratum in enumerate(
+            ("small", "medium", "large", "small", "medium", "large"),
+            start=1,
+        )
+    ]
+    pilot, measured = select_cases(candidates, profile)
+    cases = [
+        evaluation_case(candidate, phase)
+        for phase, values in (("pilot", pilot), ("measured", measured))
+        for candidate in values
+    ]
+    suite = {
+        "schemaVersion": 1,
+        "suiteId": evaluation_id,
+        "profileId": profile.profile_id,
+        "benchmark": {
+            "name": "BugsInPy",
+            "repository": profile.benchmark_repository,
+            "revision": profile.benchmark_revision,
+        },
+        "seed": profile.seed,
+        "createdAt": "earlier",
+        "cases": cases,
+    }
+    (evaluation_dir / "suite.json").write_text(
+        json.dumps(suite),
+        encoding="utf-8",
+    )
+    for case in cases:
+        runtime = (
+            evaluation_dir
+            / "cases"
+            / case["caseId"]
+            / "runtime.json"
+        )
+        runtime.parent.mkdir(parents=True)
+        runtime.write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(store, "_check_storage", lambda _profile: None)
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.mlx_swarm_source_revision",
+        lambda: {
+            "root": str(tmp_path),
+            "commit": "a" * 40,
+            "dirty": False,
+        },
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.inspect_container",
+        lambda _profile: {"digest": _profile.container.digest},
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.inspect_codex_version",
+        lambda _profile: _profile.frontier.codex_version,
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.enumerate_bugsinpy_candidates",
+        lambda *_args: pytest.fail(
+            "written suite must finalize without benchmark metadata"
+        ),
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.environment_fingerprint",
+        lambda *args, **kwargs: {
+            "profileSha256": "digest",
+            "mlxSwarmCommit": "a" * 40,
+        },
+    )
+
+    detail = store.prepare(
+        profile,
+        resume_evaluation_id=evaluation_id,
+    )
+    assert detail["evaluation"]["status"] == "prepared"
+    assert not benchmark.exists()
+    assert not mirrors.exists()
+    assert (evaluation_dir / "environment.json").is_file()
+
+
 def test_codex_usage_aggregates_every_completed_turn() -> None:
     payload = "\n".join([
         json.dumps({"type": "thread.started", "thread_id": "x"}),
