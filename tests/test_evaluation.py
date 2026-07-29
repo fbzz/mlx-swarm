@@ -23,6 +23,7 @@ from mlx_swarm.contracts import (
 )
 from mlx_swarm.evaluation import (
     FAIR_EVALUATION_PROTOCOL_VERSION,
+    _rank_traced_function_windows,
     _remove_timed_out_docker_container,
     _requested_source_windows,
     CommandResult,
@@ -85,6 +86,7 @@ from mlx_swarm.evaluation import (
     validate_evaluation_plan,
     validate_repository_symlinks,
     validate_resolved_dependencies,
+    write_evaluation_config,
 )
 from mlx_swarm.session import Session
 
@@ -2154,6 +2156,13 @@ def test_only_verifier_infrastructure_failure_invalidates_measurement() -> None:
         "evidence": "ModuleNotFoundError: No module named 'candidate_import'",
     }) is None
     assert oracle_infrastructure_failure({
+        "evidence": (
+            "Error while finding module specification for "
+            "'mlx_swarm.evaluation' (ModuleNotFoundError: "
+            "No module named 'mlx_swarm')"
+        ),
+    }) is not None
+    assert oracle_infrastructure_failure({
         "evidence": "FAILED tests/test_bug.py::test_value - AssertionError",
     }) is None
 
@@ -2190,6 +2199,43 @@ def test_docker_context_is_frozen_for_sanitized_verifier(
         "DOCKER_HOST": "unix:///operator/context/docker.sock",
     }
     assert calls == [["docker", "context", "inspect"]]
+
+
+def test_evaluation_verifier_receives_trusted_package_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = load_config(_write_config(tmp_path))
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "module.py").write_text(
+        "VALUE = 1\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "verifier.json"
+    manifest.write_text("{}", encoding="utf-8")
+    destination = tmp_path / "evaluation.json"
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.docker_connection_environment",
+        lambda _cwd: {"DOCKER_HOST": "unix:///trusted/docker.sock"},
+    )
+
+    write_evaluation_config(
+        source,
+        destination,
+        tmp_path / "artifacts",
+        manifest,
+        repository,
+    )
+
+    payload = json.loads(destination.read_text(encoding="utf-8"))
+    environment = payload["workspace"]["verificationProfiles"][
+        "bugsinpy-acceptance"
+    ]["environment"]
+    assert environment["DOCKER_HOST"] == "unix:///trusted/docker.sock"
+    assert environment["PYTHONPATH"] == str(
+        Path(__import__("mlx_swarm").__file__).resolve().parents[1]
+    )
 
 
 def test_local_replay_gate_requires_every_calibration_case() -> None:
@@ -2463,6 +2509,30 @@ def test_requested_source_windows_prioritize_exact_test_identifier() -> None:
 
     selected = "\n".join(content for _start, _end, content in windows)
     assert "def test_comment_contents_are_preserved" in selected
+
+
+def test_traced_function_context_includes_adjacent_causal_helper(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "module.py"
+    source.write_text(
+        "def parse_comments():\n"
+        "    return '# type: int'\n"
+        "\n"
+        "def split_line():\n"
+        "    return 'causal split decision'\n",
+        encoding="utf-8",
+    )
+
+    windows = _rank_traced_function_windows(
+        [source],
+        ["module.py"],
+        "comments type annotation failure",
+        executed_lines={"module.py": [1, 2, 4, 5]},
+    )
+
+    assert windows
+    assert "def split_line" in windows[0][3]
 
 
 def test_buggy_execution_trace_uses_first_approved_argv_without_shell(

@@ -56,7 +56,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 5
+FAIR_EVALUATION_PROTOCOL_VERSION = 6
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -5213,6 +5213,7 @@ def oracle_infrastructure_failure(
         "verifier evaluation root is missing",
         "verifier environment is missing",
         "benchmark virtual environment has no python",
+        "no module named 'mlx_swarm'",
     )
     marker = next((value for value in markers if value in evidence), None)
     if marker is None:
@@ -5861,8 +5862,11 @@ def _rank_traced_function_windows(
     executed_lines: Any,
     maximum_windows: int = 8,
     maximum_lines: int = 80,
+    context_before_lines: int = 12,
+    context_after_lines: int = 100,
+    maximum_context_lines: int = 180,
 ) -> list[tuple[str, int, int, str]]:
-    """Select called function bodies whose names/code match failure evidence."""
+    """Select trace-ranked functions plus bounded neighboring source context."""
     if not isinstance(executed_lines, dict):
         return []
     query_terms = _context_term_counts(query)
@@ -5919,8 +5923,23 @@ def _rank_traced_function_windows(
             )
             if name_score + body_score <= 0:
                 continue
+            context_start = max(1, start - context_before_lines)
+            context_end = min(
+                len(source_lines),
+                full_end + context_after_lines,
+                context_start + maximum_context_lines - 1,
+            )
+            context_window = source_lines[
+                context_start - 1:context_end
+            ]
             candidates.append(
-                (name_score + body_score, path, start, end, window)
+                (
+                    name_score + body_score,
+                    path,
+                    context_start,
+                    context_end,
+                    context_window,
+                )
             )
     candidates.sort(key=lambda item: (-item[0], item[1], item[2]))
     selected: list[tuple[str, int, int, str]] = []
@@ -6146,7 +6165,11 @@ def frontier_alone_response_prompt(task_packet: str) -> str:
         "Rules:\n"
         "- The top-level object must contain exactly one key: \"edits\".\n"
         "- Each edit must contain exactly path, old, and new (all strings).\n"
-        "- The old text must match exactly one occurrence in the target file.\n"
+        "- Derive the change only from supplied SOURCE windows, not model "
+        "memory or an assumed newer API.\n"
+        "- Copy each old anchor from one supplied SOURCE window, remove only "
+        "the five-digit line-number and ` | ` display prefixes, and verify "
+        "that the resulting text is contiguous and unique in that file.\n"
         "- Modify only paths below the approved write roots.\n"
         "- Do not modify tests, Git metadata, dependencies, or benchmark "
         "evidence.\n"
@@ -6213,7 +6236,15 @@ def frontier_delegation_blueprint_prompt(
         "- Do not copy SOURCE contents into the diagnosis. Only old/new edit "
         "anchors may reproduce source text.\n"
         "- Each old anchor must be the smallest useful exact contiguous text "
-        "shown in a SOURCE window and must occur exactly once in its file.\n"
+        "shown in a SOURCE window and must occur exactly once in its file. "
+        "Remove only the five-digit line-number and ` | ` display prefixes "
+        "when copying it.\n"
+        "- Before emitting JSON, perform this grounding check in the same "
+        "planning call: (1) locate the causal branch in a cited SOURCE "
+        "window, (2) test the causal hypothesis against the failing path and "
+        "one preserved control, and (3) re-read every old anchor directly "
+        "from that cited window. Do not use a symbol or API remembered from "
+        "another revision.\n"
         "- Use path, never file, as the edit path key.\n"
         "- Keep the combined edit manifest short enough for the worker's "
         "frozen maximum generation budget.\n"
@@ -7121,6 +7152,9 @@ def write_evaluation_config(
     write_roots: Sequence[str] | None = None,
 ) -> None:
     docker_environment = docker_connection_environment(path.parent)
+    docker_environment["PYTHONPATH"] = str(
+        Path(__file__).resolve().parents[1]
+    )
     model: dict[str, Any] = {"repository": source.model.repository}
     if source.model.revision:
         model["revision"] = source.model.revision
