@@ -219,7 +219,8 @@ profile after local-agent acceptance is competitive.
 
 The frontier is adapter-neutral. The legacy `bugsinpy-v1` profile pins
 GPT-5.6 Sol through Codex; `bugsinpy-glm52` pins GLM 5.2 through a stateless
-Hermes one-shot adapter. Both use the configured local MLX model with at most
+single-completion Hermes bridge. Both use the configured local MLX model with
+at most
 two repairs, a 45-minute ceiling per arm, seed `20260728`, a 20 GiB storage
 ceiling, and a 15 GiB free-space reserve.
 
@@ -254,15 +255,17 @@ hermes --version
 # Hermes Agent v0.19.0 (2026.7.20) · upstream cbc1054e
 ```
 
-The harness invokes Hermes with `--safe-mode`, explicit provider/model,
-exactly the response-only `todo` toolset, `--oneshot`, and `--usage-file`.
-Neither GLM arm receives terminal or file tools. Both return strict JSON:
-the direct arm returns `edit-manifest-v1`; the swarm arm returns one validated
-plan and, only after eligible local completion, one structured review. Missing,
-incomplete, mismatched-provider/model, or arithmetically inconsistent Hermes
-usage receipts invalidate the measurement rather than becoming zero.
-Preparation and execution fail closed if the command version or profile digest
-differs from the frozen environment.
+The harness uses the pinned Hermes installation to resolve the provider
+endpoint and credentials, then bypasses its interactive agent loop. The
+packaged bridge makes exactly one OpenAI-compatible request per frontier phase
+with no tools, JSON-object response mode, no SDK retry, and a pinned 16,384
+completion-token ceiling. Prompts are passed by file rather than process
+arguments. The direct arm returns `edit-manifest-v1`; the swarm arm returns one
+validated plan and, only after eligible local completion, one structured
+review. Missing, incomplete, mismatched-provider/model, multi-call, or
+arithmetically inconsistent usage receipts invalidate the measurement rather
+than becoming zero. Preparation and execution fail closed if the command
+version or profile digest differs from the frozen environment.
 
 Prepare the preliminary immutable suite, pass its two-case calibration gate,
 then run the six measured pairs:

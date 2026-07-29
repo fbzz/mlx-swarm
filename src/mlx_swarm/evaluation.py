@@ -53,7 +53,7 @@ from .workspace import (
 
 
 EVALUATION_SCHEMA_VERSION = 1
-PROFILE_SCHEMA_VERSION = 2
+PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
 FAIR_EVALUATION_PROTOCOL_VERSION = 4
@@ -112,7 +112,11 @@ class EvaluationError(RuntimeError):
     """Raised when evaluation evidence or execution is invalid."""
 
 
-_FRONTIER_ADAPTERS = ("codex-cli", "hermes-oneshot")
+_FRONTIER_ADAPTERS = (
+    "codex-cli",
+    "hermes-oneshot",
+    "hermes-completion",
+)
 _FRONTIER_TOOLSETS = ("todo",)
 _MAX_FRONTIER_RESPONSE_BYTES = 1_000_000
 
@@ -132,6 +136,7 @@ class FrontierSettings:
     command_version: str = ""
     toolsets: tuple[str, ...] = ()
     context_window: int = 0
+    max_completion_tokens: int = 0
 
 
 @dataclass(frozen=True)
@@ -220,7 +225,7 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         1,
         100,
     )
-    if schema_version not in {1, 2}:
+    if schema_version not in {1, 2, 3}:
         raise EvaluationError("Unsupported evaluation profile schema version.")
     benchmark = _object(raw["benchmark"], "profile.benchmark")
     _exact_keys(
@@ -405,7 +410,8 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         )
         toolsets: tuple[str, ...] = ()
         context_window = 0
-    else:
+        max_completion_tokens = 0
+    elif schema_version == 2:
         _exact_keys(
             frontier_raw,
             "profile.frontier",
@@ -446,6 +452,55 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
             1,
             2**20,
         )
+        max_completion_tokens = 0
+    else:
+        _exact_keys(
+            frontier_raw,
+            "profile.frontier",
+            {
+                "adapter",
+                "command",
+                "commandVersion",
+                "provider",
+                "model",
+                "contextWindowTokens",
+                "maxCompletionTokens",
+                "toolsets",
+                *timeout_fields,
+            },
+        )
+        adapter = _text(
+            frontier_raw["adapter"],
+            "profile.frontier.adapter",
+        )
+        provider = _text(
+            frontier_raw["provider"],
+            "profile.frontier.provider",
+        )
+        command_version = _text(
+            frontier_raw["commandVersion"],
+            "profile.frontier.commandVersion",
+        )
+        codex_version = ""
+        reasoning_effort = ""
+        toolsets = _unique_text_array(
+            frontier_raw["toolsets"],
+            "profile.frontier.toolsets",
+            minimum=0,
+            maximum=16,
+        )
+        context_window = _integer(
+            frontier_raw["contextWindowTokens"],
+            "profile.frontier.contextWindowTokens",
+            1,
+            2**20,
+        )
+        max_completion_tokens = _integer(
+            frontier_raw["maxCompletionTokens"],
+            "profile.frontier.maxCompletionTokens",
+            1,
+            131_072,
+        )
     if adapter not in _FRONTIER_ADAPTERS:
         raise EvaluationError(
             f"profile.frontier.adapter must be one of: "
@@ -465,6 +520,15 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         if toolsets != ("todo",):
             raise EvaluationError(
                 "hermes-oneshot adapter requires exactly the todo toolset."
+            )
+    elif adapter == "hermes-completion":
+        if schema_version != 3:
+            raise EvaluationError(
+                "hermes-completion requires evaluation profile schema version 3."
+            )
+        if toolsets:
+            raise EvaluationError(
+                "hermes-completion adapter does not permit toolsets."
             )
     elif schema_version != 1:
         raise EvaluationError(
@@ -504,6 +568,7 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         command_version=command_version,
         toolsets=toolsets,
         context_window=context_window,
+        max_completion_tokens=max_completion_tokens,
     )
     if (
         frontier.planning_timeout_seconds
@@ -655,6 +720,17 @@ def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
             "reasoningEffort": profile.frontier.reasoning_effort,
             **timeouts,
         }
+    elif profile.schema_version == 2:
+        payload["frontier"] = {
+            "adapter": profile.frontier.adapter,
+            "command": profile.frontier.command,
+            "commandVersion": profile.frontier.command_version,
+            "provider": profile.frontier.provider,
+            "model": profile.frontier.model,
+            "contextWindowTokens": profile.frontier.context_window,
+            "toolsets": list(profile.frontier.toolsets),
+            **timeouts,
+        }
     else:
         payload["frontier"] = {
             "adapter": profile.frontier.adapter,
@@ -663,6 +739,9 @@ def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
             "provider": profile.frontier.provider,
             "model": profile.frontier.model,
             "contextWindowTokens": profile.frontier.context_window,
+            "maxCompletionTokens": (
+                profile.frontier.max_completion_tokens
+            ),
             "toolsets": list(profile.frontier.toolsets),
             **timeouts,
         }
@@ -1175,7 +1254,7 @@ def parse_hermes_usage_json(
     The Hermes usage schema is a single JSON object (not JSONL).  Every field
     is strictly validated: non-negative integers, exact provider/model
     identity, ``completed == true``, ``failed == false``,
-    ``api_calls >= 1``, and ``total_tokens == input_tokens + output_tokens``.
+    ``api_calls == 1``, and ``total_tokens == input_tokens + output_tokens``.
     Any violation makes the measurement invalid rather than score zero.
 
     When *expected_provider* and *expected_model* are supplied the receipt
@@ -1212,7 +1291,7 @@ def parse_hermes_usage_json(
         api_calls = _strict_usage_int(receipt, "api_calls")
     except EvaluationError:
         return {**unavailable}
-    if api_calls < 1:
+    if api_calls != 1:
         return {**unavailable}
     if total != input_tokens + output_tokens:
         return {**unavailable}
@@ -1999,6 +2078,11 @@ class EvaluationStore:
         clone: Callable[[EvaluationProfile, Path], Path] | None = None,
         resume_evaluation_id: str | None = None,
     ) -> dict[str, Any]:
+        if profile.frontier.adapter == "hermes-oneshot":
+            raise EvaluationError(
+                "hermes-oneshot is retained for historical evidence only; "
+                "new evaluations must use hermes-completion."
+            )
         source = mlx_swarm_source_revision()
         if source["dirty"]:
             raise EvaluationError(
@@ -2706,6 +2790,13 @@ class EvaluationRunner:
                 or result["frontierUsage"]["usageStatus"] != "reported"
                 for result in pilot_results
             ):
+                state_path = evaluation_dir / "evaluation.json"
+                invalid_state = _read_json(state_path)
+                invalid_state["pilotStatus"] = "invalid"
+                invalid_state["measuredStatus"] = "locked"
+                invalid_state["status"] = "pilot_invalid"
+                invalid_state["updatedAt"] = utc_now()
+                _atomic_json(state_path, invalid_state)
                 raise EvaluationError(
                     "Pilot evidence is invalid; measured work remains locked."
                 )
@@ -3182,18 +3273,23 @@ class EvaluationRunner:
         evidence_root = arm_root / "evidence"
         evidence_root.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
-        is_hermes = self.profile.frontier.adapter == "hermes-oneshot"
+        is_hermes = self.profile.frontier.adapter == "hermes-completion"
         if is_hermes:
             usage_file = evidence_root / "usage.json"
             response_file = evidence_root / "response.txt"
+            prompt_file = evidence_root / "prompt.txt"
             prompt = frontier_alone_response_prompt(task_packet)
+            prompt_file.write_text(prompt, encoding="utf-8")
             command = frontier_command(
                 self.profile,
                 cwd=repository,
                 sandbox="",
                 output_last_message=response_file,
                 usage_file=usage_file,
-                oneshot_prompt=prompt,
+                prompt_file=prompt_file,
+                request_timeout_seconds=(
+                    self.profile.frontier.arm_timeout_seconds
+                ),
             )
             frontier_result = run_command(
                 command,
@@ -3287,7 +3383,7 @@ class EvaluationRunner:
             repository,
             allowed_paths=approved_write_roots,
         )
-        if materialize_error is not None and not structural_error:
+        if materialize_error is not None:
             structural_error = materialize_error
         remaining = self.profile.frontier.arm_timeout_seconds - (
             time.perf_counter() - started
@@ -3439,7 +3535,7 @@ class EvaluationRunner:
         plan_response = evidence_root / "plan-response.json"
         started = time.perf_counter()
         deadline = started + self.profile.frontier.arm_timeout_seconds
-        is_hermes = self.profile.frontier.adapter == "hermes-oneshot"
+        is_hermes = self.profile.frontier.adapter == "hermes-completion"
         plan_prompt_text = Path(claim["promptPath"]).read_text(
             encoding="utf-8"
         )
@@ -3451,7 +3547,10 @@ class EvaluationRunner:
                 sandbox="",
                 output_last_message=plan_response,
                 usage_file=plan_usage_file,
-                oneshot_prompt=plan_prompt_text,
+                prompt_file=Path(claim["promptPath"]),
+                request_timeout_seconds=(
+                    self.profile.frontier.planning_timeout_seconds
+                ),
             )
             plan_frontier_result = run_command(
                 plan_command,
@@ -3554,26 +3653,50 @@ class EvaluationRunner:
                     ),
                 },
             )
-        imported = store.import_plan(
-            request["request"]["requestId"],
-            plan_response,
-            claim_id=claim["claimId"],
-            adapter=self.profile.frontier.adapter,
-            provider=self.profile.frontier.provider,
-            model=self.profile.frontier.model,
-            prompt_tokens=plan_usage.get("promptTokens"),
-            completion_tokens=plan_usage.get("completionTokens"),
-            total_tokens=plan_usage.get("totalTokens"),
-        )
-        candidate_plan = load_plan(
-            Path(imported["plan"]["source"]),
-            eval_config,
-        )
-        validate_evaluation_plan(
-            candidate_plan,
-            repository,
-            approved_write_roots,
-        )
+        try:
+            imported = store.import_plan(
+                request["request"]["requestId"],
+                plan_response,
+                claim_id=claim["claimId"],
+                adapter=self.profile.frontier.adapter,
+                provider=self.profile.frontier.provider,
+                model=self.profile.frontier.model,
+                prompt_tokens=plan_usage.get("promptTokens"),
+                completion_tokens=plan_usage.get("completionTokens"),
+                total_tokens=plan_usage.get("totalTokens"),
+            )
+            candidate_plan = load_plan(
+                Path(imported["plan"]["source"]),
+                eval_config,
+            )
+            validate_evaluation_plan(
+                candidate_plan,
+                repository,
+                approved_write_roots,
+            )
+        except (CommanderError, EvaluationError) as exc:
+            return make_arm_result(
+                case=case,
+                arm="mlx-swarm",
+                status="failed",
+                completed=False,
+                score=0,
+                elapsed_seconds=time.perf_counter() - started,
+                phase_seconds={"planning": plan_elapsed},
+                frontier_usage=usage_with_phases([
+                    ("planning", plan_usage),
+                ]),
+                local_usage=empty_local_usage(),
+                repairs=0,
+                model_loads=0,
+                review_verdict=None,
+                patch={"sha256": None, "changedFiles": 0},
+                oracle={
+                    "passed": False,
+                    "exitCode": None,
+                    "evidence": f"Frontier plan was rejected: {exc}",
+                },
+            )
         plan_digest = imported["plan"]["digest"]
         execution = imported["executionPreview"]
         if not isinstance(execution, dict):
@@ -3711,7 +3834,11 @@ class EvaluationRunner:
                     sandbox="",
                     output_last_message=review_response,
                     usage_file=review_usage_file,
-                    oneshot_prompt=review_prompt_text,
+                    prompt_file=Path(review_claim["promptPath"]),
+                    request_timeout_seconds=min(
+                        self.profile.frontier.review_timeout_seconds,
+                        max(1, math.floor(deadline - time.perf_counter())),
+                    ),
                 )
                 review_result = run_command(
                     review_command,
@@ -5623,35 +5750,65 @@ def hermes_command(
     profile: EvaluationProfile,
     *,
     usage_file: Path,
-    oneshot_prompt: str,
+    prompt_file: Path,
+    request_timeout_seconds: int,
 ) -> list[str]:
-    """Build the argv for a stateless Hermes one-shot frontier invocation.
+    """Build one tool-free completion using the pinned Hermes environment.
 
-    Returns a plain argument array; never interpolates a shell.  The prompt
-    is passed via ``--oneshot`` and the exact usage JSON is written to
-    ``--usage-file``.  ``--safe-mode`` is mandatory, as are explicit
-    provider/model/toolsets so no configured fallbacks leak in.
+    The configured ``hermes`` executable is inspected only to resolve its
+    Python interpreter.  The packaged bridge then uses Hermes provider and
+    credential resolution while bypassing the interactive agent loop.  The
+    prompt stays in a file rather than process arguments, and the bridge makes
+    exactly one OpenAI-compatible request with no tools.
     """
-    if profile.frontier.adapter != "hermes-oneshot":
+    if profile.frontier.adapter != "hermes-completion":
         raise EvaluationError(
-            "hermes_command requires the hermes-oneshot adapter."
+            "hermes_command requires the hermes-completion adapter."
         )
+    executable = shutil.which(profile.frontier.command)
+    if executable is None:
+        raise EvaluationError("Configured Hermes command is unavailable.")
+    try:
+        first_line = Path(executable).read_text(
+            encoding="utf-8",
+            errors="strict",
+        ).splitlines()[0]
+    except (OSError, UnicodeError, IndexError) as exc:
+        raise EvaluationError(
+            "Could not inspect the configured Hermes command."
+        ) from exc
+    if not first_line.startswith("#!"):
+        raise EvaluationError(
+            "Configured Hermes command has no pinned Python interpreter."
+        )
+    interpreter = Path(first_line[2:].strip())
+    if (
+        not interpreter.is_absolute()
+        or not interpreter.is_file()
+        or not os.access(interpreter, os.X_OK)
+    ):
+        raise EvaluationError(
+            "Configured Hermes Python interpreter is unavailable."
+        )
+    bridge = Path(__file__).with_name("hermes_completion.py")
+    if not bridge.is_file():
+        raise EvaluationError("Packaged Hermes completion bridge is missing.")
     argv: list[str] = [
-        profile.frontier.command,
-        "--safe-mode",
+        str(interpreter),
+        str(bridge),
         "--provider",
         profile.frontier.provider,
         "--model",
         profile.frontier.model,
-    ]
-    for toolset in profile.frontier.toolsets:
-        argv.extend(["--toolsets", toolset])
-    argv.extend([
+        "--prompt-file",
+        str(prompt_file),
         "--usage-file",
         str(usage_file),
-        "--oneshot",
-        oneshot_prompt,
-    ])
+        "--max-completion-tokens",
+        str(profile.frontier.max_completion_tokens),
+        "--request-timeout-seconds",
+        str(request_timeout_seconds),
+    ]
     return argv
 
 
@@ -5662,7 +5819,8 @@ def frontier_command(
     sandbox: str,
     output_last_message: Path,
     usage_file: Path | None = None,
-    oneshot_prompt: str | None = None,
+    prompt_file: Path | None = None,
+    request_timeout_seconds: int | None = None,
 ) -> list[str]:
     """Dispatch to the correct adapter command builder."""
     if profile.frontier.adapter == "codex-cli":
@@ -5672,16 +5830,21 @@ def frontier_command(
             sandbox=sandbox,
             output_last_message=output_last_message,
         )
-    if profile.frontier.adapter == "hermes-oneshot":
-        if usage_file is None or oneshot_prompt is None:
+    if profile.frontier.adapter == "hermes-completion":
+        if (
+            usage_file is None
+            or prompt_file is None
+            or request_timeout_seconds is None
+        ):
             raise EvaluationError(
-                "hermes-oneshot adapter requires usage_file and "
-                "oneshot_prompt."
+                "hermes-completion adapter requires usage_file, prompt_file, "
+                "and request_timeout_seconds."
             )
         return hermes_command(
             profile,
             usage_file=usage_file,
-            oneshot_prompt=oneshot_prompt,
+            prompt_file=prompt_file,
+            request_timeout_seconds=request_timeout_seconds,
         )
     raise EvaluationError(
         f"Unsupported frontier adapter: {profile.frontier.adapter}"
@@ -6621,6 +6784,9 @@ def study_context(
         ),
         "frontierToolsets": environment.get("frontierToolsets"),
         "frontierContextWindow": environment.get("frontierContextWindow"),
+        "frontierMaxCompletionTokens": environment.get(
+            "frontierMaxCompletionTokens"
+        ),
         "reasoningEffort": environment.get("reasoningEffort"),
         "codexVersion": environment.get("codexVersion"),
         "mlxSwarmCommit": environment.get("mlxSwarmCommit"),
@@ -6744,6 +6910,9 @@ def environment_fingerprint(
         "frontierCommandVersion": frontier_version,
         "frontierToolsets": list(profile.frontier.toolsets),
         "frontierContextWindow": profile.frontier.context_window,
+        "frontierMaxCompletionTokens": (
+            profile.frontier.max_completion_tokens
+        ),
         "reasoningEffort": profile.frontier.reasoning_effort or None,
         "mlxSwarmCommit": source["commit"],
         "mlxSwarmSourceDirty": source["dirty"],
@@ -6794,13 +6963,16 @@ def inspect_frontier_version(profile: EvaluationProfile) -> str:
     """Fail closed unless the frontier command version matches the profile pin.
 
     For the codex-cli adapter this checks ``codexVersion`` via
-    ``command --version``.  For hermes-oneshot it checks ``commandVersion``
+    ``command --version``.  For hermes-completion it checks ``commandVersion``
     via ``command --version``.  The returned string is the frozen identity
     used in environment fingerprints and drift checks.
     """
     if profile.frontier.adapter == "codex-cli":
         return inspect_codex_version(profile)
-    if profile.frontier.adapter == "hermes-oneshot":
+    if profile.frontier.adapter in {
+        "hermes-oneshot",
+        "hermes-completion",
+    }:
         actual = _best_effort_version(
             [profile.frontier.command, "--version"]
         )

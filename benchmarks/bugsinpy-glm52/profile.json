@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "profileId": "bugsinpy-glm52",
   "benchmark": {
     "repository": "https://github.com/soarsmu/BugsInPy.git",
@@ -36,15 +36,14 @@
     "platform": "linux/amd64"
   },
   "frontier": {
-    "adapter": "hermes-oneshot",
+    "adapter": "hermes-completion",
     "command": "hermes",
     "commandVersion": "Hermes Agent v0.19.0 (2026.7.20) · upstream cbc1054e",
     "provider": "ollama-cloud",
     "model": "glm-5.2",
     "contextWindowTokens": 262144,
-    "toolsets": [
-      "todo"
-    ],
+    "maxCompletionTokens": 16384,
+    "toolsets": [],
     "armTimeoutSeconds": 2700,
     "planningTimeoutSeconds": 600,
     "localTimeoutSeconds": 1500,

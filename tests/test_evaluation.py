@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -175,10 +177,10 @@ def _write_profile(tmp_path: Path, payload: dict[str, Any] | None = None) -> Pat
 
 def _hermes_profile_payload() -> dict[str, Any]:
     payload = _profile_payload()
-    payload["schemaVersion"] = 2
+    payload["schemaVersion"] = 3
     payload["profileId"] = "test-study-glm52"
     payload["frontier"] = {
-        "adapter": "hermes-oneshot",
+        "adapter": "hermes-completion",
         "command": "hermes",
         "commandVersion": (
             "Hermes Agent v0.19.0 (2026.7.20) · upstream cbc1054e"
@@ -186,7 +188,8 @@ def _hermes_profile_payload() -> dict[str, Any]:
         "provider": "ollama-cloud",
         "model": "glm-5.2",
         "contextWindowTokens": 262144,
-        "toolsets": ["todo"],
+        "maxCompletionTokens": 16384,
+        "toolsets": [],
         "armTimeoutSeconds": 2700,
         "planningTimeoutSeconds": 600,
         "localTimeoutSeconds": 1500,
@@ -299,23 +302,36 @@ def test_hermes_profile_is_strict_pinned_and_round_trips(
 ) -> None:
     payload = _hermes_profile_payload()
     profile = load_evaluation_profile(_write_profile(tmp_path, payload))
-    assert profile.schema_version == 2
-    assert profile.frontier.adapter == "hermes-oneshot"
+    assert profile.schema_version == 3
+    assert profile.frontier.adapter == "hermes-completion"
     assert profile.frontier.provider == "ollama-cloud"
     assert profile.frontier.model == "glm-5.2"
     assert profile.frontier.context_window == 262144
-    assert profile.frontier.toolsets == ("todo",)
+    assert profile.frontier.max_completion_tokens == 16384
+    assert profile.frontier.toolsets == ()
     assert profile_payload(profile) == payload
 
+    legacy = json.loads(json.dumps(payload))
+    legacy["schemaVersion"] = 2
+    legacy["frontier"]["adapter"] = "hermes-oneshot"
+    legacy["frontier"]["toolsets"] = ["todo"]
+    del legacy["frontier"]["maxCompletionTokens"]
+    legacy_profile = load_evaluation_profile(
+        _write_profile(tmp_path, legacy)
+    )
+    assert legacy_profile.frontier.adapter == "hermes-oneshot"
+    assert legacy_profile.frontier.max_completion_tokens == 0
+    assert profile_payload(legacy_profile) == legacy
+
     legacy_with_new_key = _profile_payload()
-    legacy_with_new_key["frontier"]["adapter"] = "hermes-oneshot"
+    legacy_with_new_key["frontier"]["adapter"] = "hermes-completion"
     with pytest.raises(EvaluationError, match="unknown fields"):
         load_evaluation_profile(
             _write_profile(tmp_path, legacy_with_new_key)
         )
 
     invalid_toolsets = _hermes_profile_payload()
-    invalid_toolsets["frontier"]["toolsets"] = ["todo", "terminal"]
+    invalid_toolsets["frontier"]["toolsets"] = ["todo"]
     with pytest.raises(EvaluationError, match="toolsets"):
         load_evaluation_profile(
             _write_profile(tmp_path, invalid_toolsets)
@@ -326,6 +342,11 @@ def test_hermes_profile_is_strict_pinned_and_round_trips(
     with pytest.raises(EvaluationError, match="missing fields"):
         load_evaluation_profile(_write_profile(tmp_path, missing_context))
 
+    missing_limit = _hermes_profile_payload()
+    del missing_limit["frontier"]["maxCompletionTokens"]
+    with pytest.raises(EvaluationError, match="missing fields"):
+        load_evaluation_profile(_write_profile(tmp_path, missing_limit))
+
 
 def test_hermes_command_and_version_pin_are_deterministic(
     tmp_path: Path,
@@ -334,25 +355,44 @@ def test_hermes_command_and_version_pin_are_deterministic(
     profile = load_evaluation_profile(
         _write_profile(tmp_path, _hermes_profile_payload())
     )
+    command_root = tmp_path / "bin"
+    command_root.mkdir()
+    command = command_root / "hermes"
+    command.write_text(f"#!{sys.executable}\n", encoding="utf-8")
+    command.chmod(0o755)
+    monkeypatch.setenv(
+        "PATH",
+        f"{command_root}{os.pathsep}{os.environ.get('PATH', '')}",
+    )
+    prompt_file = tmp_path / "prompt.txt"
+    prompt_file.write_text("Return JSON.", encoding="utf-8")
     usage_file = tmp_path / "usage.json"
     argv = hermes_command(
         profile,
         usage_file=usage_file,
-        oneshot_prompt="Return JSON.",
+        prompt_file=prompt_file,
+        request_timeout_seconds=600,
     )
     assert argv == [
-        "hermes",
-        "--safe-mode",
+        sys.executable,
+        str(
+            Path(__file__).parents[1]
+            / "src"
+            / "mlx_swarm"
+            / "hermes_completion.py"
+        ),
         "--provider",
         "ollama-cloud",
         "--model",
         "glm-5.2",
-        "--toolsets",
-        "todo",
+        "--prompt-file",
+        str(prompt_file),
         "--usage-file",
         str(usage_file),
-        "--oneshot",
-        "Return JSON.",
+        "--max-completion-tokens",
+        "16384",
+        "--request-timeout-seconds",
+        "600",
     ]
     assert all(value not in {"shell", "-c"} for value in argv)
 
@@ -369,6 +409,100 @@ def test_hermes_command_and_version_pin_are_deterministic(
     )
     with pytest.raises(EvaluationError, match="version mismatch"):
         inspect_frontier_version(profile)
+
+
+def test_hermes_completion_bridge_makes_one_tool_free_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from types import ModuleType, SimpleNamespace
+
+    from mlx_swarm.hermes_completion import main
+
+    calls: list[dict[str, Any]] = []
+
+    class FakeCompletions:
+        def create(self, **kwargs: Any) -> Any:
+            calls.append(kwargs)
+            return SimpleNamespace(
+                usage=SimpleNamespace(
+                    prompt_tokens=120,
+                    completion_tokens=30,
+                    total_tokens=150,
+                    prompt_tokens_details=SimpleNamespace(cached_tokens=80),
+                    completion_tokens_details=SimpleNamespace(
+                        reasoning_tokens=20
+                    ),
+                ),
+                choices=[
+                    SimpleNamespace(
+                        message=SimpleNamespace(content='{"edits":[]}')
+                    )
+                ],
+            )
+
+    class FakeOpenAI:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["api_key"] == "secret"
+            assert kwargs["base_url"] == "https://example.invalid/v1"
+            assert kwargs["max_retries"] == 0
+            self.chat = SimpleNamespace(completions=FakeCompletions())
+
+    runtime_module = ModuleType("hermes_cli.runtime_provider")
+    runtime_module.resolve_runtime_provider = lambda **_kwargs: {
+        "api_mode": "chat_completions",
+        "api_key": "secret",
+        "base_url": "https://example.invalid/v1",
+    }
+    hermes_package = ModuleType("hermes_cli")
+    hermes_package.__path__ = []  # type: ignore[attr-defined]
+    openai_module = ModuleType("openai")
+    openai_module.OpenAI = FakeOpenAI  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "hermes_cli", hermes_package)
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        runtime_module,
+    )
+    monkeypatch.setitem(sys.modules, "openai", openai_module)
+
+    prompt = tmp_path / "prompt.txt"
+    usage = tmp_path / "usage.json"
+    prompt.write_text("Return the manifest.", encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "hermes_completion.py",
+            "--provider",
+            "ollama-cloud",
+            "--model",
+            "glm-5.2",
+            "--prompt-file",
+            str(prompt),
+            "--usage-file",
+            str(usage),
+            "--max-completion-tokens",
+            "16384",
+            "--request-timeout-seconds",
+            "600",
+        ],
+    )
+    assert main() == 0
+    assert capsys.readouterr().out == '{"edits":[]}\n'
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["model"] == "glm-5.2"
+    assert call["max_tokens"] == 16384
+    assert call["response_format"] == {"type": "json_object"}
+    assert "tools" not in call
+    receipt = json.loads(usage.read_text(encoding="utf-8"))
+    assert receipt["api_calls"] == 1
+    assert receipt["total_tokens"] == 150
+    assert receipt["cache_read_tokens"] == 80
+    assert receipt["reasoning_tokens"] == 20
+    assert receipt["completed"] is True
 
 
 def test_preliminary_profile_is_fixed_two_plus_six() -> None:
@@ -1295,6 +1429,7 @@ def test_hermes_usage_requires_complete_matching_receipt() -> None:
     invalid_receipts.extend([
         {**receipt, "total_tokens": 1},
         {**receipt, "api_calls": 0},
+        {**receipt, "api_calls": 2},
         {**receipt, "completed": False},
         {**receipt, "failed": True},
         {**receipt, "model": "glm-4.7"},

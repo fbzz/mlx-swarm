@@ -54,14 +54,17 @@ most two repairs, and one final frontier review only after a completed local
 run. The evaluation harness can approve typed artifacts only inside disposable
 case workspaces; normal sessions retain their human approval boundary.
 
-The `hermes-oneshot` adapter runs GLM 5.2 in `--safe-mode` with explicit
-provider/model identity and exactly the `todo` toolset. It exposes no terminal
-or file tools. The direct arm receives the same frozen task packet as planning
-and returns `edit-manifest-v1`; the harness materializes and validates the diff.
-Planning and review consume stdout as strict JSON, with at most one complete
-outer JSON fence removed. Each call must produce a complete, successful
-`--usage-file` receipt whose provider/model and token arithmetic match the
-profile. The harness performs no automatic frontier retry.
+The `hermes-completion` adapter uses the pinned Hermes installation only to
+resolve provider credentials and its OpenAI-compatible endpoint. A packaged
+bridge bypasses the Hermes agent loop and makes exactly one completion request
+per phase, with no tool schema, no automatic model retry, JSON-object response
+mode, and the profile's explicit maximum completion-token ceiling. The prompt
+is passed by file instead of appearing in process arguments. The direct arm
+receives the same frozen task packet as planning and returns
+`edit-manifest-v1`; the harness materializes and validates the diff. Planning
+and review consume stdout as strict JSON, with at most one complete outer JSON
+fence removed. Each call must produce a complete, successful usage receipt
+whose provider/model and token arithmetic match the profile.
 
 Protocol version 4 constructs one deterministic task packet for both arms. It
 contains the objective, failing evidence, fixed acceptance argv, frozen
