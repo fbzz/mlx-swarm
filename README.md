@@ -260,16 +260,19 @@ hermes --version
 The harness uses the pinned Hermes installation to resolve the provider
 endpoint and credentials, then bypasses its interactive agent loop. The
 packaged bridge makes exactly one OpenAI-compatible request per frontier phase
-with no tools, JSON-object response mode, no SDK retry, and a pinned 65,536
-completion-token ceiling. GLM uses explicit low reasoning instead of inheriting
-the provider's unbounded default. Prompts are passed by file rather than process
+with no tools, JSON-object response mode, no SDK retry, and a pinned 16,384
+completion-token ceiling. GLM reasoning is explicitly disabled for this strict
+artifact phase so provider-side thinking cannot consume the entire response
+without emitting JSON. Prompts are passed by file rather than process
 arguments. The direct arm returns `edit-manifest-v1`; the swarm arm returns one
 compact delegation blueprint citing frozen `SOURCE` labels. The harness
-renders same-location runtime call contrasts, validates machine-checkable
-`mustAdd`/`mustRemove` edit assertions, rejects newly introduced Python syntax
-errors, and then deterministically expands the blueprint into the full Plan v2
-contract for the 4B exact-edit worker. This avoids asking GLM to echo large
-source excerpts and mechanical gate boilerplate inside JSON.
+renders failure-delta runtime witnesses and same-location call contrasts,
+requires the blueprint to acknowledge every displayed witness, validates
+machine-checkable `mustAdd`/`mustRemove` edit assertions, rejects newly
+introduced Python syntax errors, and then deterministically expands the
+blueprint into the full Plan v2 contract for the 4B exact-edit worker. This
+avoids asking GLM to echo large source excerpts and mechanical gate boilerplate
+inside JSON.
 Only after eligible local completion does the swarm arm request one structured
 review. Missing, incomplete, mismatched-provider/model, multi-call, or
 arithmetically inconsistent usage receipts invalidate the measurement rather

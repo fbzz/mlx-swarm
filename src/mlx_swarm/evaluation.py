@@ -57,7 +57,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 11
+FAIR_EVALUATION_PROTOCOL_VERSION = 12
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -244,7 +244,7 @@ def trace_selected_frame(frame, event, _arg):
     encoded = json.dumps(values, sort_keys=True, separators=(",", ":"))
     with snapshot_lock:
         prior = snapshots.setdefault(key, [])
-        if encoded not in prior and len(prior) < 6:
+        if encoded not in prior and len(prior) < 12:
             prior.append(encoded)
             snapshot_count += 1
     return trace_selected_frame
@@ -6225,10 +6225,12 @@ def _render_runtime_local_evidence(
     if not isinstance(raw, list):
         return "(unavailable)"
     allowed = _source_context_line_ranges(source_context)
+    failure_delta_lines = _failure_delta_lines(failure_evidence)
     contrast_rows = _render_runtime_local_contrasts(
         raw,
         allowed=allowed,
         failure_evidence=failure_evidence,
+        failure_delta_lines=failure_delta_lines,
     )
     source_blocks = [
         (index, path, int(raw_start), int(raw_end))
@@ -6240,7 +6242,17 @@ def _render_runtime_local_evidence(
     ]
     query_terms = _context_term_counts(failure_evidence)
     ranked: list[
-        tuple[float, int, str, str, int, int, tuple[str, ...], str]
+        tuple[
+            float,
+            int,
+            str,
+            str,
+            int,
+            int,
+            tuple[str, ...],
+            str,
+            bool,
+        ]
     ] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -6292,6 +6304,10 @@ def _render_runtime_local_evidence(
         for observed in observed_strings:
             if len(observed) >= 6 and observed in failure_evidence:
                 score += 2_000 + min(len(observed), 240)
+        witness = _runtime_strings_match_failure_delta(
+            observed_strings,
+            failure_delta_lines,
+        )
         row = (
             f"- {path}:L{line} {function} sample={sample} "
             f"locals={encoded}"
@@ -6305,6 +6321,7 @@ def _render_runtime_local_evidence(
             sample,
             tuple(observed_strings),
             row,
+            witness,
         ))
     ranked.sort(
         key=lambda item: (
@@ -6318,7 +6335,17 @@ def _render_runtime_local_evidence(
         )
     )
     ordered: list[
-        tuple[float, int, str, str, int, int, tuple[str, ...], str]
+        tuple[
+            float,
+            int,
+            str,
+            str,
+            int,
+            int,
+            tuple[str, ...],
+            str,
+            bool,
+        ]
     ] = []
     selected_rows: set[str] = set()
     for source_block in range(len(source_blocks) + 1):
@@ -6333,6 +6360,7 @@ def _render_runtime_local_evidence(
                 _sample,
                 _has_strings,
                 _row,
+                _witness,
             ) = item
             function_key = (path, function)
             if (
@@ -6382,6 +6410,56 @@ def _render_runtime_local_evidence(
         item for item in ranked if item[7] not in selected_rows
     )
     rows: list[str] = []
+    witness_rows: list[str] = []
+    witness_signatures: set[tuple[str, str, tuple[str, ...]]] = set()
+    witness_used = 0
+    for item in ranked:
+        (
+            _score,
+            _source_block,
+            path,
+            function,
+            line,
+            sample,
+            _observed_strings,
+            row,
+            witness,
+        ) = item
+        if not witness:
+            continue
+        matched_values = tuple(sorted({
+            observed.strip()
+            for observed in _observed_single_lines(_observed_strings)
+            if observed.strip() in failure_delta_lines
+        }))
+        signature = (path, function, matched_values)
+        if not matched_values or signature in witness_signatures:
+            continue
+        witness_signatures.add(signature)
+        identity = json.dumps(
+            {
+                "function": function,
+                "line": line,
+                "path": path,
+                "sample": sample,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        rendered = f"- WITNESS {identity} {row.removeprefix('- ')}"
+        if witness_used + len(rendered) + 1 > 4_000:
+            witness_rows.append("...[failure-delta witnesses truncated]")
+            break
+        witness_rows.append(rendered)
+        witness_used += len(rendered) + 1
+        if len(witness_rows) >= 12:
+            break
+    rows.extend([
+        "FAILURE-DELTA WITNESS SAMPLES "
+        "(exact runtime strings also present on mismatch lines):",
+        *(witness_rows or ["(unavailable)"]),
+    ])
     if contrast_rows:
         rows.extend([
             "CAUSAL CONTRAST CANDIDATES (same executed location, distinct calls):",
@@ -6398,6 +6476,7 @@ def _render_runtime_local_evidence(
         _sample,
         _observed_strings,
         row,
+        _witness,
     ) in ordered:
         addition = len(row) + 1
         if used + addition > MAX_TASK_PACKET_RUNTIME_STATE_CHARS:
@@ -6416,6 +6495,7 @@ def _render_runtime_local_contrasts(
     *,
     allowed: dict[str, list[tuple[int, int]]],
     failure_evidence: str,
+    failure_delta_lines: set[str] | None = None,
 ) -> list[str]:
     """Expose deterministic scalar differences between calls at one location."""
     grouped: dict[
@@ -6452,6 +6532,11 @@ def _render_runtime_local_contrasts(
     candidates: list[
         tuple[float, bool, tuple[str, str], int, str]
     ] = []
+    failure_delta_lines = (
+        failure_delta_lines
+        if failure_delta_lines is not None
+        else _failure_delta_lines(failure_evidence)
+    )
     failure_lower = failure_evidence.lower()
     preferred_terms = {
         "comment",
@@ -6467,11 +6552,20 @@ def _render_runtime_local_contrasts(
         unique = {
             sample: values for sample, values in samples
         }
-        ordered = sorted(unique.items())
+        ordered = sorted(
+            unique.items(),
+            key=lambda item: (
+                -int(_runtime_strings_match_failure_delta(
+                    _runtime_local_strings(item[1]),
+                    failure_delta_lines,
+                )),
+                item[0],
+            ),
+        )
         if len(ordered) < 2:
             continue
         for (left_sample, left), (right_sample, right) in combinations(
-            ordered[:4],
+            ordered[:8],
             2,
         ):
             left_flat = _flatten_runtime_local_scalars(left)
@@ -6517,11 +6611,15 @@ def _render_runtime_local_contrasts(
             )
             candidates.append((
                 sum(item[0] for item in differences[:8]),
-                any(
-                    isinstance(left_value, str)
-                    or isinstance(right_value, str)
-                    for _score, _key, left_value, right_value
-                    in differences
+                (
+                    _runtime_strings_match_failure_delta(
+                        _runtime_local_strings(left),
+                        failure_delta_lines,
+                    )
+                    or _runtime_strings_match_failure_delta(
+                        _runtime_local_strings(right),
+                        failure_delta_lines,
+                    )
                 ),
                 (path, function),
                 line,
@@ -6596,6 +6694,44 @@ def _render_runtime_local_contrasts(
             if len(rows) >= 12:
                 return rows
     return rows
+
+
+def _failure_delta_lines(failure_evidence: str) -> set[str]:
+    """Extract exact current-output lines from a verifier unified diff."""
+    result: set[str] = set()
+    for line in failure_evidence.splitlines():
+        if (
+            len(line) < 2
+            or line[0] != "+"
+            or line.startswith("+++")
+        ):
+            continue
+        value = line[1:].strip()
+        if len(value) >= 6:
+            result.add(value)
+    return result
+
+
+def _runtime_strings_match_failure_delta(
+    observed_strings: Sequence[str],
+    failure_delta_lines: set[str],
+) -> bool:
+    """Return whether a runtime string contains an exact mismatch line."""
+    if not failure_delta_lines:
+        return False
+    for observed in _observed_single_lines(observed_strings):
+        if observed.strip() in failure_delta_lines:
+            return True
+    return False
+
+
+def _observed_single_lines(observed_strings: Sequence[str]) -> list[str]:
+    """Exclude aggregate multiline buffers from call-level witnesses."""
+    return [
+        observed
+        for observed in observed_strings
+        if "\n" not in observed and "\r" not in observed
+    ]
 
 
 def _flatten_runtime_local_scalars(
@@ -7325,7 +7461,7 @@ def frontier_delegation_blueprint_prompt(
         "missing source, choose a causal fix, or run commands.\n\n"
         "Return one compact strict JSON object with exactly this shape:\n"
         "{\n"
-        '  "schemaVersion": 3,\n'
+        '  "schemaVersion": 4,\n'
         '  "planId": "lowercase-id",\n'
         '  "objective": "exact objective from the task packet",\n'
         '  "diagnosis": {\n'
@@ -7338,7 +7474,11 @@ def frontier_delegation_blueprint_prompt(
         '    "failingPathPrediction": "string",\n'
         '    "preservedControlPrediction": "string",\n'
         '    "minimalityEvidence": "string",\n'
-        '    "changeEvidenceSources": ["exact SOURCE label"]\n'
+        '    "changeEvidenceSources": ["exact SOURCE label"],\n'
+        '    "failingWitnesses": [\n'
+        '      {"function": "name", "line": 1, "path": '
+        '"relative/path.py", "sample": 1}\n'
+        "    ]\n"
         "  },\n"
         '  "edits": [\n'
         '    {"path": "relative/path.py", '
@@ -7351,6 +7491,8 @@ def frontier_delegation_blueprint_prompt(
         "}\n\n"
         "Rules:\n"
         "- Return JSON only, without prose or a markdown fence.\n"
+        "- Finish the complete JSON object within 8,000 output tokens. Do not "
+        "emit deliberation, analysis, or a second candidate.\n"
         "- Use exactly the listed keys; unknown fields are rejected.\n"
         "- evidenceSources must copy the text after `SOURCE ` exactly, without "
         "including the literal `SOURCE ` display prefix. Never invent a file, "
@@ -7388,6 +7530,16 @@ def frontier_delegation_blueprint_prompt(
         "using a sample. Every new predicate must evaluate true for a supplied "
         "sample representing the failing call; do not guess an unreported "
         "attribute value.\n"
+        "- Copy every object under FAILURE-DELTA WITNESS SAMPLES exactly into "
+        "failingWitnesses, in displayed order. Do not add or omit a witness. "
+        "These are runtime strings that also occur on actual mismatch lines. "
+        "A merely similar RAW LOCAL SAMPLE is not a failing witness. If the "
+        "section says unavailable, use an empty array and do not claim a raw "
+        "sample is the failing input.\n"
+        "- The candidate must account for every displayed failure-delta "
+        "witness at the edited branch, not just the first or easiest call. "
+        "Evaluate each in validationEvidence and preserve at least one "
+        "non-witness control from the same location when one is supplied.\n"
         "- In validationEvidence, explicitly evaluate every new predicate "
         "for the failing input and for one preserved control. If a required "
         "runtime type or value is not established by supplied evidence, the "
@@ -7405,6 +7557,49 @@ def frontier_delegation_blueprint_prompt(
         "the measurement will record planning failure.\n\n"
         f"{task_packet}"
     )
+
+
+def _task_packet_failure_witnesses(
+    task_packet: str,
+) -> list[dict[str, Any]]:
+    """Read the authoritative flat witness identities rendered in a packet."""
+    witnesses: list[dict[str, Any]] = []
+    for encoded in re.findall(
+        r"(?m)^- WITNESS (\{[^\n]+\}) ",
+        task_packet,
+    ):
+        try:
+            witness = json.loads(encoded)
+        except json.JSONDecodeError as exc:
+            raise EvaluationError(
+                "Task packet contains a malformed FAILURE-DELTA WITNESS."
+            ) from exc
+        if (
+            not isinstance(witness, dict)
+            or set(witness) != {"function", "line", "path", "sample"}
+            or not isinstance(witness["function"], str)
+            or not witness["function"]
+            or isinstance(witness["line"], bool)
+            or not isinstance(witness["line"], int)
+            or witness["line"] < 1
+            or not isinstance(witness["path"], str)
+            or not witness["path"]
+            or isinstance(witness["sample"], bool)
+            or not isinstance(witness["sample"], int)
+            or witness["sample"] < 1
+        ):
+            raise EvaluationError(
+                "Task packet contains an invalid FAILURE-DELTA WITNESS."
+            )
+        witnesses.append(witness)
+    if len({
+        json.dumps(value, sort_keys=True, separators=(",", ":"))
+        for value in witnesses
+    }) != len(witnesses):
+        raise EvaluationError(
+            "Task packet contains duplicate FAILURE-DELTA WITNESS objects."
+        )
+    return witnesses
 
 
 def parse_frontier_delegation_blueprint(
@@ -7437,9 +7632,9 @@ def parse_frontier_delegation_blueprint(
             "Frontier delegation blueprint has unknown or missing top-level "
             "fields."
         )
-    if blueprint["schemaVersion"] != 3:
+    if blueprint["schemaVersion"] != 4:
         raise EvaluationError(
-            "Frontier delegation blueprint schemaVersion must be 3."
+            "Frontier delegation blueprint schemaVersion must be 4."
         )
     plan_id = blueprint["planId"]
     if not isinstance(plan_id, str) or not _IDENTIFIER.fullmatch(plan_id):
@@ -7463,6 +7658,7 @@ def parse_frontier_delegation_blueprint(
         "preservedControlPrediction",
         "minimalityEvidence",
         "changeEvidenceSources",
+        "failingWitnesses",
     }
     if not isinstance(diagnosis, dict) or set(diagnosis) != diagnosis_keys:
         raise EvaluationError(
@@ -7471,6 +7667,7 @@ def parse_frontier_delegation_blueprint(
     text_fields = diagnosis_keys - {
         "evidenceSources",
         "changeEvidenceSources",
+        "failingWitnesses",
     }
     for name in sorted(text_fields):
         value = diagnosis[name]
@@ -7512,6 +7709,13 @@ def parse_frontier_delegation_blueprint(
             for value in normalized_values
             if value is not None
         ))
+    expected_witnesses = _task_packet_failure_witnesses(task_packet)
+    failing_witnesses = diagnosis["failingWitnesses"]
+    if failing_witnesses != expected_witnesses:
+        raise EvaluationError(
+            "Frontier delegation diagnosis.failingWitnesses must copy every "
+            "displayed FAILURE-DELTA WITNESS object exactly and in order."
+        )
     edits = blueprint["edits"]
     if not isinstance(edits, list) or not (
         1 <= len(edits) <= MAX_FRONTIER_DELEGATION_EDITS

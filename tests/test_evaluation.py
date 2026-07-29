@@ -2406,7 +2406,7 @@ def _delegation_blueprint(
     source_label: str = "module.py:L1-L3",
 ) -> dict[str, Any]:
     return {
-        "schemaVersion": 3,
+        "schemaVersion": 4,
         "planId": "repair-module",
         "objective": "Repair the frozen failure.",
         "diagnosis": {
@@ -2420,6 +2420,7 @@ def _delegation_blueprint(
             "preservedControlPrediction": "The function signature is unchanged.",
             "minimalityEvidence": "Only the observed literal changes.",
             "changeEvidenceSources": [source_label],
+            "failingWitnesses": [],
         },
         "edits": [{
             "path": "module.py",
@@ -2618,6 +2619,52 @@ def test_frontier_delegation_blueprint_rejects_unproven_change_assertion(
             approved_write_roots=["module.py"],
             maximum_manifest_characters=3_200,
         )
+
+
+def test_frontier_delegation_blueprint_requires_exact_failure_witnesses(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+    task_packet = (
+        "FAILURE-DELTA WITNESS SAMPLES "
+        "(exact runtime strings also present on mismatch lines):\n"
+        '- WITNESS {"function":"value","line":2,"path":"module.py",'
+        '"sample":7} module.py:L2 value sample=7 locals={}\n'
+        "SOURCE module.py:L1-L2\n"
+        "00001 | def value():\n"
+        "00002 |     return 1\n"
+        "END SOURCE module.py:L1-L2\n"
+    )
+    payload = _delegation_blueprint(source_label="module.py:L1-L2")
+    with pytest.raises(EvaluationError, match="failingWitnesses"):
+        parse_frontier_delegation_blueprint(
+            json.dumps(payload),
+            objective="Repair the frozen failure.",
+            task_packet=task_packet,
+            repository=tmp_path,
+            approved_write_roots=["module.py"],
+            maximum_manifest_characters=3_200,
+        )
+
+    payload["diagnosis"]["failingWitnesses"] = [{
+        "function": "value",
+        "line": 2,
+        "path": "module.py",
+        "sample": 7,
+    }]
+    parsed = parse_frontier_delegation_blueprint(
+        json.dumps(payload),
+        objective="Repair the frozen failure.",
+        task_packet=task_packet,
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+        maximum_manifest_characters=3_200,
+    )
+
+    assert parsed["diagnosis"]["failingWitnesses"][0]["sample"] == 7
 
 
 def test_frontier_edit_manifest_rejects_new_python_syntax_error(
@@ -2958,9 +3005,7 @@ def test_runtime_local_evidence_prioritizes_traceback_function() -> None:
         failure_evidence="Traceback in split_line while preserving # type: int",
     )
 
-    assert rendered.splitlines()[0].startswith(
-        "- module.py:L90 split_line"
-    )
+    assert "- module.py:L90 split_line" in rendered
 
 
 def test_runtime_local_evidence_surfaces_same_location_call_contrast() -> None:
@@ -3013,13 +3058,54 @@ def test_runtime_local_evidence_surfaces_same_location_call_contrast() -> None:
         failure_evidence="def f(a,):  # type: int is not exploded",
     )
 
-    assert rendered.splitlines()[0].startswith(
-        "CAUSAL CONTRAST CANDIDATES"
-    )
+    assert "CAUSAL CONTRAST CANDIDATES" in rendered
     assert "sample=1 vs sample=2" in rendered
     assert "line.fields.comments.length: 0 -> 1" in rendered
     assert '"from typing import Any" -> "def f(a,):  # type: int"' in rendered
     assert "RAW LOCAL SAMPLES:" in rendered
+
+
+def test_runtime_local_evidence_promotes_late_failure_delta_witness() -> None:
+    records = [
+        {
+            "path": "module.py",
+            "line": 12,
+            "function": "split_line",
+            "sample": sample,
+            "locals": {
+                "line_str": {
+                    "type": "str",
+                    "value": (
+                        "def control_%d(a):" % sample
+                        if sample < 8
+                        else "def failing(a, b, c, d):  # type: int"
+                    ),
+                },
+                "comments": 0 if sample < 8 else 4,
+            },
+        }
+        for sample in range(1, 9)
+    ]
+
+    rendered = _render_runtime_local_evidence(
+        records,
+        source_context=(
+            "SOURCE module.py:L1-L20\n"
+            "00012 | if is_line_short_enough(line):\n"
+            "END SOURCE module.py:L1-L20\n"
+        ),
+        failure_evidence=(
+            "Output differs:\n"
+            "+ def failing(a, b, c, d):  # type: int\n"
+            "- def failing(\n"
+        ),
+    )
+
+    assert (
+        '- WITNESS {"function":"split_line","line":12,'
+        '"path":"module.py","sample":8}'
+    ) in rendered
+    assert "sample=8" in rendered.split("CAUSAL CONTRAST CANDIDATES", 1)[1]
 
 
 def test_runtime_local_evidence_preserves_function_diversity_by_source_block(
@@ -3184,7 +3270,10 @@ def test_frontier_delegation_prompt_exposes_small_worker_limits() -> None:
     assert '"maxGenerationTokens": 800' in prompt
     assert "must not discover APIs" in prompt
     assert "compact strict JSON" in prompt
-    assert '"schemaVersion": 3' in prompt
+    assert '"schemaVersion": 4' in prompt
+    assert '"failingWitnesses"' in prompt
+    assert "FAILURE-DELTA WITNESS SAMPLES" in prompt
+    assert "within 8,000 output tokens" in prompt
     assert '"mustAdd"' in prompt
     assert "invalid Python syntax" not in prompt
     assert "Mentally splice new into the complete file" in prompt

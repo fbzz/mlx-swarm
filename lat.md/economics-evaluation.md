@@ -98,7 +98,7 @@ source excerpt must be an exact contiguous substring, and a mutating task that
 names a file cannot rely on a rewritten or elided version of that file. This
 prevents source summaries from becoming non-applicable diff context.
 
-For the stateless Hermes adapter, protocol v11 asks the frontier for a compact
+For the stateless Hermes adapter, protocol v12 asks the frontier for a compact
 delegation blueprint instead of making it reproduce the full Plan schema and
 large source excerpts. The strict blueprint cites only frozen `SOURCE` labels,
 contains the evidence-backed diagnosis and sealed complete-line edit ranges, and
@@ -116,16 +116,28 @@ SOURCE block and is canonicalized to that block. The parser also deterministical
 removes one literal `SOURCE ` display prefix from a cited label; the enclosed
 label must still resolve uniquely to sealed evidence.
 
-Protocol v11 additionally renders bounded same-location call contrasts before
-the raw runtime samples. The frontier can therefore compare observed scalar
-state at the earliest executed branch instead of combining unrelated calls.
+Protocol v12 additionally captures up to twelve distinct states at an executed
+location, promotes exact strings that also occur on verifier mismatch lines as
+failure-delta witnesses, and renders bounded same-location call contrasts
+before the raw runtime samples. The blueprint must copy every displayed witness
+identity exactly, so a similar control call cannot silently become the claimed
+failing input. Contrasts rank those witnesses ahead of earlier calls. The
+frontier can therefore compare observed scalar state at the earliest executed
+branch and account for multiple failing shapes instead of combining unrelated
+calls or validating only the first mismatch.
 Every proposed range edit declares exact `mustAdd` and `mustRemove` assertions;
 the parser proves those textual changes occurred and rejects newly introduced
 Python syntax errors and unresolved bare callable names before the plan becomes
 authoritative. A rejected planning response produces an explicit zero-token
 local replay failure instead of aborting the promotion ledger.
 
-Protocol-v11 evaluation plans require `edit-manifest-v1` mutating workers
+The GLM profile disables provider-side reasoning for these strict JSON artifact
+calls and caps completion at 16,384 tokens. This prevents hidden reasoning from
+consuming the entire completion allowance without a final response; the
+frontier prompt independently requires a complete blueprint within 8,000
+output tokens.
+
+Protocol-v12 evaluation plans require `edit-manifest-v1` mutating workers
 with deterministic sampling, thinking disabled, and at most 800 generation
 tokens. The worker returns bounded exact old/new anchors; the runtime derives
 the candidate unified diff and runs the same workspace checks. This keeps the
