@@ -92,6 +92,7 @@ def main() -> int:
         return 2
 
     calls = 0
+    receipt_written = False
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
         from openai import OpenAI
@@ -149,9 +150,7 @@ def main() -> int:
         if len(choices) != 1:
             raise RuntimeError("Provider did not return exactly one choice.")
         content = choices[0].message.content
-        if not isinstance(content, str) or not content.strip():
-            raise RuntimeError("Provider returned no final response content.")
-
+        has_content = isinstance(content, str) and bool(content.strip())
         receipt = {
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
@@ -168,25 +167,29 @@ def main() -> int:
             "api_calls": calls,
             "model": args.model,
             "provider": args.provider,
-            "completed": True,
-            "failed": False,
+            "completed": has_content,
+            "failed": not has_content,
         }
         _atomic_json(args.usage_file, receipt)
+        receipt_written = True
+        if not has_content:
+            raise RuntimeError("Provider returned no final response content.")
         sys.stdout.write(content.strip())
         sys.stdout.write("\n")
         return 0
     except Exception as exc:
-        try:
-            _atomic_json(
-                args.usage_file,
-                _failed_receipt(
-                    provider=args.provider,
-                    model=args.model,
-                    api_calls=calls,
-                ),
-            )
-        except OSError:
-            pass
+        if not receipt_written:
+            try:
+                _atomic_json(
+                    args.usage_file,
+                    _failed_receipt(
+                        provider=args.provider,
+                        model=args.model,
+                        api_calls=calls,
+                    ),
+                )
+            except OSError:
+                pass
         print(f"Hermes completion failed: {exc}", file=sys.stderr)
         return 1
 

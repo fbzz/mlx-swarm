@@ -42,7 +42,7 @@
     "provider": "ollama-cloud",
     "model": "glm-5.2",
     "contextWindowTokens": 262144,
-    "maxCompletionTokens": 16384,
+    "maxCompletionTokens": 32768,
     "toolsets": [],
     "armTimeoutSeconds": 2700,
     "planningTimeoutSeconds": 600,

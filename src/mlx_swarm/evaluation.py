@@ -7202,6 +7202,21 @@ def run_command(
             except ProcessLookupError:
                 pass
             stdout, stderr = process.communicate()
+    except BaseException:
+        _remove_timed_out_docker_container(argv)
+        try:
+            os.killpg(process.pid, 15)
+        except ProcessLookupError:
+            pass
+        try:
+            process.communicate(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, 9)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+        raise
     return CommandResult(
         argv=tuple(argv),
         returncode=process.returncode,

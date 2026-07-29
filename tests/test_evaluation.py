@@ -421,6 +421,7 @@ def test_hermes_completion_bridge_makes_one_tool_free_request(
     from mlx_swarm.hermes_completion import main
 
     calls: list[dict[str, Any]] = []
+    response_content = ['{"edits":[]}']
 
     class FakeCompletions:
         def create(self, **kwargs: Any) -> Any:
@@ -437,7 +438,9 @@ def test_hermes_completion_bridge_makes_one_tool_free_request(
                 ),
                 choices=[
                     SimpleNamespace(
-                        message=SimpleNamespace(content='{"edits":[]}')
+                        message=SimpleNamespace(
+                            content=response_content[0]
+                        )
                     )
                 ],
             )
@@ -503,6 +506,26 @@ def test_hermes_completion_bridge_makes_one_tool_free_request(
     assert receipt["cache_read_tokens"] == 80
     assert receipt["reasoning_tokens"] == 20
     assert receipt["completed"] is True
+
+    response_content[0] = ""
+    failed_usage = tmp_path / "failed-usage.json"
+    failed_argv = list(sys.argv)
+    failed_argv[failed_argv.index("--usage-file") + 1] = str(failed_usage)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        failed_argv,
+    )
+    assert main() == 1
+    assert "no final response content" in capsys.readouterr().err
+    failed_receipt = json.loads(
+        failed_usage.read_text(encoding="utf-8")
+    )
+    assert failed_receipt["input_tokens"] == 120
+    assert failed_receipt["output_tokens"] == 30
+    assert failed_receipt["total_tokens"] == 150
+    assert failed_receipt["completed"] is False
+    assert failed_receipt["failed"] is True
 
 
 def test_preliminary_profile_is_fixed_two_plus_six() -> None:

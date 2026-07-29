@@ -258,7 +258,7 @@ hermes --version
 The harness uses the pinned Hermes installation to resolve the provider
 endpoint and credentials, then bypasses its interactive agent loop. The
 packaged bridge makes exactly one OpenAI-compatible request per frontier phase
-with no tools, JSON-object response mode, no SDK retry, and a pinned 16,384
+with no tools, JSON-object response mode, no SDK retry, and a pinned 32,768
 completion-token ceiling. Prompts are passed by file rather than process
 arguments. The direct arm returns `edit-manifest-v1`; the swarm arm returns one
 validated plan and, only after eligible local completion, one structured
