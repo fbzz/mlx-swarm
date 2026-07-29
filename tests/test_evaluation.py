@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
@@ -1507,6 +1508,36 @@ def test_preparation_sources_are_removed_before_model_execution(
     assert not benchmark.exists()
     assert not mirrors.exists()
     assert runtime.is_dir()
+
+
+def test_preparation_cleanup_retries_transient_directory_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluation = tmp_path / "evaluation"
+    benchmark = evaluation / "benchmark"
+    mirrors = evaluation / "cache" / "repositories"
+    benchmark.mkdir(parents=True)
+    mirrors.mkdir(parents=True)
+    (benchmark / ".DS_Store").write_text("race", encoding="utf-8")
+    calls = 0
+    real_rmtree = shutil.rmtree
+
+    def flaky_rmtree(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError(66, "Directory not empty", path)
+        real_rmtree(path)
+
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.shutil.rmtree",
+        flaky_rmtree,
+    )
+    remove_sensitive_preparation_sources(evaluation)
+    assert calls == 3
+    assert not benchmark.exists()
+    assert not mirrors.exists()
 
 
 def test_store_exports_immutable_sanitized_evidence_and_check(

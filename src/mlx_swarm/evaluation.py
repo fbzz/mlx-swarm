@@ -5358,7 +5358,10 @@ def materialize_frontier_edit_manifest(
                 f"Frontier edit {index + 1} path, old, and new must be "
                 "strings."
             )
-        path = _safe_patch_path(path_value)
+        try:
+            path = _safe_patch_path(path_value)
+        except WorkspaceError as exc:
+            raise EvaluationError(str(exc)) from exc
         if not old:
             raise EvaluationError(
                 f"Frontier edit {index + 1} old text must not be empty."
@@ -5370,7 +5373,10 @@ def materialize_frontier_edit_manifest(
                 f"Frontier edit path is outside approved write roots: {path}"
             )
         candidate = repository / path
-        _reject_symlink_components(repository, candidate, path)
+        try:
+            _reject_symlink_components(repository, candidate, path)
+        except WorkspaceError as exc:
+            raise EvaluationError(str(exc)) from exc
         if not candidate.is_file():
             raise EvaluationError(
                 f"Frontier edit path is not a regular file: {path}"
@@ -6832,9 +6838,28 @@ def remove_sensitive_preparation_sources(evaluation_dir: Path) -> None:
         if not _is_within(target, root):
             raise EvaluationError("Preparation cleanup path escaped its root.")
         if target.is_dir() and not target.is_symlink():
-            shutil.rmtree(target)
+            _remove_tree_with_retries(target)
         elif target.exists() or target.is_symlink():
             target.unlink()
+
+
+def _remove_tree_with_retries(path: Path, *, attempts: int = 5) -> None:
+    """Remove a tree despite short-lived filesystem metadata races."""
+    last_error: OSError | None = None
+    for attempt in range(attempts):
+        try:
+            shutil.rmtree(path)
+            return
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            last_error = exc
+            if attempt + 1 < attempts:
+                time.sleep(0.05 * (attempt + 1))
+    raise EvaluationError(
+        f"Could not remove sensitive preparation tree after {attempts} "
+        f"attempts: {path}: {last_error}"
+    )
 
 
 def sanitize_suite(suite: dict[str, Any]) -> dict[str, Any]:
