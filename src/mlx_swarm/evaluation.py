@@ -56,7 +56,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 9
+FAIR_EVALUATION_PROTOCOL_VERSION = 10
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -6150,6 +6150,11 @@ def _render_runtime_local_evidence(
     if not isinstance(raw, list):
         return "(unavailable)"
     allowed = _source_context_line_ranges(source_context)
+    contrast_rows = _render_runtime_local_contrasts(
+        raw,
+        allowed=allowed,
+        failure_evidence=failure_evidence,
+    )
     source_blocks = [
         (index, path, int(raw_start), int(raw_end))
         for index, (path, raw_start, raw_end) in enumerate(re.findall(
@@ -6302,7 +6307,13 @@ def _render_runtime_local_evidence(
         item for item in ranked if item[7] not in selected_rows
     )
     rows: list[str] = []
-    used = 0
+    if contrast_rows:
+        rows.extend([
+            "CAUSAL CONTRAST CANDIDATES (same executed location, distinct calls):",
+            *contrast_rows,
+            "RAW LOCAL SAMPLES:",
+        ])
+    used = sum(len(row) + 1 for row in rows)
     for (
         _score,
         _source_block,
@@ -6323,6 +6334,237 @@ def _render_runtime_local_evidence(
             rows.append("...[runtime local samples truncated]")
             break
     return "\n".join(rows) if rows else "(unavailable)"
+
+
+def _render_runtime_local_contrasts(
+    raw: list[Any],
+    *,
+    allowed: dict[str, list[tuple[int, int]]],
+    failure_evidence: str,
+) -> list[str]:
+    """Expose deterministic scalar differences between calls at one location."""
+    grouped: dict[
+        tuple[str, str, int],
+        list[tuple[int, dict[str, Any]]],
+    ] = {}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        function = item.get("function")
+        line = item.get("line")
+        sample = item.get("sample")
+        local_values = item.get("locals")
+        if (
+            not isinstance(path, str)
+            or not isinstance(function, str)
+            or isinstance(line, bool)
+            or not isinstance(line, int)
+            or isinstance(sample, bool)
+            or not isinstance(sample, int)
+            or not isinstance(local_values, dict)
+            or not any(
+                start <= line <= end
+                for start, end in allowed.get(path, [])
+            )
+        ):
+            continue
+        compact = _compact_runtime_local_value(local_values)
+        if isinstance(compact, dict):
+            grouped.setdefault((path, function, line), []).append(
+                (sample, compact),
+            )
+    candidates: list[
+        tuple[float, bool, tuple[str, str], int, str]
+    ] = []
+    failure_lower = failure_evidence.lower()
+    preferred_terms = {
+        "comment",
+        "inside",
+        "length",
+        "line_str",
+        "shape",
+        "should",
+        "type",
+        "value",
+    }
+    for (path, function, line), samples in sorted(grouped.items()):
+        unique = {
+            sample: values for sample, values in samples
+        }
+        ordered = sorted(unique.items())
+        if len(ordered) < 2:
+            continue
+        for (left_sample, left), (right_sample, right) in combinations(
+            ordered[:4],
+            2,
+        ):
+            left_flat = _flatten_runtime_local_scalars(left)
+            right_flat = _flatten_runtime_local_scalars(right)
+            differences: list[tuple[float, str, Any, Any]] = []
+            for key in sorted(left_flat.keys() & right_flat.keys()):
+                left_value = left_flat[key]
+                right_value = right_flat[key]
+                if left_value == right_value:
+                    continue
+                rendered_pair = (
+                    f"{_render_runtime_scalar(left_value)} -> "
+                    f"{_render_runtime_scalar(right_value)}"
+                )
+                score = 0.0
+                lowered_key = key.lower()
+                score += 20.0 * sum(
+                    term in lowered_key for term in preferred_terms
+                )
+                if any(
+                    isinstance(value, str)
+                    and len(value) >= 6
+                    and value.lower() in failure_lower
+                    for value in (left_value, right_value)
+                ):
+                    score += 1_000.0
+                score += min(len(rendered_pair), 240) / 100.0
+                differences.append(
+                    (score, key, left_value, right_value),
+                )
+            if not differences:
+                continue
+            differences.sort(key=lambda item: (-item[0], item[1]))
+            rendered = "; ".join(
+                f"{key}: {_render_runtime_scalar(left_value)} -> "
+                f"{_render_runtime_scalar(right_value)}"
+                for _score, key, left_value, right_value
+                in differences[:8]
+            )
+            row = (
+                f"- {path}:L{line} {function} sample={left_sample} "
+                f"vs sample={right_sample}: {rendered}"
+            )
+            candidates.append((
+                sum(item[0] for item in differences[:8]),
+                any(
+                    isinstance(left_value, str)
+                    or isinstance(right_value, str)
+                    for _score, _key, left_value, right_value
+                    in differences
+                ),
+                (path, function),
+                line,
+                row,
+            ))
+    by_function: dict[
+        tuple[str, str],
+        list[tuple[float, bool, tuple[str, str], int, str]],
+    ] = {}
+    for candidate in candidates:
+        by_function.setdefault(candidate[2], []).append(candidate)
+    primary: list[
+        tuple[float, bool, tuple[str, str], int, str]
+    ] = []
+    secondary: list[
+        tuple[float, bool, tuple[str, str], int, str]
+    ] = []
+    for function_candidates in by_function.values():
+        ordered = sorted(
+            function_candidates,
+            key=lambda item: (
+                -int(item[1]),
+                item[3],
+                -item[0],
+                item[4],
+            ),
+        )
+        primary.append(ordered[0])
+        secondary.extend(ordered[1:])
+    candidates = [
+        *sorted(
+            primary,
+            key=lambda item: (
+                -int(item[1]),
+                -item[0],
+                item[2],
+                item[3],
+                item[4],
+            ),
+        ),
+        *sorted(
+            secondary,
+            key=lambda item: (
+                -int(item[1]),
+                -item[0],
+                item[2],
+                item[3],
+                item[4],
+            ),
+        ),
+    ]
+    rows: list[str] = []
+    selected_rows: set[str] = set()
+    selected_functions: dict[tuple[str, str], int] = {}
+    used = 0
+    for per_function_limit in (1, 2):
+        for _score, _has_string, function_key, _line, row in candidates:
+            if (
+                row in selected_rows
+                or selected_functions.get(function_key, 0)
+                >= per_function_limit
+            ):
+                continue
+            if used + len(row) + 1 > 5_000:
+                continue
+            rows.append(row)
+            selected_rows.add(row)
+            selected_functions[function_key] = (
+                selected_functions.get(function_key, 0) + 1
+            )
+            used += len(row) + 1
+            if len(rows) >= 12:
+                return rows
+    return rows
+
+
+def _flatten_runtime_local_scalars(
+    value: Any,
+    *,
+    prefix: str = "",
+    depth: int = 0,
+) -> dict[str, Any]:
+    """Flatten bounded JSON-safe locals without evaluating application code."""
+    if depth > 8:
+        return {}
+    if isinstance(value, dict):
+        flattened: dict[str, Any] = {}
+        for key, item in value.items():
+            if key == "type":
+                continue
+            child = f"{prefix}.{key}" if prefix else key
+            flattened.update(
+                _flatten_runtime_local_scalars(
+                    item,
+                    prefix=child,
+                    depth=depth + 1,
+                )
+            )
+        return flattened
+    if isinstance(value, list):
+        return {
+            f"{prefix}.length": len(value),
+        } if prefix else {}
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return {prefix: value} if prefix else {}
+    return {}
+
+
+def _render_runtime_scalar(value: Any) -> str:
+    rendered = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(rendered) > 180:
+        rendered = rendered[:160] + "...[truncated]"
+    return rendered
 
 
 def _runtime_local_strings(value: Any) -> list[str]:
@@ -6965,6 +7207,10 @@ def frontier_alone_response_prompt(task_packet: str) -> str:
         "- Every new predicate must be supported by supplied source for both "
         "the failing input and a preserved control; do not assume an unseen "
         "runtime type or value.\n"
+        "- A numeric runtime value does not prove membership in a named enum "
+        "or set. Cite the supplied definition before relying on membership; "
+        "otherwise prefer directly observed fields and existing predicates "
+        "visible in the same SOURCE window.\n"
         "- Modify only paths below the approved write roots.\n"
         "- Do not modify tests, Git metadata, dependencies, or benchmark "
         "evidence.\n"
@@ -7004,7 +7250,7 @@ def frontier_delegation_blueprint_prompt(
         "missing source, choose a causal fix, or run commands.\n\n"
         "Return one compact strict JSON object with exactly this shape:\n"
         "{\n"
-        '  "schemaVersion": 2,\n'
+        '  "schemaVersion": 3,\n'
         '  "planId": "lowercase-id",\n'
         '  "objective": "exact objective from the task packet",\n'
         '  "diagnosis": {\n'
@@ -7023,7 +7269,9 @@ def frontier_delegation_blueprint_prompt(
         '    {"path": "relative/path.py", '
         '"sourceLabel": "exact SOURCE label", '
         '"startLine": 1, "endLine": 1, '
-        '"new": "replacement for those complete lines"}\n'
+        '"new": "replacement for those complete lines", '
+        '"mustAdd": ["exact newly introduced text"], '
+        '"mustRemove": ["exact removed text"]}\n'
         "  ]\n"
         "}\n\n"
         "Rules:\n"
@@ -7039,6 +7287,15 @@ def frontier_delegation_blueprint_prompt(
         "- startLine and endLine are inclusive repository line numbers shown "
         "in the cited SOURCE block. path must match that SOURCE path. new is "
         "the complete replacement for those lines without display prefixes.\n"
+        "- Each edit must declare mustAdd and mustRemove arrays. Every "
+        "mustAdd item must be a non-whitespace exact substring newly present "
+        "in new; every mustRemove item must be a non-whitespace exact "
+        "substring removed from the selected old range. At least one array "
+        "must be non-empty. Quote those literal changes in candidateChange "
+        "so the structured edit demonstrably implements the stated intent.\n"
+        "- Preserve the selected source indentation exactly unless indentation "
+        "is the diagnosed cause. Mentally splice new into the complete file "
+        "and reject your own candidate if it would not parse as Python.\n"
         "- Before emitting JSON, perform this grounding check in the same "
         "planning call: (1) locate the causal branch in a cited SOURCE "
         "window, (2) test the causal hypothesis against the failing path and "
@@ -7059,6 +7316,10 @@ def frontier_delegation_blueprint_prompt(
         "for the failing input and for one preserved control. If a required "
         "runtime type or value is not established by supplied evidence, the "
         "candidate is not validated and must not be selected.\n"
+        "- A numeric runtime value does not prove membership in a named enum "
+        "or set. Cite the supplied definition before relying on membership; "
+        "otherwise prefer directly observed fields and existing predicates "
+        "visible in the same SOURCE window.\n"
         "- Use path, never file, as the edit path key.\n"
         "- Keep the combined edit manifest short enough for the worker's "
         "frozen maximum generation budget.\n"
@@ -7100,9 +7361,9 @@ def parse_frontier_delegation_blueprint(
             "Frontier delegation blueprint has unknown or missing top-level "
             "fields."
         )
-    if blueprint["schemaVersion"] != 2:
+    if blueprint["schemaVersion"] != 3:
         raise EvaluationError(
-            "Frontier delegation blueprint schemaVersion must be 2."
+            "Frontier delegation blueprint schemaVersion must be 3."
         )
     plan_id = blueprint["planId"]
     if not isinstance(plan_id, str) or not _IDENTIFIER.fullmatch(plan_id):
@@ -7225,6 +7486,8 @@ def _materialize_frontier_range_edits(
             "startLine",
             "endLine",
             "new",
+            "mustAdd",
+            "mustRemove",
         }:
             raise EvaluationError(
                 f"Frontier delegation edits[{index}] has unknown or missing "
@@ -7235,6 +7498,8 @@ def _materialize_frontier_range_edits(
         start = raw["startLine"]
         end = raw["endLine"]
         new = raw["new"]
+        must_add = raw["mustAdd"]
+        must_remove = raw["mustRemove"]
         if not isinstance(path, str) or not path:
             raise EvaluationError(
                 f"Frontier delegation edits[{index}].path must be text."
@@ -7285,6 +7550,30 @@ def _materialize_frontier_range_edits(
             raise EvaluationError(
                 f"Frontier delegation edits[{index}].new must be text."
             )
+        for field, values in (
+            ("mustAdd", must_add),
+            ("mustRemove", must_remove),
+        ):
+            if (
+                not isinstance(values, list)
+                or len(values) > 8
+                or not all(
+                    isinstance(value, str)
+                    and bool(value.strip())
+                    and len(value) <= 512
+                    for value in values
+                )
+                or len(set(values)) != len(values)
+            ):
+                raise EvaluationError(
+                    f"Frontier delegation edits[{index}].{field} must contain "
+                    "up to 8 unique, non-whitespace text assertions."
+                )
+        if not must_add and not must_remove:
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}] must declare at least "
+                "one mustAdd or mustRemove assertion."
+            )
         candidate = (repository / path).resolve()
         if (
             not _is_within(candidate, repository.resolve())
@@ -7314,6 +7603,18 @@ def _materialize_frontier_range_edits(
             )
         if old.endswith("\n") and new and not new.endswith("\n"):
             new += "\n"
+        for value in must_add:
+            if value not in new or value in old:
+                raise EvaluationError(
+                    f"Frontier delegation edits[{index}].mustAdd assertion "
+                    "is not newly introduced by new."
+                )
+        for value in must_remove:
+            if value not in old or value in new:
+                raise EvaluationError(
+                    f"Frontier delegation edits[{index}].mustRemove assertion "
+                    "is not removed from the selected source."
+                )
         materialized.append({
             "path": path,
             "old": old,
@@ -7615,6 +7916,24 @@ def materialize_frontier_edit_manifest(
         after = modified[path]
         if before == after:
             continue
+        if path.endswith(".py"):
+            try:
+                ast.parse(before, filename=path)
+            except SyntaxError:
+                pass
+            else:
+                try:
+                    ast.parse(after, filename=path)
+                except SyntaxError as exc:
+                    location = (
+                        f" at line {exc.lineno}"
+                        if exc.lineno is not None
+                        else ""
+                    )
+                    raise EvaluationError(
+                        "Frontier edit manifest introduces invalid Python "
+                        f"syntax in {path}{location}: {exc.msg}."
+                    ) from exc
         unified = "".join(
             difflib.unified_diff(
                 before.splitlines(keepends=True),

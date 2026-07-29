@@ -2371,7 +2371,7 @@ def _delegation_blueprint(
     source_label: str = "module.py:L1-L3",
 ) -> dict[str, Any]:
     return {
-        "schemaVersion": 2,
+        "schemaVersion": 3,
         "planId": "repair-module",
         "objective": "Repair the frozen failure.",
         "diagnosis": {
@@ -2392,6 +2392,8 @@ def _delegation_blueprint(
             "startLine": 2,
             "endLine": 2,
             "new": "    return 2",
+            "mustAdd": ["return 2"],
+            "mustRemove": ["return 1"],
         }],
     }
 
@@ -2554,6 +2556,54 @@ def test_frontier_delegation_blueprint_rejects_range_outside_source(
             repository=tmp_path,
             approved_write_roots=["module.py"],
             maximum_manifest_characters=3_200,
+        )
+
+
+def test_frontier_delegation_blueprint_rejects_unproven_change_assertion(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+    payload = _delegation_blueprint()
+    payload["edits"][0]["mustAdd"] = ["return 3"]
+
+    with pytest.raises(EvaluationError, match="mustAdd assertion"):
+        parse_frontier_delegation_blueprint(
+            json.dumps(payload),
+            objective="Repair the frozen failure.",
+            task_packet=(
+                "SOURCE module.py:L1-L3\n"
+                "00001 | def value():\n"
+                "00002 |     return 1\n"
+                "END SOURCE module.py:L1-L3\n"
+            ),
+            repository=tmp_path,
+            approved_write_roots=["module.py"],
+            maximum_manifest_characters=3_200,
+        )
+
+
+def test_frontier_edit_manifest_rejects_new_python_syntax_error(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(EvaluationError, match="invalid Python syntax"):
+        materialize_frontier_edit_manifest(
+            json.dumps({
+                "edits": [{
+                    "path": "module.py",
+                    "old": "    return 1\n",
+                    "new": "return 2\n",
+                }],
+            }),
+            repository=tmp_path,
+            approved_write_roots=["module.py"],
         )
 
 
@@ -2830,6 +2880,65 @@ def test_runtime_local_evidence_prioritizes_traceback_function() -> None:
     )
 
 
+def test_runtime_local_evidence_surfaces_same_location_call_contrast() -> None:
+    rendered = _render_runtime_local_evidence(
+        [
+            {
+                "path": "module.py",
+                "line": 12,
+                "function": "split_line",
+                "sample": 1,
+                "locals": {
+                    "line_str": {
+                        "type": "str",
+                        "value": "from typing import Any",
+                    },
+                    "line": {
+                        "type": "Line",
+                        "fields": {
+                            "comments": {"type": "dict", "length": 0},
+                            "should_explode": False,
+                        },
+                    },
+                },
+            },
+            {
+                "path": "module.py",
+                "line": 12,
+                "function": "split_line",
+                "sample": 2,
+                "locals": {
+                    "line_str": {
+                        "type": "str",
+                        "value": "def f(a,):  # type: int",
+                    },
+                    "line": {
+                        "type": "Line",
+                        "fields": {
+                            "comments": {"type": "dict", "length": 1},
+                            "should_explode": False,
+                        },
+                    },
+                },
+            },
+        ],
+        source_context=(
+            "SOURCE module.py:L1-L20\n"
+            "00012 | if is_line_short_enough(line):\n"
+            "END SOURCE module.py:L1-L20\n"
+        ),
+        failure_evidence="def f(a,):  # type: int is not exploded",
+    )
+
+    assert rendered.splitlines()[0].startswith(
+        "CAUSAL CONTRAST CANDIDATES"
+    )
+    assert "sample=1 vs sample=2" in rendered
+    assert "line.fields.comments.length: 0 -> 1" in rendered
+    assert '"from typing import Any" -> "def f(a,):  # type: int"' in rendered
+    assert "RAW LOCAL SAMPLES:" in rendered
+
+
 def test_runtime_local_evidence_preserves_function_diversity_by_source_block(
 ) -> None:
     records: list[dict[str, Any]] = []
@@ -2992,6 +3101,10 @@ def test_frontier_delegation_prompt_exposes_small_worker_limits() -> None:
     assert '"maxGenerationTokens": 800' in prompt
     assert "must not discover APIs" in prompt
     assert "compact strict JSON" in prompt
+    assert '"schemaVersion": 3' in prompt
+    assert '"mustAdd"' in prompt
+    assert "invalid Python syntax" not in prompt
+    assert "Mentally splice new into the complete file" in prompt
 
 
 def test_directory_size_counts_files_without_following_symlinks(

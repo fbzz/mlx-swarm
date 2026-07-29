@@ -98,7 +98,7 @@ source excerpt must be an exact contiguous substring, and a mutating task that
 names a file cannot rely on a rewritten or elided version of that file. This
 prevents source summaries from becoming non-applicable diff context.
 
-For the stateless Hermes adapter, protocol v9 asks the frontier for a compact
+For the stateless Hermes adapter, protocol v10 asks the frontier for a compact
 delegation blueprint instead of making it reproduce the full Plan schema and
 large source excerpts. The strict blueprint cites only frozen `SOURCE` labels,
 contains the evidence-backed diagnosis and sealed complete-line edit ranges, and
@@ -116,7 +116,14 @@ SOURCE block and is canonicalized to that block. The parser also deterministical
 removes one literal `SOURCE ` display prefix from a cited label; the enclosed
 label must still resolve uniquely to sealed evidence.
 
-Protocol-v9 evaluation plans require `edit-manifest-v1` mutating workers
+Protocol v10 additionally renders bounded same-location call contrasts before
+the raw runtime samples. The frontier can therefore compare observed scalar
+state at the earliest executed branch instead of combining unrelated calls.
+Every proposed range edit declares exact `mustAdd` and `mustRemove` assertions;
+the parser proves those textual changes occurred and rejects newly introduced
+Python syntax errors before the plan becomes authoritative.
+
+Protocol-v10 evaluation plans require `edit-manifest-v1` mutating workers
 with deterministic sampling, thinking disabled, and at most 800 generation
 tokens. The worker returns bounded exact old/new anchors; the runtime derives
 the candidate unified diff and runs the same workspace checks. This keeps the
