@@ -6187,9 +6187,9 @@ def _render_runtime_local_evidence(
             for term, count in evidence_terms.items()
         )
         if function in failure_evidence:
-            score += 1_000
+            score += 100_000
         if path in failure_evidence:
-            score += 200
+            score += 10_000
         for observed in _runtime_local_strings(local_values):
             if len(observed) >= 6 and observed in failure_evidence:
                 score += 2_000 + min(len(observed), 240)

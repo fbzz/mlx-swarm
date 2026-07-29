@@ -2783,6 +2783,53 @@ def test_runtime_local_evidence_is_ranked_bounded_and_production_only() -> None:
     assert "other.py:L3 secondary_path" in rendered
 
 
+def test_runtime_local_evidence_prioritizes_traceback_function() -> None:
+    noisy = [
+        {
+            "path": "module.py",
+            "line": index,
+            "function": "parse_comment",
+            "sample": 1,
+            "locals": {
+                "comment": {
+                    "type": "str",
+                    "length": 11,
+                    "value": "# type: int",
+                },
+            },
+        }
+        for index in range(1, 80)
+    ]
+    decisive = {
+        "path": "module.py",
+        "line": 90,
+        "function": "split_line",
+        "sample": 1,
+        "locals": {
+            "line_str": {
+                "type": "str",
+                "length": 23,
+                "value": "def f(a,):  # type: int",
+            },
+            "inside_brackets": False,
+        },
+    }
+
+    rendered = _render_runtime_local_evidence(
+        [*noisy, decisive],
+        source_context=(
+            "SOURCE module.py:L1-L100\n"
+            "00090 | split_line(value)\n"
+            "END SOURCE module.py:L1-L100\n"
+        ),
+        failure_evidence="Traceback in split_line while preserving # type: int",
+    )
+
+    assert rendered.splitlines()[0].startswith(
+        "- module.py:L90 split_line"
+    )
+
+
 def test_runtime_local_trace_uses_only_first_approved_argv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
