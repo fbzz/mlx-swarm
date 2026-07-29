@@ -28,6 +28,7 @@ from mlx_swarm.evaluation import (
     _rank_traced_function_windows,
     _remove_timed_out_docker_container,
     _render_executed_line_map,
+    _render_runtime_local_evidence,
     _requested_source_windows,
     CommandResult,
     EvaluationError,
@@ -38,6 +39,7 @@ from mlx_swarm.evaluation import (
     build_task_packet,
     capability_diagnostic_gate,
     collect_buggy_execution_trace,
+    collect_buggy_runtime_locals,
     container_path,
     copy_fixed_test_support,
     deterministic_case_context,
@@ -2727,6 +2729,140 @@ def test_executed_line_map_is_compact_and_production_only() -> None:
     ))
 
     assert rendered == "- module.py: 2-3,7,9"
+
+
+def test_runtime_local_evidence_is_ranked_bounded_and_production_only() -> None:
+    rendered = _render_runtime_local_evidence(
+        [
+            {
+                "path": "module.py",
+                "line": 8,
+                "function": "split_line",
+                "sample": 1,
+                "locals": {
+                    "line_str": {
+                        "type": "str",
+                        "length": 18,
+                        "value": "def f(a): # type",
+                    },
+                    "inside": False,
+                },
+            },
+            {
+                "path": "tests/test_module.py",
+                "line": 2,
+                "function": "test_failure",
+                "sample": 1,
+                "locals": {"secret": "excluded"},
+            },
+            {
+                "path": "other.py",
+                "line": 3,
+                "function": "secondary_path",
+                "sample": 1,
+                "locals": {"state": False},
+            },
+        ],
+        source_context=(
+            "SOURCE module.py:L1-L10\n"
+            "00008 | value = split_line()\n"
+            "END SOURCE module.py:L1-L10\n"
+            "SOURCE tests/test_module.py:L1-L3\n"
+            "00002 | assert False\n"
+            "END SOURCE tests/test_module.py:L1-L3\n"
+            "SOURCE other.py:L1-L5\n"
+            "00003 | state = False\n"
+            "END SOURCE other.py:L1-L5\n"
+        ),
+        failure_evidence="split_line loses # type comments",
+    )
+
+    assert "module.py:L8 split_line" in rendered
+    assert "def f(a): # type" in rendered
+    assert "tests/test_module.py" not in rendered
+    assert "other.py:L3 secondary_path" in rendered
+
+
+def test_runtime_local_trace_uses_only_first_approved_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluation_root = tmp_path / "evaluation"
+    workspace = evaluation_root / "cases" / "case" / "base"
+    environment = evaluation_root / "cache" / "environment"
+    workspace.mkdir(parents=True)
+    environment.mkdir(parents=True)
+    (workspace / "module.py").write_text(
+        "def repair():\n    return 1\n",
+        encoding="utf-8",
+    )
+    profile = load_evaluation_profile(_write_profile(tmp_path))
+    calls: list[list[str]] = []
+
+    def fake_run(argv: list[str], **_kwargs: Any) -> CommandResult:
+        calls.append(argv)
+        container_output = next(
+            value for value in argv if value.endswith(".locals.json")
+        )
+        output = Path(
+            str(evaluation_root)
+            + container_output.removeprefix("/evaluation")
+        )
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps({
+            "schemaVersion": 1,
+            "records": [{
+                "path": "module.py",
+                "line": 2,
+                "function": "repair",
+                "sample": 1,
+                "locals": {"value": 1},
+            }],
+        }), encoding="utf-8")
+        return CommandResult(
+            argv=tuple(argv),
+            returncode=1,
+            stdout="frozen failure",
+            stderr="",
+            elapsed_seconds=0.1,
+            timed_out=False,
+        )
+
+    monkeypatch.setattr("mlx_swarm.evaluation.run_command", fake_run)
+    records = collect_buggy_runtime_locals(
+        {
+            "caseId": "case",
+            "verificationArgv": [
+                ["pytest", "tests/test_module.py::test_failure"],
+                ["python", "-c", "must-not-run"],
+            ],
+        },
+        evaluation_root=evaluation_root,
+        workspace=workspace,
+        environment=environment,
+        profile=profile,
+        source_context=(
+            "SOURCE module.py:L1-L2\n"
+            "00001 | def repair():\n"
+            "00002 |     return 1\n"
+            "END SOURCE module.py:L1-L2\n"
+        ),
+    )
+
+    assert records == [{
+        "path": "module.py",
+        "line": 2,
+        "function": "repair",
+        "sample": 1,
+        "locals": {"value": 1},
+    }]
+    assert len(calls) == 1
+    assert "--network" in calls[0]
+    assert "none" in calls[0]
+    assert "-m" in calls[0]
+    assert "pytest" in calls[0]
+    assert "must-not-run" not in calls[0]
+    assert all(";" not in value for value in calls[0])
 
 
 def test_retained_candidate_survives_operator_revert() -> None:

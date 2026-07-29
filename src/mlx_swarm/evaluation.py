@@ -56,7 +56,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 8
+FAIR_EVALUATION_PROTOCOL_VERSION = 9
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -64,6 +64,7 @@ README_END = "<!-- END MLX-SWARM-ECONOMICS -->"
 MAX_LOG_BYTES = 1_000_000
 MAX_TASK_PACKET_TREE_CHARS = 10_000
 MAX_TASK_PACKET_SOURCE_CHARS = 70_000
+MAX_TASK_PACKET_RUNTIME_STATE_CHARS = 20_000
 MAX_FRONTIER_DELEGATION_EDITS = 8
 BENCHMARK_BUILD_JOBS = 4
 _IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9._-]{0,95}$")
@@ -109,6 +110,214 @@ _NON_PRODUCTION_NAMES = {
     "setup.py",
     "tox.ini",
 }
+
+_TRACE_LOCALS_RUNNER = r'''import json
+import os
+import runpy
+import sys
+import threading
+import types
+
+workspace = os.path.realpath(sys.argv[1])
+output_path = sys.argv[2]
+with open(sys.argv[3], "r", encoding="utf-8") as handle:
+    allowed_ranges = json.load(handle)
+target = sys.argv[4:]
+snapshots = {}
+snapshot_count = 0
+snapshot_lock = threading.Lock()
+
+
+def safe_value(value, depth=0):
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        return {
+            "type": "str",
+            "length": len(value),
+            "value": value[:240],
+        }
+    if isinstance(value, bytes):
+        return {"type": "bytes", "length": len(value)}
+    if isinstance(value, (list, tuple, set, frozenset)):
+        result = {"type": type(value).__name__, "length": len(value)}
+        if depth == 0:
+            result["items"] = [
+                safe_value(item, depth=1)
+                for item in list(value)[:4]
+            ]
+        return result
+    if isinstance(value, dict):
+        return {
+            "type": "dict",
+            "length": len(value),
+            "keys": [
+                str(key)[:80]
+                for key in list(value.keys())[:8]
+            ],
+        }
+    if isinstance(value, type):
+        return {
+            "type": "type",
+            "name": (
+                value.__module__
+                + "."
+                + getattr(value, "__qualname__", value.__name__)
+            ),
+        }
+    if isinstance(value, types.ModuleType) or callable(value):
+        return {"type": type(value).__name__}
+    value_type = type(value)
+    result = {
+        "type": (
+            value_type.__module__
+            + "."
+            + getattr(value_type, "__qualname__", value_type.__name__)
+        ),
+    }
+    if depth == 0:
+        try:
+            fields = vars(value)
+        except TypeError:
+            fields = {}
+        fields = dict(fields)
+        for owner in getattr(value_type, "__mro__", (value_type,)):
+            raw_slots = owner.__dict__.get("__slots__", ())
+            if isinstance(raw_slots, str):
+                raw_slots = (raw_slots,)
+            for name in raw_slots:
+                if (
+                    not isinstance(name, str)
+                    or name.startswith("_")
+                    or name in fields
+                ):
+                    continue
+                descriptor = owner.__dict__.get(name)
+                if not isinstance(descriptor, types.MemberDescriptorType):
+                    continue
+                try:
+                    fields[name] = object.__getattribute__(value, name)
+                except (AttributeError, TypeError, ValueError):
+                    continue
+        selected = {}
+        for name in sorted(fields):
+            if name.startswith("_"):
+                continue
+            selected[name] = safe_value(fields[name], depth=1)
+            if len(selected) >= 16:
+                break
+        if selected:
+            result["fields"] = selected
+    return result
+
+
+def trace_selected_frame(frame, event, _arg):
+    global snapshot_count
+    if event != "line" or snapshot_count >= 4000:
+        return trace_selected_frame
+    filename = os.path.realpath(frame.f_code.co_filename)
+    try:
+        if os.path.commonpath([workspace, filename]) != workspace:
+            return None
+    except ValueError:
+        return None
+    relative = os.path.relpath(filename, workspace).replace(os.sep, "/")
+    ranges = allowed_ranges.get(relative)
+    if not ranges or not any(
+        start <= frame.f_lineno <= end
+        for start, end in ranges
+    ):
+        return trace_selected_frame
+    key = "%s:%d:%s" % (
+        relative,
+        frame.f_lineno,
+        frame.f_code.co_name,
+    )
+    values = {}
+    for name in sorted(frame.f_locals):
+        if name.startswith("__"):
+            continue
+        values[name] = safe_value(frame.f_locals[name])
+        if len(values) >= 24:
+            break
+    encoded = json.dumps(values, sort_keys=True, separators=(",", ":"))
+    with snapshot_lock:
+        prior = snapshots.setdefault(key, [])
+        if encoded not in prior and len(prior) < 6:
+            prior.append(encoded)
+            snapshot_count += 1
+    return trace_selected_frame
+
+
+def trace_frame(frame, event, _arg):
+    if event != "call" or snapshot_count >= 4000:
+        return None
+    filename = os.path.realpath(frame.f_code.co_filename)
+    try:
+        if os.path.commonpath([workspace, filename]) != workspace:
+            return None
+    except ValueError:
+        return None
+    relative = os.path.relpath(filename, workspace).replace(os.sep, "/")
+    ranges = allowed_ranges.get(relative)
+    first_line = frame.f_code.co_firstlineno
+    if not ranges or not any(
+        start <= first_line <= end
+        for start, end in ranges
+    ):
+        return None
+    return trace_selected_frame
+
+
+def write_evidence():
+    records = []
+    for key in sorted(snapshots):
+        path, line, function = key.rsplit(":", 2)
+        for sample, encoded in enumerate(snapshots[key], start=1):
+            records.append({
+                "path": path,
+                "line": int(line),
+                "function": function,
+                "sample": sample,
+                "locals": json.loads(encoded),
+            })
+    with open(output_path, "w", encoding="utf-8") as handle:
+        json.dump(
+            {"schemaVersion": 1, "records": records},
+            handle,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+exit_code = 0
+error = None
+sys.settrace(trace_frame)
+threading.settrace(trace_frame)
+try:
+    if len(target) >= 2 and target[0] == "-m":
+        sys.argv = [target[1]] + target[2:]
+        runpy.run_module(target[1], run_name="__main__", alter_sys=True)
+    elif target:
+        sys.argv = target
+        runpy.run_path(target[0], run_name="__main__")
+except SystemExit as exc:
+    if exc.code is None:
+        exit_code = 0
+    elif isinstance(exc.code, int):
+        exit_code = exc.code
+    else:
+        exit_code = 1
+except BaseException:
+    error = sys.exc_info()
+finally:
+    sys.settrace(None)
+    threading.settrace(None)
+    write_evidence()
+if error is not None:
+    raise error[1].with_traceback(error[2])
+raise SystemExit(exit_code)
+'''
 _CONTEXT_STOP_WORDS = {
     "actual",
     "assert",
@@ -3075,6 +3284,23 @@ class EvaluationRunner:
                 environment=environment,
                 profile=self.profile,
             )
+            provisional_runtime = {
+                "baseSnapshot": str(base_snapshot),
+                "failureEvidence": failure_evidence,
+                "executedSourceLines": executed_source_lines,
+            }
+            _tree, source_context = deterministic_case_context(
+                case,
+                provisional_runtime,
+            )
+            runtime_local_evidence = collect_buggy_runtime_locals(
+                case,
+                evaluation_root=evaluation_dir,
+                workspace=base_snapshot,
+                environment=environment,
+                profile=self.profile,
+                source_context=source_context,
+            )
             _remove_generated_state(base_snapshot)
             runtime = {
                 "schemaVersion": 1,
@@ -3093,6 +3319,7 @@ class EvaluationRunner:
                 "verifierManifest": str(case_root / "verifier.json"),
                 "failureEvidence": failure_evidence,
                 "executedSourceLines": executed_source_lines,
+                "runtimeLocalEvidence": runtime_local_evidence,
                 "preparationSeconds": time.perf_counter() - started,
                 "buggyOracleSeconds": (
                     buggy_result["elapsedSeconds"]
@@ -5167,6 +5394,154 @@ def _executed_lines_from_trace_cover(
     return traced
 
 
+def _source_context_line_ranges(
+    source_context: str,
+    *,
+    production_only: bool = True,
+) -> dict[str, list[list[int]]]:
+    """Extract bounded repository ranges from sealed SOURCE blocks."""
+    ranges: dict[str, list[list[int]]] = {}
+    for path, raw_start, raw_end in re.findall(
+        r"(?m)^SOURCE (.+):L(\d+)-L(\d+)$",
+        source_context,
+    ):
+        if production_only and _is_non_production_path(path):
+            continue
+        start = int(raw_start)
+        end = int(raw_end)
+        if start <= 0 or end < start:
+            continue
+        ranges.setdefault(path, []).append([start, end])
+    return dict(sorted(ranges.items()))
+
+
+def collect_buggy_runtime_locals(
+    case: dict[str, Any],
+    *,
+    evaluation_root: Path,
+    workspace: Path,
+    environment: Path,
+    profile: EvaluationProfile,
+    source_context: str,
+) -> list[dict[str, Any]]:
+    """Capture bounded, value-safe locals on sealed production source lines."""
+    evaluation_root = evaluation_root.resolve()
+    workspace = workspace.resolve()
+    environment = environment.resolve()
+    ranges = _source_context_line_ranges(source_context)
+    if not ranges:
+        return []
+    commands = case.get("verificationArgv", [])
+    if not isinstance(commands, list) or not commands:
+        return []
+    raw_command = commands[0]
+    if not isinstance(raw_command, list) or not raw_command:
+        return []
+    executable = raw_command[0]
+    rest = list(raw_command[1:])
+    if executable in {"python", "python3"}:
+        target = rest
+    elif executable in {"pytest", "py.test"}:
+        target = ["-m", "pytest", *rest]
+    else:
+        return []
+    if not target:
+        return []
+
+    trace_root = evaluation_root / "cache" / "execution-traces"
+    trace_root.mkdir(parents=True, exist_ok=True)
+    case_id = _identifier(
+        str(case.get("caseId", "trace")),
+        "case.caseId",
+    )
+    runner_path = trace_root / "runtime-locals-runner.py"
+    ranges_path = trace_root / f"{case_id}.ranges.json"
+    output_path = trace_root / f"{case_id}.locals.json"
+    runner_path.write_text(_TRACE_LOCALS_RUNNER, encoding="utf-8")
+    _atomic_json(ranges_path, ranges)
+    output_path.unlink(missing_ok=True)
+
+    container_environment = Path(
+        container_path(environment, evaluation_root)
+    )
+    python = str(container_environment / "bin" / "python")
+    argv = [
+        python,
+        container_path(runner_path, evaluation_root),
+        container_path(workspace, evaluation_root),
+        container_path(output_path, evaluation_root),
+        container_path(ranges_path, evaluation_root),
+        *target,
+    ]
+    try:
+        result = run_command(
+            docker_runtime_argv(
+                image=profile.container.image,
+                platform_name=profile.container.platform,
+                evaluation_root=evaluation_root,
+                cwd=workspace,
+                argv=argv,
+                network="none",
+            ),
+            cwd=evaluation_root,
+            timeout=min(
+                profile.frontier.local_timeout_seconds,
+                1_800,
+            ),
+            max_output_bytes=1_000_000,
+        )
+        if result.timed_out or not output_path.is_file():
+            return []
+        raw = _read_json(output_path)
+        if (
+            not isinstance(raw, dict)
+            or raw.get("schemaVersion") != 1
+            or not isinstance(raw.get("records"), list)
+        ):
+            return []
+        records: list[dict[str, Any]] = []
+        for item in raw["records"][:4000]:
+            if not isinstance(item, dict) or set(item) != {
+                "path",
+                "line",
+                "function",
+                "sample",
+                "locals",
+            }:
+                continue
+            path = item["path"]
+            line = item["line"]
+            function = item["function"]
+            sample = item["sample"]
+            local_values = item["locals"]
+            path_ranges = ranges.get(path) if isinstance(path, str) else None
+            if (
+                not path_ranges
+                or isinstance(line, bool)
+                or not isinstance(line, int)
+                or not any(start <= line <= end for start, end in path_ranges)
+                or not isinstance(function, str)
+                or not function
+                or len(function) > 200
+                or isinstance(sample, bool)
+                or not isinstance(sample, int)
+                or sample <= 0
+                or not isinstance(local_values, dict)
+            ):
+                continue
+            records.append({
+                "path": path,
+                "line": line,
+                "function": function,
+                "sample": sample,
+                "locals": local_values,
+            })
+        return records
+    finally:
+        ranges_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
+
+
 def run_case_verifier(
     manifest_path: Path,
     workspace: Path,
@@ -5667,6 +6042,11 @@ def build_task_packet(
         runtime.get("executedSourceLines", {}),
         source_context=sources,
     )
+    runtime_state = _render_runtime_local_evidence(
+        runtime.get("runtimeLocalEvidence", []),
+        source_context=sources,
+        failure_evidence=str(runtime.get("failureEvidence", "")),
+    )
     packet = (
         f"CASE: {case['caseId']}\n"
         f"PROJECT: {case['project']}\n"
@@ -5681,6 +6061,8 @@ def build_task_packet(
         f"{tree}\n"
         "FROZEN BUGGY-RUN EXECUTED LINE MAP:\n"
         f"{execution_map}\n"
+        "FROZEN BUGGY-RUN LOCAL STATE SAMPLES:\n"
+        f"{runtime_state}\n"
         "FROZEN RELEVANT TEST AND TRACEBACK SOURCE CONTEXT:\n"
         f"{sources}\n"
         "INITIAL FAILURE EVIDENCE:\n"
@@ -5756,6 +6138,112 @@ def _render_executed_line_map(
             rows.append("...[executed line map truncated]")
             break
     return "\n".join(rows) if rows else "(unavailable)"
+
+
+def _render_runtime_local_evidence(
+    raw: Any,
+    *,
+    source_context: str,
+    failure_evidence: str,
+) -> str:
+    """Rank and render bounded safe-local snapshots from the buggy verifier."""
+    if not isinstance(raw, list):
+        return "(unavailable)"
+    allowed = _source_context_line_ranges(source_context)
+    query_terms = _context_term_counts(failure_evidence)
+    ranked: list[tuple[float, str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        path = item.get("path")
+        line = item.get("line")
+        function = item.get("function")
+        sample = item.get("sample")
+        local_values = item.get("locals")
+        path_ranges = allowed.get(path) if isinstance(path, str) else None
+        if (
+            not path_ranges
+            or isinstance(line, bool)
+            or not isinstance(line, int)
+            or not any(start <= line <= end for start, end in path_ranges)
+            or not isinstance(function, str)
+            or isinstance(sample, bool)
+            or not isinstance(sample, int)
+            or not isinstance(local_values, dict)
+        ):
+            continue
+        encoded = json.dumps(
+            local_values,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if len(encoded) > 1_000:
+            encoded = encoded[:960] + "...[locals truncated]"
+        evidence_text = f"{path} {function} {encoded}"
+        evidence_terms = _context_term_counts(evidence_text)
+        score = sum(
+            min(query_terms.get(term, 0), 8) * min(count, 3)
+            for term, count in evidence_terms.items()
+        )
+        if function in failure_evidence:
+            score += 1_000
+        if path in failure_evidence:
+            score += 200
+        for observed in _runtime_local_strings(local_values):
+            if len(observed) >= 6 and observed in failure_evidence:
+                score += 2_000 + min(len(observed), 240)
+        row = (
+            f"- {path}:L{line} {function} sample={sample} "
+            f"locals={encoded}"
+        )
+        ranked.append((float(score), path, row))
+    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+    ordered: list[tuple[float, str, str]] = []
+    selected_rows: set[str] = set()
+    per_path: dict[str, int] = {}
+    for quota in (1, 2):
+        for item in ranked:
+            _score, path, row = item
+            if row in selected_rows or per_path.get(path, 0) >= quota:
+                continue
+            ordered.append(item)
+            selected_rows.add(row)
+            per_path[path] = per_path.get(path, 0) + 1
+    ordered.extend(
+        item for item in ranked if item[2] not in selected_rows
+    )
+    rows: list[str] = []
+    used = 0
+    for _score, _path, row in ordered:
+        addition = len(row) + 1
+        if used + addition > MAX_TASK_PACKET_RUNTIME_STATE_CHARS:
+            rows.append("...[runtime local samples truncated]")
+            break
+        rows.append(row)
+        used += addition
+        if len(rows) >= 100:
+            rows.append("...[runtime local samples truncated]")
+            break
+    return "\n".join(rows) if rows else "(unavailable)"
+
+
+def _runtime_local_strings(value: Any) -> list[str]:
+    """Return bounded string observations from a safe-local summary."""
+    found: list[str] = []
+    pending = [value]
+    while pending and len(found) < 32:
+        current = pending.pop()
+        if isinstance(current, dict):
+            if (
+                current.get("type") == "str"
+                and isinstance(current.get("value"), str)
+            ):
+                found.append(current["value"])
+            pending.extend(current.values())
+        elif isinstance(current, list):
+            pending.extend(current)
+    return found
 
 
 def ensure_pair_contract(
@@ -6357,6 +6845,10 @@ def frontier_alone_response_prompt(task_packet: str) -> str:
         "- Use the executed-line map to locate the earliest branch that sends "
         "the failing input down the wrong path. Prefer a narrow edit at that "
         "branch over mutating upstream object state or a class-wide policy.\n"
+        "- Use matching runtime-local samples to evaluate every new predicate "
+        "on the failing call. Samples are observations from distinct calls; "
+        "match their path, line, function, and identifying scalar values "
+        "instead of treating all samples as one call.\n"
         "- Every new predicate must be supported by supplied source for both "
         "the failing input and a preserved control; do not assume an unseen "
         "runtime type or value.\n"
@@ -6445,6 +6937,11 @@ def frontier_delegation_blueprint_prompt(
         "local predicate or transformation at that branch; do not mutate "
         "upstream object state or a class-wide policy unless the supplied "
         "source proves a branch-local repair is impossible.\n"
+        "- Runtime-local samples are bounded observations from distinct calls. "
+        "Match path, line, function, and identifying scalar values before "
+        "using a sample. Every new predicate must evaluate true for a supplied "
+        "sample representing the failing call; do not guess an unreported "
+        "attribute value.\n"
         "- In validationEvidence, explicitly evaluate every new predicate "
         "for the failing input and for one preserved control. If a required "
         "runtime type or value is not established by supplied evidence, the "
