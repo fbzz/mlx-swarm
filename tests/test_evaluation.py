@@ -9,6 +9,7 @@ import os
 import shutil
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -23,8 +24,10 @@ from mlx_swarm.contracts import (
 )
 from mlx_swarm.evaluation import (
     FAIR_EVALUATION_PROTOCOL_VERSION,
+    _executed_lines_from_trace_cover,
     _rank_traced_function_windows,
     _remove_timed_out_docker_container,
+    _render_executed_line_map,
     _requested_source_windows,
     CommandResult,
     EvaluationError,
@@ -73,6 +76,7 @@ from mlx_swarm.evaluation import (
     profile_payload,
     remove_sensitive_preparation_sources,
     render_readme_economics,
+    retained_session_candidate_diff,
     run_command,
     run_swarm_with_synthetic_operator,
     sanitize_suite,
@@ -2365,7 +2369,7 @@ def _delegation_blueprint(
     source_label: str = "module.py:L1-L3",
 ) -> dict[str, Any]:
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "planId": "repair-module",
         "objective": "Repair the frozen failure.",
         "diagnosis": {
@@ -2382,7 +2386,9 @@ def _delegation_blueprint(
         },
         "edits": [{
             "path": "module.py",
-            "old": "    return 1",
+            "sourceLabel": source_label,
+            "startLine": 2,
+            "endLine": 2,
             "new": "    return 2",
         }],
     }
@@ -2447,6 +2453,68 @@ def test_frontier_delegation_blueprint_rejects_unknown_source(
             response,
             objective="Repair the frozen failure.",
             task_packet="SOURCE module.py:L1-L2\n",
+            repository=tmp_path,
+            approved_write_roots=["module.py"],
+            maximum_manifest_characters=3_200,
+        )
+
+
+def test_frontier_delegation_blueprint_normalizes_contained_source_range(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+    payload = _delegation_blueprint(source_label="module.py:L2-L2")
+
+    parsed = parse_frontier_delegation_blueprint(
+        json.dumps(payload),
+        objective="Repair the frozen failure.",
+        task_packet=(
+            "SOURCE module.py:L1-L3\n"
+            "00001 | def value():\n"
+            "00002 |     return 1\n"
+            "END SOURCE module.py:L1-L3\n"
+        ),
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+        maximum_manifest_characters=3_200,
+    )
+
+    assert parsed["diagnosis"]["evidenceSources"] == [
+        "module.py:L1-L3",
+    ]
+    assert parsed["diagnosis"]["changeEvidenceSources"] == [
+        "module.py:L1-L3",
+    ]
+    assert parsed["edits"] == [{
+        "path": "module.py",
+        "old": "    return 1\n",
+        "new": "    return 2\n",
+    }]
+
+
+def test_frontier_delegation_blueprint_rejects_range_outside_source(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+    payload = _delegation_blueprint()
+    payload["edits"][0]["endLine"] = 4
+
+    with pytest.raises(EvaluationError, match="escapes its SOURCE label"):
+        parse_frontier_delegation_blueprint(
+            json.dumps(payload),
+            objective="Repair the frozen failure.",
+            task_packet=(
+                "SOURCE module.py:L1-L3\n"
+                "00001 | def value():\n"
+                "00002 |     return 1\n"
+                "END SOURCE module.py:L1-L3\n"
+            ),
             repository=tmp_path,
             approved_write_roots=["module.py"],
             maximum_manifest_characters=3_200,
@@ -2581,13 +2649,71 @@ def test_buggy_execution_trace_uses_first_approved_argv_without_shell(
     )
 
     assert traced == {"module.py": [1, 2]}
-    assert len(calls) == 1
+    assert len(calls) == 2
     assert "--network" in calls[0]
     assert "none" in calls[0]
     assert "--module" in calls[0]
+    assert "--listfuncs" in calls[0]
+    assert "--count" in calls[1]
     assert "pytest" in calls[0]
-    assert "must-not-run" not in calls[0]
-    assert all(";" not in value for value in calls[0])
+    assert all("must-not-run" not in call for call in calls)
+    assert all(";" not in value for call in calls for value in call)
+
+
+def test_trace_cover_maps_only_executed_source_lines(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    source = workspace / "package" / "module.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("first = 1\nsecond = 2\nthird = 3\n")
+    cover_root = tmp_path / "cover"
+    cover_root.mkdir()
+    (cover_root / "package.module.cover").write_text(
+        "    2: first = 1\n"
+        "       second = 2\n"
+        "    1: third = 3\n",
+        encoding="utf-8",
+    )
+
+    assert _executed_lines_from_trace_cover(
+        workspace,
+        cover_root,
+    ) == {"package/module.py": [1, 3]}
+
+
+def test_executed_line_map_is_compact_and_production_only() -> None:
+    rendered = _render_executed_line_map({
+        "module.py": [1, 2, 3, 7, 9, 10],
+        "tests/test_module.py": [1, 2],
+    }, source_context=(
+        "SOURCE module.py:L2-L9\n"
+        "00002 | value = 2\n"
+        "END SOURCE module.py:L2-L9\n"
+    ))
+
+    assert rendered == "- module.py: 2-3,7,9"
+
+
+def test_retained_candidate_survives_operator_revert() -> None:
+    diff = (
+        "diff --git a/module.py b/module.py\n"
+        "--- a/module.py\n"
+        "+++ b/module.py\n"
+        "@@ -1 +1 @@\n"
+        "-VALUE = 1\n"
+        "+VALUE = 2\n"
+    )
+    session = SimpleNamespace(state={"tasks": {
+        "repair": {
+            "artifactType": "patch",
+            "status": "rejected_by_operator",
+            "normalizedOutput": diff,
+            "artifact": {"sha256": "a" * 64},
+        },
+    }})
+
+    assert retained_session_candidate_diff(session) == diff
 
 
 def test_frontier_delegation_prompt_exposes_small_worker_limits() -> None:

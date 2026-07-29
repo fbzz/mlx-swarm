@@ -56,7 +56,7 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 3
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 6
+FAIR_EVALUATION_PROTOCOL_VERSION = 7
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -3929,9 +3929,10 @@ class EvaluationRunner:
         )
         workspace = load_workspace_snapshot(session_dir)
         diff, _ = final_workspace_diff(workspace)
-        patch = persist_candidate_patch(evidence_root, diff)
+        candidate_diff = diff or retained_session_candidate_diff(session)
+        patch = persist_candidate_patch(evidence_root, candidate_diff)
         structural_error = validate_candidate_diff(
-            diff,
+            candidate_diff,
             case,
             repository,
             allowed_paths=approved_write_roots,
@@ -4098,11 +4099,11 @@ class EvaluationRunner:
                     )
                     review_verdict = imported_review["review"]["verdict"]
         remaining = deadline - time.perf_counter()
-        if structural_error is None and diff and remaining > 0:
+        if structural_error is None and candidate_diff and remaining > 0:
             oracle = self._score_candidate(
                 case,
                 runtime,
-                diff,
+                candidate_diff,
                 arm_root,
                 timeout_seconds=remaining,
             )
@@ -4402,8 +4403,9 @@ def run_local_replay_calibration(
         usage = session.local_usage()
         workspace = load_workspace_snapshot(session_dir)
         diff, _ = final_workspace_diff(workspace)
+        candidate_diff = diff or retained_session_candidate_diff(session)
         structural_error = validate_candidate_diff(
-            diff,
+            candidate_diff,
             case,
             repository,
             allowed_paths=approved_write_roots,
@@ -4415,11 +4417,11 @@ def run_local_replay_calibration(
                 "exitCode": None,
                 "evidence": local_result.infrastructure_error,
             }
-        elif structural_error is None and diff:
+        elif structural_error is None and candidate_diff:
             oracle = runner._score_candidate(
                 case,
                 runtime,
-                diff,
+                candidate_diff,
                 case_replay_root,
                 timeout_seconds=max(
                     1,
@@ -4706,6 +4708,29 @@ def replay_failure_evidence(session: Session) -> str:
             if output:
                 messages.append(output[-8_000:])
     return "; ".join(dict.fromkeys(messages))[:MAX_LOG_BYTES]
+
+
+def retained_session_candidate_diff(session: Session) -> str:
+    """Return the last validated mutating artifact even after an explicit revert."""
+    tasks = session.state.get("tasks", {})
+    if not isinstance(tasks, dict):
+        return ""
+    for task in reversed(list(tasks.values())):
+        if (
+            not isinstance(task, dict)
+            or task.get("artifactType") not in {"patch", "test-suite"}
+        ):
+            continue
+        normalized = task.get("normalizedOutput")
+        artifact = task.get("artifact")
+        if (
+            isinstance(normalized, str)
+            and normalized.startswith("diff --git ")
+            and isinstance(artifact, dict)
+            and isinstance(artifact.get("sha256"), str)
+        ):
+            return normalized
+    return ""
 
 
 @contextmanager
@@ -5052,7 +5077,94 @@ def collect_buggy_execution_trace(
             lines.update(range(1, 101))
         if lines:
             traced[relative] = sorted(lines)[:10_000]
+    cover_root = (
+        evaluation_root
+        / "cache"
+        / "execution-traces"
+        / _identifier(str(case.get("caseId", "trace")), "case.caseId")
+    )
+    if cover_root.exists():
+        shutil.rmtree(cover_root)
+    cover_root.mkdir(parents=True)
+    count_argv = [
+        python,
+        "-m",
+        "trace",
+        "--count",
+        f"--coverdir={container_path(cover_root, evaluation_root)}",
+        f"--ignore-dir={container_environment}:/usr",
+        *(
+            ["--module", target[1], *target[2:]]
+            if len(target) >= 2 and target[0] == "-m"
+            else target
+        ),
+    ]
+    try:
+        count_result = run_command(
+            docker_runtime_argv(
+                image=profile.container.image,
+                platform_name=profile.container.platform,
+                evaluation_root=evaluation_root,
+                cwd=workspace,
+                argv=count_argv,
+                network="none",
+            ),
+            cwd=evaluation_root,
+            timeout=min(
+                profile.frontier.local_timeout_seconds,
+                1_800,
+            ),
+            max_output_bytes=5_000_000,
+        )
+        if not count_result.timed_out:
+            executed = _executed_lines_from_trace_cover(
+                workspace,
+                cover_root,
+            )
+            if executed:
+                traced = executed
+    finally:
+        shutil.rmtree(cover_root, ignore_errors=True)
     return dict(sorted(traced.items()))
+
+
+def _executed_lines_from_trace_cover(
+    workspace: Path,
+    cover_root: Path,
+) -> dict[str, list[int]]:
+    """Map stdlib trace count files back to frozen workspace line numbers."""
+    traced: dict[str, list[int]] = {}
+    for source in sorted(workspace.rglob("*.py")):
+        if source.is_symlink() or not source.is_file():
+            continue
+        try:
+            relative = source.relative_to(workspace).as_posix()
+        except ValueError:
+            continue
+        module_parts = list(Path(relative).with_suffix("").parts)
+        if module_parts and module_parts[-1] == "__init__":
+            module_parts.pop()
+        module = ".".join(module_parts)
+        if not module:
+            continue
+        cover = cover_root / f"{module}.cover"
+        if not cover.is_file():
+            continue
+        try:
+            annotated = cover.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()
+        except OSError:
+            continue
+        lines = [
+            line_number
+            for line_number, text in enumerate(annotated, start=1)
+            if re.match(r"^\s*\d+:", text)
+        ]
+        if lines:
+            traced[relative] = lines[:10_000]
+    return traced
 
 
 def run_case_verifier(
@@ -5551,6 +5663,10 @@ def build_task_packet(
 ) -> str:
     roots = "\n".join(f"- {path}" for path in approved_write_roots)
     tree, sources = deterministic_case_context(case, runtime)
+    execution_map = _render_executed_line_map(
+        runtime.get("executedSourceLines", {}),
+        source_context=sources,
+    )
     packet = (
         f"CASE: {case['caseId']}\n"
         f"PROJECT: {case['project']}\n"
@@ -5563,6 +5679,8 @@ def build_task_packet(
         f"{json.dumps(case['verificationArgv'], sort_keys=True)}\n"
         "FROZEN REPOSITORY TREE:\n"
         f"{tree}\n"
+        "FROZEN BUGGY-RUN EXECUTED LINE MAP:\n"
+        f"{execution_map}\n"
         "FROZEN RELEVANT TEST AND TRACEBACK SOURCE CONTEXT:\n"
         f"{sources}\n"
         "INITIAL FAILURE EVIDENCE:\n"
@@ -5572,6 +5690,72 @@ def build_task_packet(
         return packet
     marker = "\n...[task packet truncated deterministically]"
     return packet[:maximum_characters - len(marker)] + marker
+
+
+def _render_executed_line_map(
+    raw: Any,
+    *,
+    source_context: str | None = None,
+) -> str:
+    """Render bounded production-only executed line ranges."""
+    if not isinstance(raw, dict):
+        return "(unavailable)"
+    selected_ranges: dict[str, list[tuple[int, int]]] = {}
+    if isinstance(source_context, str):
+        for path, raw_start, raw_end in re.findall(
+            r"(?m)^SOURCE (.+):L(\d+)-L(\d+)$",
+            source_context,
+        ):
+            selected_ranges.setdefault(path, []).append(
+                (int(raw_start), int(raw_end)),
+            )
+    rows: list[str] = []
+    for path, values in sorted(raw.items()):
+        if (
+            not isinstance(path, str)
+            or _is_non_production_path(path)
+            or Path(path).suffix not in {".py", ".pyi"}
+            or not isinstance(values, list)
+        ):
+            continue
+        lines = sorted({
+            value
+            for value in values
+            if isinstance(value, int) and value > 0
+        })
+        if selected_ranges:
+            ranges_for_path = selected_ranges.get(path, [])
+            lines = [
+                value
+                for value in lines
+                if any(
+                    start <= value <= end
+                    for start, end in ranges_for_path
+                )
+            ]
+        if not lines:
+            continue
+        ranges: list[str] = []
+        start = previous = lines[0]
+        for value in lines[1:]:
+            if value == previous + 1:
+                previous = value
+                continue
+            ranges.append(
+                str(start) if start == previous else f"{start}-{previous}"
+            )
+            start = previous = value
+        ranges.append(
+            str(start) if start == previous else f"{start}-{previous}"
+        )
+        rendered = ",".join(ranges[:240])
+        if len(ranges) > 240:
+            rendered += ",...[ranges truncated]"
+        rows.append(f"- {path}: {rendered}")
+        if sum(len(row) for row in rows) >= 12_000:
+            rows.append("...[executed line map truncated]")
+            break
+    return "\n".join(rows) if rows else "(unavailable)"
 
 
 def ensure_pair_contract(
@@ -5905,7 +6089,7 @@ def _rank_traced_function_windows(
                 continue
             start = max(1, node.lineno)
             full_end = max(start, getattr(node, "end_lineno", start))
-            if not any(start <= value <= full_end for value in traced):
+            if not any(start < value <= full_end for value in traced):
                 continue
             end = min(full_end, start + maximum_lines - 1)
             window = source_lines[start - 1:end]
@@ -6170,6 +6354,12 @@ def frontier_alone_response_prompt(task_packet: str) -> str:
         "- Copy each old anchor from one supplied SOURCE window, remove only "
         "the five-digit line-number and ` | ` display prefixes, and verify "
         "that the resulting text is contiguous and unique in that file.\n"
+        "- Use the executed-line map to locate the earliest branch that sends "
+        "the failing input down the wrong path. Prefer a narrow edit at that "
+        "branch over mutating upstream object state or a class-wide policy.\n"
+        "- Every new predicate must be supported by supplied source for both "
+        "the failing input and a preserved control; do not assume an unseen "
+        "runtime type or value.\n"
         "- Modify only paths below the approved write roots.\n"
         "- Do not modify tests, Git metadata, dependencies, or benchmark "
         "evidence.\n"
@@ -6203,12 +6393,13 @@ def frontier_delegation_blueprint_prompt(
         f"contract is:\n{capability_json}\n\n"
         "You—not the local worker—must diagnose the failure, validate one "
         "falsifiable causal hypothesis against the supplied SOURCE windows, "
-        "choose the narrowest supported change, and encode exact edits. The "
-        "worker can copy and apply exact old/new anchors; it must not discover "
-        "APIs, inspect missing source, choose a causal fix, or run commands.\n\n"
+        "choose the narrowest supported change, and encode sealed line-range "
+        "edits. The harness materializes those ranges into exact old/new "
+        "anchors for the worker; the worker must not discover APIs, inspect "
+        "missing source, choose a causal fix, or run commands.\n\n"
         "Return one compact strict JSON object with exactly this shape:\n"
         "{\n"
-        '  "schemaVersion": 1,\n'
+        '  "schemaVersion": 2,\n'
         '  "planId": "lowercase-id",\n'
         '  "objective": "exact objective from the task packet",\n'
         '  "diagnosis": {\n'
@@ -6224,8 +6415,10 @@ def frontier_delegation_blueprint_prompt(
         '    "changeEvidenceSources": ["exact SOURCE label"]\n'
         "  },\n"
         '  "edits": [\n'
-        '    {"path": "relative/path.py", "old": "exact unique text", '
-        '"new": "replacement text"}\n'
+        '    {"path": "relative/path.py", '
+        '"sourceLabel": "exact SOURCE label", '
+        '"startLine": 1, "endLine": 1, '
+        '"new": "replacement for those complete lines"}\n'
         "  ]\n"
         "}\n\n"
         "Rules:\n"
@@ -6233,18 +6426,28 @@ def frontier_delegation_blueprint_prompt(
         "- Use exactly the listed keys; unknown fields are rejected.\n"
         "- evidenceSources must copy SOURCE labels exactly. Never invent a "
         "file, symbol, API, source excerpt, or test result.\n"
-        "- Do not copy SOURCE contents into the diagnosis. Only old/new edit "
-        "anchors may reproduce source text.\n"
-        "- Each old anchor must be the smallest useful exact contiguous text "
-        "shown in a SOURCE window and must occur exactly once in its file. "
-        "Remove only the five-digit line-number and ` | ` display prefixes "
-        "when copying it.\n"
+        "- Do not copy SOURCE contents into the diagnosis. Each edit must "
+        "identify the smallest sufficient complete-line range inside its "
+        "sourceLabel. The harness extracts the exact old text; never return "
+        "an old field.\n"
+        "- startLine and endLine are inclusive repository line numbers shown "
+        "in the cited SOURCE block. path must match that SOURCE path. new is "
+        "the complete replacement for those lines without display prefixes.\n"
         "- Before emitting JSON, perform this grounding check in the same "
         "planning call: (1) locate the causal branch in a cited SOURCE "
         "window, (2) test the causal hypothesis against the failing path and "
-        "one preserved control, and (3) re-read every old anchor directly "
+        "one preserved control, and (3) re-read every edit range directly "
         "from that cited window. Do not use a symbol or API remembered from "
         "another revision.\n"
+        "- Use the executed-line map to identify the earliest branch that "
+        "sends the failing input down the wrong path. Prefer the narrowest "
+        "local predicate or transformation at that branch; do not mutate "
+        "upstream object state or a class-wide policy unless the supplied "
+        "source proves a branch-local repair is impossible.\n"
+        "- In validationEvidence, explicitly evaluate every new predicate "
+        "for the failing input and for one preserved control. If a required "
+        "runtime type or value is not established by supplied evidence, the "
+        "candidate is not validated and must not be selected.\n"
         "- Use path, never file, as the edit path key.\n"
         "- Keep the combined edit manifest short enough for the worker's "
         "frozen maximum generation budget.\n"
@@ -6286,9 +6489,9 @@ def parse_frontier_delegation_blueprint(
             "Frontier delegation blueprint has unknown or missing top-level "
             "fields."
         )
-    if blueprint["schemaVersion"] != 1:
+    if blueprint["schemaVersion"] != 2:
         raise EvaluationError(
-            "Frontier delegation blueprint schemaVersion must be 1."
+            "Frontier delegation blueprint schemaVersion must be 2."
         )
     plan_id = blueprint["planId"]
     if not isinstance(plan_id, str) or not _IDENTIFIER.fullmatch(plan_id):
@@ -6342,12 +6545,25 @@ def parse_frontier_delegation_blueprint(
                 f"Frontier delegation diagnosis.{name} must contain unique "
                 "source labels."
             )
-        unknown = set(values) - known_sources
+        normalized_values = [
+            _normalize_evidence_source_label(value, known_sources)
+            for value in values
+        ]
+        unknown = {
+            value
+            for value, normalized in zip(values, normalized_values)
+            if normalized is None
+        }
         if unknown:
             raise EvaluationError(
                 f"Frontier delegation diagnosis.{name} references unknown "
                 f"SOURCE labels: {', '.join(sorted(unknown))}"
             )
+        diagnosis[name] = list(dict.fromkeys(
+            value
+            for value in normalized_values
+            if value is not None
+        ))
     edits = blueprint["edits"]
     if not isinstance(edits, list) or not (
         1 <= len(edits) <= MAX_FRONTIER_DELEGATION_EDITS
@@ -6356,7 +6572,14 @@ def parse_frontier_delegation_blueprint(
             "Frontier delegation blueprint must contain 1 to "
             f"{MAX_FRONTIER_DELEGATION_EDITS} edits."
         )
-    manifest = {"edits": edits}
+    materialized_edits = _materialize_frontier_range_edits(
+        edits,
+        known_sources=known_sources,
+        allowed_change_sources=set(diagnosis["changeEvidenceSources"]),
+        repository=repository,
+    )
+    blueprint["edits"] = materialized_edits
+    manifest = {"edits": materialized_edits}
     manifest_text = json.dumps(
         manifest,
         ensure_ascii=False,
@@ -6373,6 +6596,146 @@ def parse_frontier_delegation_blueprint(
         approved_write_roots=approved_write_roots,
     )
     return blueprint
+
+
+def _materialize_frontier_range_edits(
+    edits: list[Any],
+    *,
+    known_sources: set[str],
+    allowed_change_sources: set[str],
+    repository: Path,
+) -> list[dict[str, str]]:
+    """Turn sealed line-range edits into exact old/new worker manifests."""
+    materialized: list[dict[str, str]] = []
+    for index, raw in enumerate(edits):
+        if not isinstance(raw, dict) or set(raw) != {
+            "path",
+            "sourceLabel",
+            "startLine",
+            "endLine",
+            "new",
+        }:
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}] has unknown or missing "
+                "fields."
+            )
+        path = raw["path"]
+        source_label = raw["sourceLabel"]
+        start = raw["startLine"]
+        end = raw["endLine"]
+        new = raw["new"]
+        if not isinstance(path, str) or not path:
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}].path must be text."
+            )
+        if not isinstance(source_label, str):
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}].sourceLabel must be text."
+            )
+        canonical_label = _normalize_evidence_source_label(
+            source_label,
+            known_sources,
+        )
+        if canonical_label is None:
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}].sourceLabel is unknown."
+            )
+        if canonical_label not in allowed_change_sources:
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}].sourceLabel is not cited "
+                "by diagnosis.changeEvidenceSources."
+            )
+        label_match = re.fullmatch(
+            r"(.+):L(\d+)-L(\d+)",
+            canonical_label,
+        )
+        assert label_match is not None
+        label_path, raw_label_start, raw_label_end = label_match.groups()
+        if path != label_path:
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}].path differs from its "
+                "SOURCE label."
+            )
+        if (
+            isinstance(start, bool)
+            or not isinstance(start, int)
+            or isinstance(end, bool)
+            or not isinstance(end, int)
+            or start <= 0
+            or end < start
+            or start < int(raw_label_start)
+            or end > int(raw_label_end)
+        ):
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}] line range escapes its "
+                "SOURCE label."
+            )
+        if not isinstance(new, str):
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}].new must be text."
+            )
+        candidate = (repository / path).resolve()
+        if (
+            not _is_within(candidate, repository.resolve())
+            or not candidate.is_file()
+            or candidate.is_symlink()
+        ):
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}] source is unavailable."
+            )
+        try:
+            lines = candidate.read_text(
+                encoding="utf-8",
+            ).splitlines(keepends=True)
+        except (OSError, UnicodeDecodeError) as exc:
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}] source is unreadable."
+            ) from exc
+        if end > len(lines):
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}] line range exceeds its "
+                "source."
+            )
+        old = "".join(lines[start - 1:end])
+        if not old:
+            raise EvaluationError(
+                f"Frontier delegation edits[{index}] selects no source text."
+            )
+        if old.endswith("\n") and new and not new.endswith("\n"):
+            new += "\n"
+        materialized.append({
+            "path": path,
+            "old": old,
+            "new": new,
+        })
+    return materialized
+
+
+def _normalize_evidence_source_label(
+    value: str,
+    known_sources: set[str],
+) -> str | None:
+    """Canonicalize an exact label or a uniquely contained sealed subrange."""
+    if value in known_sources:
+        return value
+    match = re.fullmatch(r"(.+):L(\d+)-L(\d+)", value)
+    if match is None:
+        return None
+    path, raw_start, raw_end = match.groups()
+    start = int(raw_start)
+    end = int(raw_end)
+    if start <= 0 or end < start:
+        return None
+    parents: list[str] = []
+    for candidate in known_sources:
+        parent = re.fullmatch(r"(.+):L(\d+)-L(\d+)", candidate)
+        if parent is None or parent.group(1) != path:
+            continue
+        parent_start = int(parent.group(2))
+        parent_end = int(parent.group(3))
+        if parent_start <= start and end <= parent_end:
+            parents.append(candidate)
+    return parents[0] if len(parents) == 1 else None
 
 
 def materialize_frontier_delegation_plan(
