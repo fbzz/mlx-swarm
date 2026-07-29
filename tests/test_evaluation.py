@@ -2830,6 +2830,52 @@ def test_runtime_local_evidence_prioritizes_traceback_function() -> None:
     )
 
 
+def test_runtime_local_evidence_preserves_function_diversity_by_source_block(
+) -> None:
+    records: list[dict[str, Any]] = []
+    blocks: list[str] = []
+    for block in range(8):
+        start = block * 20 + 1
+        end = start + 19
+        blocks.append(
+            f"SOURCE module.py:L{start}-L{end}\n"
+            f"{start:05d} | value = {block}\n"
+            f"END SOURCE module.py:L{start}-L{end}\n"
+        )
+        for sample in range(1, 7):
+            records.append({
+                "path": "module.py",
+                "line": start + 1,
+                "function": f"noisy_{block}",
+                "sample": sample,
+                "locals": {
+                    "text": {
+                        "type": "str",
+                        "length": 800,
+                        "value": "comment " * 100,
+                    },
+                },
+            })
+        records.append({
+            "path": "module.py",
+            "line": start + 2,
+            "function": (
+                "split_line" if block == 6 else f"secondary_{block}"
+            ),
+            "sample": 1,
+            "locals": {"branch": False},
+        })
+
+    rendered = _render_runtime_local_evidence(
+        records,
+        source_context="".join(blocks),
+        failure_evidence="formatting assertion differs",
+    )
+
+    assert "split_line" in rendered
+    assert "secondary_7" in rendered
+
+
 def test_runtime_local_trace_uses_only_first_approved_argv(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

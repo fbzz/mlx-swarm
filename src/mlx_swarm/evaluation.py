@@ -6150,8 +6150,16 @@ def _render_runtime_local_evidence(
     if not isinstance(raw, list):
         return "(unavailable)"
     allowed = _source_context_line_ranges(source_context)
+    source_blocks = [
+        (index, path, int(raw_start), int(raw_end))
+        for index, (path, raw_start, raw_end) in enumerate(re.findall(
+            r"(?m)^SOURCE (.+):L(\d+)-L(\d+)$",
+            source_context,
+        ))
+        if not _is_non_production_path(path)
+    ]
     query_terms = _context_term_counts(failure_evidence)
-    ranked: list[tuple[float, str, str]] = []
+    ranked: list[tuple[float, int, str, str, str]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
@@ -6172,6 +6180,14 @@ def _render_runtime_local_evidence(
             or not isinstance(local_values, dict)
         ):
             continue
+        source_block = next(
+            (
+                index
+                for index, block_path, start, end in source_blocks
+                if block_path == path and start <= line <= end
+            ),
+            len(source_blocks),
+        )
         encoded = json.dumps(
             local_values,
             ensure_ascii=False,
@@ -6197,25 +6213,34 @@ def _render_runtime_local_evidence(
             f"- {path}:L{line} {function} sample={sample} "
             f"locals={encoded}"
         )
-        ranked.append((float(score), path, row))
-    ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
-    ordered: list[tuple[float, str, str]] = []
+        ranked.append((float(score), source_block, path, function, row))
+    ranked.sort(
+        key=lambda item: (-item[0], item[1], item[2], item[3], item[4])
+    )
+    ordered: list[tuple[float, int, str, str, str]] = []
     selected_rows: set[str] = set()
-    per_path: dict[str, int] = {}
-    for quota in (1, 2):
+    for source_block in range(len(source_blocks) + 1):
+        selected_functions: set[tuple[str, str]] = set()
         for item in ranked:
-            _score, path, row = item
-            if row in selected_rows or per_path.get(path, 0) >= quota:
+            _score, item_block, path, function, row = item
+            function_key = (path, function)
+            if (
+                item_block != source_block
+                or row in selected_rows
+                or function_key in selected_functions
+            ):
                 continue
             ordered.append(item)
             selected_rows.add(row)
-            per_path[path] = per_path.get(path, 0) + 1
+            selected_functions.add(function_key)
+            if len(selected_functions) >= 2:
+                break
     ordered.extend(
-        item for item in ranked if item[2] not in selected_rows
+        item for item in ranked if item[4] not in selected_rows
     )
     rows: list[str] = []
     used = 0
-    for _score, _path, row in ordered:
+    for _score, _source_block, _path, _function, row in ordered:
         addition = len(row) + 1
         if used + addition > MAX_TASK_PACKET_RUNTIME_STATE_CHARS:
             rows.append("...[runtime local samples truncated]")
