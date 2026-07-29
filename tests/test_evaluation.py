@@ -39,18 +39,23 @@ from mlx_swarm.evaluation import (
     evaluation_case,
     exclusive_case_lock,
     fresh_arm_repository,
+    frontier_alone_response_prompt,
+    hermes_command,
     inspect_codex_version,
+    inspect_frontier_version,
     inspect_container,
     install_frozen_prompt_replay,
     is_dependency_or_project_install,
     load_evaluation_profile,
     local_replay_promotion_gate,
     make_arm_result,
+    materialize_frontier_edit_manifest,
     mlx_swarm_source_revision,
     normalize_setup_parallelism,
     oracle_infrastructure_failure,
     parse_benchmark_commands,
     parse_codex_usage_jsonl,
+    parse_hermes_usage_json,
     patch_metadata,
     preliminary_study_subset,
     preliminary_evaluation_profile,
@@ -62,6 +67,7 @@ from mlx_swarm.evaluation import (
     sanitize_suite,
     select_cases,
     split_constraint_text,
+    strip_one_json_fence,
     update_readme_economics,
     usage_with_phases,
     validate_arm_result,
@@ -166,6 +172,28 @@ def _write_profile(tmp_path: Path, payload: dict[str, Any] | None = None) -> Pat
     return path
 
 
+def _hermes_profile_payload() -> dict[str, Any]:
+    payload = _profile_payload()
+    payload["schemaVersion"] = 2
+    payload["profileId"] = "test-study-glm52"
+    payload["frontier"] = {
+        "adapter": "hermes-oneshot",
+        "command": "hermes",
+        "commandVersion": (
+            "Hermes Agent v0.19.0 (2026.7.20) · upstream cbc1054e"
+        ),
+        "provider": "ollama-cloud",
+        "model": "glm-5.2",
+        "contextWindowTokens": 262144,
+        "toolsets": ["todo"],
+        "armTimeoutSeconds": 2700,
+        "planningTimeoutSeconds": 600,
+        "localTimeoutSeconds": 1500,
+        "reviewTimeoutSeconds": 600,
+    }
+    return payload
+
+
 def _case(case_id: str, project: str, stratum: str) -> dict[str, Any]:
     number = int(case_id.rsplit("-", 1)[-1])
     return {
@@ -263,6 +291,83 @@ def test_profile_is_strict_pinned_and_round_trips(tmp_path: Path) -> None:
     invalid["surprise"] = True
     with pytest.raises(EvaluationError, match="unknown fields"):
         load_evaluation_profile(_write_profile(tmp_path, invalid))
+
+
+def test_hermes_profile_is_strict_pinned_and_round_trips(
+    tmp_path: Path,
+) -> None:
+    payload = _hermes_profile_payload()
+    profile = load_evaluation_profile(_write_profile(tmp_path, payload))
+    assert profile.schema_version == 2
+    assert profile.frontier.adapter == "hermes-oneshot"
+    assert profile.frontier.provider == "ollama-cloud"
+    assert profile.frontier.model == "glm-5.2"
+    assert profile.frontier.context_window == 262144
+    assert profile.frontier.toolsets == ("todo",)
+    assert profile_payload(profile) == payload
+
+    legacy_with_new_key = _profile_payload()
+    legacy_with_new_key["frontier"]["adapter"] = "hermes-oneshot"
+    with pytest.raises(EvaluationError, match="unknown fields"):
+        load_evaluation_profile(
+            _write_profile(tmp_path, legacy_with_new_key)
+        )
+
+    invalid_toolsets = _hermes_profile_payload()
+    invalid_toolsets["frontier"]["toolsets"] = ["todo", "terminal"]
+    with pytest.raises(EvaluationError, match="toolsets"):
+        load_evaluation_profile(
+            _write_profile(tmp_path, invalid_toolsets)
+        )
+
+    missing_context = _hermes_profile_payload()
+    del missing_context["frontier"]["contextWindowTokens"]
+    with pytest.raises(EvaluationError, match="missing fields"):
+        load_evaluation_profile(_write_profile(tmp_path, missing_context))
+
+
+def test_hermes_command_and_version_pin_are_deterministic(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    profile = load_evaluation_profile(
+        _write_profile(tmp_path, _hermes_profile_payload())
+    )
+    usage_file = tmp_path / "usage.json"
+    argv = hermes_command(
+        profile,
+        usage_file=usage_file,
+        oneshot_prompt="Return JSON.",
+    )
+    assert argv == [
+        "hermes",
+        "--safe-mode",
+        "--provider",
+        "ollama-cloud",
+        "--model",
+        "glm-5.2",
+        "--toolsets",
+        "todo",
+        "--usage-file",
+        str(usage_file),
+        "--oneshot",
+        "Return JSON.",
+    ]
+    assert all(value not in {"shell", "-c"} for value in argv)
+
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation._best_effort_version",
+        lambda _argv: profile.frontier.command_version,
+    )
+    assert inspect_frontier_version(profile) == (
+        profile.frontier.command_version
+    )
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation._best_effort_version",
+        lambda _argv: "Hermes Agent v0.18.0",
+    )
+    with pytest.raises(EvaluationError, match="version mismatch"):
+        inspect_frontier_version(profile)
 
 
 def test_preliminary_profile_is_fixed_two_plus_six() -> None:
@@ -1041,6 +1146,132 @@ def test_missing_codex_usage_is_explicitly_unavailable() -> None:
     combined = usage_with_phases([("planning", usage)])
     assert combined["usageStatus"] == "unavailable"
     assert combined["totalTokens"] is None
+
+
+def test_hermes_usage_requires_complete_matching_receipt() -> None:
+    receipt = {
+        "input_tokens": 16978,
+        "output_tokens": 6,
+        "cache_read_tokens": 12000,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 2,
+        "total_tokens": 16984,
+        "api_calls": 1,
+        "model": "glm-5.2",
+        "provider": "ollama-cloud",
+        "completed": True,
+        "failed": False,
+    }
+    usage = parse_hermes_usage_json(
+        json.dumps(receipt),
+        expected_provider="ollama-cloud",
+        expected_model="glm-5.2",
+    )
+    assert usage["usageStatus"] == "reported"
+    assert usage["promptTokens"] == 16978
+    assert usage["cachedInputTokens"] == 12000
+    assert usage["completionTokens"] == 6
+    assert usage["reasoningTokens"] == 2
+    assert usage["totalTokens"] == 16984
+    assert usage["turns"] == 1
+
+    invalid_receipts = []
+    for key in (
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "total_tokens",
+        "api_calls",
+        "completed",
+        "failed",
+    ):
+        invalid = dict(receipt)
+        del invalid[key]
+        invalid_receipts.append(invalid)
+    invalid_receipts.extend([
+        {**receipt, "total_tokens": 1},
+        {**receipt, "api_calls": 0},
+        {**receipt, "completed": False},
+        {**receipt, "failed": True},
+        {**receipt, "model": "glm-4.7"},
+        {**receipt, "provider": "other"},
+    ])
+    for invalid in invalid_receipts:
+        usage = parse_hermes_usage_json(
+            json.dumps(invalid),
+            expected_provider="ollama-cloud",
+            expected_model="glm-5.2",
+        )
+        assert usage["usageStatus"] == "unavailable"
+        assert usage["totalTokens"] is None
+
+
+def test_response_only_prompt_and_single_outer_fence_contract() -> None:
+    prompt = frontier_alone_response_prompt("TASK PACKET")
+    assert "no terminal, file, or browser tools" in prompt
+    assert "edit-manifest-v1" in prompt
+    assert prompt.endswith("TASK PACKET")
+    assert strip_one_json_fence("```json\n{\"edits\": []}\n```") == (
+        '{"edits": []}'
+    )
+    assert strip_one_json_fence("```\n{\"edits\": []}\n```") == (
+        '{"edits": []}'
+    )
+    assert strip_one_json_fence("```json\n{\"edits\": []}") == (
+        '```json\n{"edits": []}'
+    )
+    nested = "```json\n```json\n{}\n```\n```"
+    assert strip_one_json_fence(nested) == "```json\n{}\n```"
+
+
+def test_frontier_edit_manifest_materializes_only_approved_paths(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    (repository / "src").mkdir(parents=True)
+    target = repository / "src" / "value.py"
+    target.write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+    run_command(["git", "init", "-q"], cwd=repository, timeout=10)
+    manifest = json.dumps({
+        "edits": [{
+            "path": "src/value.py",
+            "old": "    return 1",
+            "new": "    return 2",
+        }],
+    })
+    diff = materialize_frontier_edit_manifest(
+        manifest,
+        repository=repository,
+        approved_write_roots=["src"],
+    )
+    assert "diff --git a/src/value.py b/src/value.py" in diff
+    checked = run_command(
+        ["git", "apply", "--check", "--recount", "-"],
+        cwd=repository,
+        timeout=10,
+        input_text=diff,
+    )
+    assert checked.returncode == 0
+    assert target.read_text(encoding="utf-8").endswith("return 1\n")
+
+    escaped = json.dumps({
+        "edits": [{
+            "path": "../outside.py",
+            "old": "before",
+            "new": "after",
+        }],
+    })
+    with pytest.raises(EvaluationError):
+        materialize_frontier_edit_manifest(
+            escaped,
+            repository=repository,
+            approved_write_roots=["src"],
+        )
 
 
 def test_arm_result_contract_rejects_unknown_fields_and_mixed_usage() -> None:

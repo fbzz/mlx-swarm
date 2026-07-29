@@ -28,9 +28,12 @@ starts from a history-free repository containing only the buggy tree and the
 fixed revision's designated tests.
 
 Preparation requires a clean MLX Swarm checkout and records its source commit.
-The profile also pins the exact Codex CLI version. Preparation and every run
-phase fail before an arm starts if the resolved CLI version or canonical
-profile digest differs from the frozen environment.
+Profile schema v1 preserves the original Codex contract exactly. Profile
+schema v2 is adapter-neutral and pins adapter, command, command version,
+provider, model, context window, explicit response-only toolsets, and phase
+timeouts. Preparation and every run phase fail before an arm starts if the
+resolved command version or canonical profile digest differs from the frozen
+environment.
 Every selected case must prove buggy-fails and fixed-passes before freezing;
 failed candidates are recorded, excluded, and deterministically replaced.
 If preparation is interrupted before the suite is sealed,
@@ -45,11 +48,20 @@ retained for model execution.
 
 Each case runs sequentially with seeded arm order and an independent oracle.
 
-Frontier Alone receives one clean buggy repository and one end-to-end Codex
-turn. MLX Swarm receives one frontier plan, local worker execution with at
+Frontier Alone receives one clean buggy repository and one end-to-end frontier
+phase. MLX Swarm receives one frontier plan, local worker execution with at
 most two repairs, and one final frontier review only after a completed local
 run. The evaluation harness can approve typed artifacts only inside disposable
 case workspaces; normal sessions retain their human approval boundary.
+
+The `hermes-oneshot` adapter runs GLM 5.2 in `--safe-mode` with explicit
+provider/model identity and exactly the `todo` toolset. It exposes no terminal
+or file tools. The direct arm receives the same frozen task packet as planning
+and returns `edit-manifest-v1`; the harness materializes and validates the diff.
+Planning and review consume stdout as strict JSON, with at most one complete
+outer JSON fence removed. Each call must produce a complete, successful
+`--usage-file` receipt whose provider/model and token arithmetic match the
+profile. The harness performs no automatic frontier retry.
 
 Protocol version 4 constructs one deterministic task packet for both arms. It
 contains the objective, failing evidence, fixed acceptance argv, frozen
@@ -118,10 +130,11 @@ daemon, pinned-container, or verifier-root failures classify the arm as
 Raw evidence lives below `.swarm/evaluations/<evaluationId>/`. Per-arm results
 are immutable and retain the timing, usage, patch, and oracle record.
 
-Each result includes wall-clock phase timing, all `turn.completed` usage,
+Each result includes wall-clock phase timing, adapter-reported frontier usage,
 local tokens, repair and model-load counts, patch digest, changed-file count,
-and oracle evidence. Missing frontier usage makes an arm measurement invalid;
-it is never converted to zero.
+and oracle evidence. Codex aggregates every `turn.completed` event; Hermes
+validates its single JSON receipt and records `api_calls` as turns. Missing
+frontier usage makes an arm measurement invalid; it is never converted to zero.
 
 Every local generation and repair also writes an immutable attempt record with
 the exact prompt, raw response, normalized response, gate result, statistics,

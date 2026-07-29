@@ -53,7 +53,7 @@ from .workspace import (
 
 
 EVALUATION_SCHEMA_VERSION = 1
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
 FAIR_EVALUATION_PROTOCOL_VERSION = 4
@@ -112,6 +112,11 @@ class EvaluationError(RuntimeError):
     """Raised when evaluation evidence or execution is invalid."""
 
 
+_FRONTIER_ADAPTERS = ("codex-cli", "hermes-oneshot")
+_FRONTIER_TOOLSETS = ("todo",)
+_MAX_FRONTIER_RESPONSE_BYTES = 1_000_000
+
+
 @dataclass(frozen=True)
 class FrontierSettings:
     command: str
@@ -122,6 +127,11 @@ class FrontierSettings:
     planning_timeout_seconds: int
     local_timeout_seconds: int
     review_timeout_seconds: int
+    adapter: str = "codex-cli"
+    provider: str = "openai-codex"
+    command_version: str = ""
+    toolsets: tuple[str, ...] = ()
+    context_window: int = 0
 
 
 @dataclass(frozen=True)
@@ -153,6 +163,7 @@ class ContainerSettings:
 @dataclass(frozen=True)
 class EvaluationProfile:
     source: Path
+    schema_version: int
     profile_id: str
     benchmark_repository: str
     benchmark_revision: str
@@ -203,7 +214,13 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
             "local",
         },
     )
-    if _integer(raw["schemaVersion"], "profile.schemaVersion", 1, 100) != 1:
+    schema_version = _integer(
+        raw["schemaVersion"],
+        "profile.schemaVersion",
+        1,
+        100,
+    )
+    if schema_version not in {1, 2}:
         raise EvaluationError("Unsupported evaluation profile schema version.")
     benchmark = _object(raw["benchmark"], "profile.benchmark")
     _exact_keys(
@@ -356,32 +373,108 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         ),
     )
     frontier_raw = _object(raw["frontier"], "profile.frontier")
-    _exact_keys(
-        frontier_raw,
-        "profile.frontier",
-        {
-            "command",
-            "codexVersion",
-            "model",
-            "reasoningEffort",
-            "armTimeoutSeconds",
-            "planningTimeoutSeconds",
-            "localTimeoutSeconds",
-            "reviewTimeoutSeconds",
-        },
-    )
-    frontier = FrontierSettings(
-        command=_text(frontier_raw["command"], "profile.frontier.command"),
-        codex_version=_text(
+    timeout_fields = {
+        "armTimeoutSeconds",
+        "planningTimeoutSeconds",
+        "localTimeoutSeconds",
+        "reviewTimeoutSeconds",
+    }
+    if schema_version == 1:
+        _exact_keys(
+            frontier_raw,
+            "profile.frontier",
+            {
+                "command",
+                "codexVersion",
+                "model",
+                "reasoningEffort",
+                *timeout_fields,
+            },
+        )
+        adapter = "codex-cli"
+        provider = "openai-codex"
+        command_version = _text(
             frontier_raw["codexVersion"],
             "profile.frontier.codexVersion",
-        ),
-        model=_text(frontier_raw["model"], "profile.frontier.model"),
-        reasoning_effort=_enum(
+        )
+        codex_version = command_version
+        reasoning_effort = _enum(
             frontier_raw["reasoningEffort"],
             "profile.frontier.reasoningEffort",
             {"low", "medium", "high", "xhigh", "max", "ultra"},
-        ),
+        )
+        toolsets: tuple[str, ...] = ()
+        context_window = 0
+    else:
+        _exact_keys(
+            frontier_raw,
+            "profile.frontier",
+            {
+                "adapter",
+                "command",
+                "commandVersion",
+                "provider",
+                "model",
+                "contextWindowTokens",
+                "toolsets",
+                *timeout_fields,
+            },
+        )
+        adapter = _text(
+            frontier_raw["adapter"],
+            "profile.frontier.adapter",
+        )
+        provider = _text(
+            frontier_raw["provider"],
+            "profile.frontier.provider",
+        )
+        command_version = _text(
+            frontier_raw["commandVersion"],
+            "profile.frontier.commandVersion",
+        )
+        codex_version = ""
+        reasoning_effort = ""
+        toolsets = _unique_text_array(
+            frontier_raw["toolsets"],
+            "profile.frontier.toolsets",
+            minimum=1,
+            maximum=16,
+        )
+        context_window = _integer(
+            frontier_raw["contextWindowTokens"],
+            "profile.frontier.contextWindowTokens",
+            1,
+            2**20,
+        )
+    if adapter not in _FRONTIER_ADAPTERS:
+        raise EvaluationError(
+            f"profile.frontier.adapter must be one of: "
+            f"{', '.join(_FRONTIER_ADAPTERS)}."
+        )
+    for toolset in toolsets:
+        if toolset not in _FRONTIER_TOOLSETS:
+            raise EvaluationError(
+                f"profile.frontier.toolsets must be one of: "
+                f"{', '.join(_FRONTIER_TOOLSETS)}."
+            )
+    if adapter == "hermes-oneshot":
+        if schema_version != 2:
+            raise EvaluationError(
+                "hermes-oneshot requires evaluation profile schema version 2."
+            )
+        if toolsets != ("todo",):
+            raise EvaluationError(
+                "hermes-oneshot adapter requires exactly the todo toolset."
+            )
+    elif schema_version != 1:
+        raise EvaluationError(
+            "codex-cli evaluation profiles must use schema version 1."
+        )
+    frontier = FrontierSettings(
+        command=_text(frontier_raw["command"], "profile.frontier.command"),
+        codex_version=codex_version,
+        model=_text(frontier_raw["model"], "profile.frontier.model"),
+        reasoning_effort=reasoning_effort,
         arm_timeout_seconds=_integer(
             frontier_raw["armTimeoutSeconds"],
             "profile.frontier.armTimeoutSeconds",
@@ -406,6 +499,11 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
             30,
             86_400,
         ),
+        adapter=adapter,
+        provider=provider,
+        command_version=command_version,
+        toolsets=toolsets,
+        context_window=context_window,
     )
     if (
         frontier.planning_timeout_seconds
@@ -476,6 +574,7 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
     profile_id = _identifier(raw["profileId"], "profile.profileId")
     return EvaluationProfile(
         source=path.resolve(),
+        schema_version=schema_version,
         profile_id=profile_id,
         benchmark_repository=_text(
             benchmark["repository"],
@@ -500,8 +599,8 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
 
 
 def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
-    return {
-        "schemaVersion": PROFILE_SCHEMA_VERSION,
+    payload = {
+        "schemaVersion": profile.schema_version,
         "profileId": profile.profile_id,
         "benchmark": {
             "repository": profile.benchmark_repository,
@@ -531,18 +630,6 @@ def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
             "digest": profile.container.digest,
             "platform": profile.container.platform,
         },
-        "frontier": {
-            "command": profile.frontier.command,
-            "codexVersion": profile.frontier.codex_version,
-            "model": profile.frontier.model,
-            "reasoningEffort": profile.frontier.reasoning_effort,
-            "armTimeoutSeconds": profile.frontier.arm_timeout_seconds,
-            "planningTimeoutSeconds": (
-                profile.frontier.planning_timeout_seconds
-            ),
-            "localTimeoutSeconds": profile.frontier.local_timeout_seconds,
-            "reviewTimeoutSeconds": profile.frontier.review_timeout_seconds,
-        },
         "pythonBootstrap": list(profile.python_bootstrap),
         "dependencyRoots": {
             project: list(profile.dependency_roots[project])
@@ -554,6 +641,32 @@ def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
         },
         "local": {"maxRepair": profile.max_repair},
     }
+    timeouts = {
+        "armTimeoutSeconds": profile.frontier.arm_timeout_seconds,
+        "planningTimeoutSeconds": profile.frontier.planning_timeout_seconds,
+        "localTimeoutSeconds": profile.frontier.local_timeout_seconds,
+        "reviewTimeoutSeconds": profile.frontier.review_timeout_seconds,
+    }
+    if profile.schema_version == 1:
+        payload["frontier"] = {
+            "command": profile.frontier.command,
+            "codexVersion": profile.frontier.codex_version,
+            "model": profile.frontier.model,
+            "reasoningEffort": profile.frontier.reasoning_effort,
+            **timeouts,
+        }
+    else:
+        payload["frontier"] = {
+            "adapter": profile.frontier.adapter,
+            "command": profile.frontier.command,
+            "commandVersion": profile.frontier.command_version,
+            "provider": profile.frontier.provider,
+            "model": profile.frontier.model,
+            "contextWindowTokens": profile.frontier.context_window,
+            "toolsets": list(profile.frontier.toolsets),
+            **timeouts,
+        }
+    return payload
 
 
 def preliminary_evaluation_profile(
@@ -1051,6 +1164,97 @@ def parse_codex_usage_jsonl(text: str) -> dict[str, Any]:
     }
 
 
+def parse_hermes_usage_json(
+    text: str,
+    *,
+    expected_provider: str | None = None,
+    expected_model: str | None = None,
+) -> dict[str, Any]:
+    """Parse one Hermes ``--usage-file`` JSON receipt into frontier usage.
+
+    The Hermes usage schema is a single JSON object (not JSONL).  Every field
+    is strictly validated: non-negative integers, exact provider/model
+    identity, ``completed == true``, ``failed == false``,
+    ``api_calls >= 1``, and ``total_tokens == input_tokens + output_tokens``.
+    Any violation makes the measurement invalid rather than score zero.
+
+    When *expected_provider* and *expected_model* are supplied the receipt
+    must carry matching ``provider`` and ``model`` strings; otherwise the
+    result is unavailable.  This keeps the identity check inside the parser
+    so callers never see a "reported" receipt that failed identity validation.
+    """
+    unavailable = {
+        "usageStatus": "unavailable",
+        "turns": 0,
+        "promptTokens": None,
+        "cachedInputTokens": None,
+        "completionTokens": None,
+        "reasoningTokens": None,
+        "totalTokens": None,
+        "malformedLines": 1,
+    }
+    text = text.strip()
+    if not text:
+        return {**unavailable}
+    try:
+        receipt = json.loads(text)
+    except json.JSONDecodeError:
+        return {**unavailable}
+    if not isinstance(receipt, dict):
+        return {**unavailable}
+    try:
+        input_tokens = _strict_usage_int(receipt, "input_tokens")
+        output_tokens = _strict_usage_int(receipt, "output_tokens")
+        cache_read = _strict_usage_int(receipt, "cache_read_tokens")
+        cache_write = _strict_usage_int(receipt, "cache_write_tokens")
+        reasoning = _strict_usage_int(receipt, "reasoning_tokens")
+        total = _strict_usage_int(receipt, "total_tokens")
+        api_calls = _strict_usage_int(receipt, "api_calls")
+    except EvaluationError:
+        return {**unavailable}
+    if api_calls < 1:
+        return {**unavailable}
+    if total != input_tokens + output_tokens:
+        return {**unavailable}
+    completed = receipt.get("completed")
+    failed = receipt.get("failed")
+    if not isinstance(completed, bool) or not isinstance(failed, bool):
+        return {**unavailable}
+    if not completed or failed:
+        return {**unavailable}
+    if expected_provider is not None:
+        provider = receipt.get("provider")
+        if not isinstance(provider, str) or provider != expected_provider:
+            return {**unavailable}
+    if expected_model is not None:
+        model = receipt.get("model")
+        if not isinstance(model, str) or model != expected_model:
+            return {**unavailable}
+    return {
+        "usageStatus": "reported",
+        "turns": api_calls,
+        "promptTokens": input_tokens,
+        "cachedInputTokens": cache_read,
+        "completionTokens": output_tokens,
+        "reasoningTokens": reasoning,
+        "totalTokens": total,
+        "malformedLines": 0,
+        "cacheWriteTokens": cache_write,
+    }
+
+
+def _strict_usage_int(
+    receipt: dict[str, Any],
+    key: str,
+) -> int:
+    value = receipt.get(key)
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+        raise EvaluationError(
+            f"Hermes usage field {key} must be a non-negative integer."
+        )
+    return value
+
+
 def validate_arm_result(value: Any) -> dict[str, Any]:
     """Validate one immutable per-arm measurement."""
     result = _object(value, "armResult")
@@ -1503,12 +1707,21 @@ def render_readme_economics(summary: dict[str, Any]) -> str:
     if isinstance(study, dict):
         local_model = study.get("localModel") or {}
         hardware = study.get("hardware") or {}
+        reasoning = study.get("reasoningEffort")
+        reasoning_label = f" ({reasoning})" if reasoning else ""
+        adapter = study.get("frontierAdapter", "unknown")
+        provider = study.get("frontierProvider", "unknown")
+        frontier_version = (
+            study.get("frontierCommandVersion")
+            or study.get("codexVersion")
+            or "unknown"
+        )
         lines.extend([
             (
                 f"Pinned protocol: `{study.get('benchmark', 'BugsInPy')}@"
                 f"{study.get('benchmarkRevision', 'unknown')}` · "
-                f"`{study.get('frontierModel', 'unknown')}` "
-                f"({study.get('reasoningEffort', 'unknown')}) · local "
+                f"`{study.get('frontierModel', 'unknown')}`"
+                f"{reasoning_label} via `{adapter}` / `{provider}` · local "
                 f"`{local_model.get('repository', 'unknown')}@"
                 f"{local_model.get('fingerprint', 'unknown')}` · "
                 f"seed `{study.get('seed', 'unknown')}`."
@@ -1520,7 +1733,7 @@ def render_readme_economics(summary: dict[str, Any]) -> str:
                 f"`{hardware.get('processor', 'unknown')}` with "
                 f"{format_bytes(hardware.get('memoryBytes'))}. "
                 f"MLX Swarm commit `{study.get('mlxSwarmCommit', 'unknown')}`; "
-                f"Codex `{study.get('codexVersion', 'unknown')}`."
+                f"frontier command `{frontier_version}`."
             ),
             "",
         ])
@@ -1792,7 +2005,7 @@ class EvaluationStore:
                 "MLX Swarm source is dirty; commit the benchmark harness "
                 "before freezing an evaluation."
             )
-        inspect_codex_version(profile)
+        inspect_frontier_version(profile)
         container = inspect_container(profile)
         self._check_storage(profile)
         excluded: list[dict[str, Any]] = []
@@ -2356,10 +2569,14 @@ class EvaluationRunner:
             raise EvaluationError(
                 "Evaluation profile differs from the prepared evaluation."
             )
-        current_codex = inspect_codex_version(self.profile)
-        if current_codex != detail["environment"].get("codexVersion"):
+        current_frontier = inspect_frontier_version(self.profile)
+        frozen_frontier = (
+            detail["environment"].get("frontierCommandVersion")
+            or detail["environment"].get("codexVersion")
+        )
+        if current_frontier != frozen_frontier:
             raise EvaluationError(
-                "Codex CLI differs from the prepared evaluation."
+                "Frontier command differs from the prepared evaluation."
             )
         current_container = inspect_container(self.profile)
         frozen_container = (
@@ -2928,33 +3145,105 @@ class EvaluationRunner:
         task_packet = pair_contract["taskPacket"]
         evidence_root = arm_root / "evidence"
         evidence_root.mkdir(parents=True, exist_ok=True)
-        last_message = evidence_root / "last-message.txt"
         started = time.perf_counter()
-        command = codex_command(
-            self.profile,
-            cwd=repository,
-            sandbox="workspace-write",
-            output_last_message=last_message,
-        )
-        codex_result = run_command(
-            command,
-            cwd=repository,
-            timeout=self.profile.frontier.arm_timeout_seconds,
-            env=frontier_environment(),
-            input_text=frontier_alone_prompt(task_packet),
-        )
-        (evidence_root / "events.jsonl").write_text(
-            codex_result.stdout,
-            encoding="utf-8",
-        )
-        (evidence_root / "stderr.log").write_text(
-            codex_result.stderr,
-            encoding="utf-8",
-        )
-        usage = usage_with_phases([
-            ("frontier-alone", parse_codex_usage_jsonl(codex_result.stdout))
-        ])
-        diff = _git_diff(repository, base_sha)
+        is_hermes = self.profile.frontier.adapter == "hermes-oneshot"
+        if is_hermes:
+            usage_file = evidence_root / "usage.json"
+            response_file = evidence_root / "response.txt"
+            prompt = frontier_alone_response_prompt(task_packet)
+            command = frontier_command(
+                self.profile,
+                cwd=repository,
+                sandbox="",
+                output_last_message=response_file,
+                usage_file=usage_file,
+                oneshot_prompt=prompt,
+            )
+            frontier_result = run_command(
+                command,
+                cwd=repository,
+                timeout=self.profile.frontier.arm_timeout_seconds,
+                env=frontier_environment(),
+            )
+            (evidence_root / "stdout.log").write_text(
+                frontier_result.stdout,
+                encoding="utf-8",
+            )
+            (evidence_root / "stderr.log").write_text(
+                frontier_result.stderr,
+                encoding="utf-8",
+            )
+            raw_usage_text = ""
+            if usage_file.is_file():
+                raw_usage_text = usage_file.read_text(encoding="utf-8")
+            (evidence_root / "usage-raw.json").write_text(
+                raw_usage_text,
+                encoding="utf-8",
+            )
+            phase_usage = parse_hermes_usage_json(
+                raw_usage_text,
+                expected_provider=self.profile.frontier.provider,
+                expected_model=self.profile.frontier.model,
+            )
+            usage = usage_with_phases([
+                ("frontier-alone", phase_usage)
+            ])
+            response_text = frontier_result.stdout[
+                :_MAX_FRONTIER_RESPONSE_BYTES
+            ]
+            response_file.write_text(response_text, encoding="utf-8")
+            diff = ""
+            materialize_error: str | None = None
+            if (
+                not frontier_result.timed_out
+                and frontier_result.returncode == 0
+                and response_text.strip()
+                and phase_usage["usageStatus"] == "reported"
+            ):
+                try:
+                    diff = materialize_frontier_edit_manifest(
+                        response_text,
+                        repository=repository,
+                        approved_write_roots=approved_write_roots,
+                    )
+                except EvaluationError as exc:
+                    materialize_error = str(exc)
+            else:
+                materialize_error = (
+                    "Frontier timed out"
+                    if frontier_result.timed_out
+                    else "Frontier returned no response."
+                )
+        else:
+            last_message = evidence_root / "last-message.txt"
+            command = codex_command(
+                self.profile,
+                cwd=repository,
+                sandbox="workspace-write",
+                output_last_message=last_message,
+            )
+            codex_result = run_command(
+                command,
+                cwd=repository,
+                timeout=self.profile.frontier.arm_timeout_seconds,
+                env=frontier_environment(),
+                input_text=frontier_alone_prompt(task_packet),
+            )
+            (evidence_root / "events.jsonl").write_text(
+                codex_result.stdout,
+                encoding="utf-8",
+            )
+            (evidence_root / "stderr.log").write_text(
+                codex_result.stderr,
+                encoding="utf-8",
+            )
+            phase_usage = parse_codex_usage_jsonl(codex_result.stdout)
+            usage = usage_with_phases([
+                ("frontier-alone", phase_usage)
+            ])
+            diff = _git_diff(repository, base_sha)
+            materialize_error = None
+            frontier_result = codex_result
         patch = persist_candidate_patch(evidence_root, diff)
         structural_error = validate_candidate_diff(
             diff,
@@ -2962,6 +3251,8 @@ class EvaluationRunner:
             repository,
             allowed_paths=approved_write_roots,
         )
+        if materialize_error is not None and not structural_error:
+            structural_error = materialize_error
         remaining = self.profile.frontier.arm_timeout_seconds - (
             time.perf_counter() - started
         )
@@ -2990,19 +3281,21 @@ class EvaluationRunner:
             or oracle.get("timedOut")
         )
         infrastructure_error = oracle_infrastructure_failure(oracle)
+        usage_invalid = usage.get("usageStatus") != "reported"
         completed = bool(
             diff
             and structural_error is None
-            and not codex_result.timed_out
-            and codex_result.returncode == 0
+            and not frontier_result.timed_out
+            and frontier_result.returncode == 0
             and not deadline_expired
             and infrastructure_error is None
+            and not usage_invalid
         )
         status = (
             "invalid"
-            if infrastructure_error is not None
+            if infrastructure_error is not None or usage_invalid
             else "timed_out"
-            if codex_result.timed_out or deadline_expired
+            if frontier_result.timed_out or deadline_expired
             else "completed"
             if completed
             else "failed"
@@ -3015,7 +3308,7 @@ class EvaluationRunner:
             score=1 if oracle["passed"] else 0,
             elapsed_seconds=elapsed,
             phase_seconds={
-                "frontier": codex_result.elapsed_seconds,
+                "frontier": frontier_result.elapsed_seconds,
                 "oracle": oracle.get("elapsedSeconds", 0.0),
             },
             frontier_usage=usage,
@@ -3103,43 +3396,112 @@ class EvaluationRunner:
         )
         claim = store.claim_plan(
             request["request"]["requestId"],
-            adapter="codex-cli-evaluation",
+            adapter=self.profile.frontier.adapter,
         )
         evidence_root = arm_root / "evidence"
         evidence_root.mkdir(parents=True, exist_ok=True)
         plan_response = evidence_root / "plan-response.json"
         started = time.perf_counter()
         deadline = started + self.profile.frontier.arm_timeout_seconds
-        plan_codex = run_command(
-            codex_command(
+        is_hermes = self.profile.frontier.adapter == "hermes-oneshot"
+        plan_prompt_text = Path(claim["promptPath"]).read_text(
+            encoding="utf-8"
+        )
+        if is_hermes:
+            plan_usage_file = evidence_root / "plan-usage.json"
+            plan_command = frontier_command(
                 self.profile,
                 cwd=repository,
-                sandbox="read-only",
+                sandbox="",
                 output_last_message=plan_response,
-            ),
-            cwd=repository,
-            timeout=self.profile.frontier.planning_timeout_seconds,
-            env=frontier_environment(),
-            input_text=Path(claim["promptPath"]).read_text(encoding="utf-8"),
-        )
-        (evidence_root / "plan-events.jsonl").write_text(
-            plan_codex.stdout,
-            encoding="utf-8",
-        )
-        plan_usage = parse_codex_usage_jsonl(plan_codex.stdout)
+                usage_file=plan_usage_file,
+                oneshot_prompt=plan_prompt_text,
+            )
+            plan_frontier_result = run_command(
+                plan_command,
+                cwd=repository,
+                timeout=self.profile.frontier.planning_timeout_seconds,
+                env=frontier_environment(),
+            )
+            (evidence_root / "plan-stdout.log").write_text(
+                plan_frontier_result.stdout,
+                encoding="utf-8",
+            )
+            (evidence_root / "plan-stderr.log").write_text(
+                plan_frontier_result.stderr,
+                encoding="utf-8",
+            )
+            raw_plan_usage = ""
+            if plan_usage_file.is_file():
+                raw_plan_usage = plan_usage_file.read_text(encoding="utf-8")
+            (evidence_root / "plan-usage-raw.json").write_text(
+                raw_plan_usage,
+                encoding="utf-8",
+            )
+            plan_usage = parse_hermes_usage_json(
+                raw_plan_usage,
+                expected_provider=self.profile.frontier.provider,
+                expected_model=self.profile.frontier.model,
+            )
+            if (
+                not plan_frontier_result.timed_out
+                and plan_frontier_result.returncode == 0
+                and plan_frontier_result.stdout.strip()
+            ):
+                plan_response.write_text(
+                    strip_one_json_fence(plan_frontier_result.stdout),
+                    encoding="utf-8",
+                )
+            plan_timed_out = plan_frontier_result.timed_out
+            plan_returncode = plan_frontier_result.returncode
+            plan_elapsed = plan_frontier_result.elapsed_seconds
+        else:
+            plan_frontier_result = run_command(
+                codex_command(
+                    self.profile,
+                    cwd=repository,
+                    sandbox="read-only",
+                    output_last_message=plan_response,
+                ),
+                cwd=repository,
+                timeout=self.profile.frontier.planning_timeout_seconds,
+                env=frontier_environment(),
+                input_text=plan_prompt_text,
+            )
+            (evidence_root / "plan-events.jsonl").write_text(
+                plan_frontier_result.stdout,
+                encoding="utf-8",
+            )
+            plan_usage = parse_codex_usage_jsonl(
+                plan_frontier_result.stdout
+            )
+            plan_timed_out = plan_frontier_result.timed_out
+            plan_returncode = plan_frontier_result.returncode
+            plan_elapsed = plan_frontier_result.elapsed_seconds
+        if is_hermes:
+            plan_usage_valid = plan_usage["usageStatus"] == "reported"
+        else:
+            plan_usage_valid = True
         if (
-            plan_codex.timed_out
-            or plan_codex.returncode != 0
+            plan_timed_out
+            or plan_returncode != 0
             or not plan_response.is_file()
+            or not plan_usage_valid
         ):
             return make_arm_result(
                 case=case,
                 arm="mlx-swarm",
-                status="timed_out" if plan_codex.timed_out else "failed",
+                status=(
+                    "timed_out"
+                    if plan_timed_out
+                    else "invalid"
+                    if not plan_usage_valid
+                    else "failed"
+                ),
                 completed=False,
                 score=0,
                 elapsed_seconds=time.perf_counter() - started,
-                phase_seconds={"planning": plan_codex.elapsed_seconds},
+                phase_seconds={"planning": plan_elapsed},
                 frontier_usage=usage_with_phases([("planning", plan_usage)]),
                 local_usage=empty_local_usage(),
                 repairs=0,
@@ -3149,15 +3511,19 @@ class EvaluationRunner:
                 oracle={
                     "passed": False,
                     "exitCode": None,
-                    "evidence": "Frontier planning did not produce a valid response.",
+                    "evidence": (
+                        "Frontier planning usage is invalid."
+                        if not plan_usage_valid
+                        else "Frontier planning did not produce a valid response."
+                    ),
                 },
             )
         imported = store.import_plan(
             request["request"]["requestId"],
             plan_response,
             claim_id=claim["claimId"],
-            adapter="codex-cli-evaluation",
-            provider="openai-codex",
+            adapter=self.profile.frontier.adapter,
+            provider=self.profile.frontier.provider,
             model=self.profile.frontier.model,
             prompt_tokens=plan_usage.get("promptTokens"),
             completion_tokens=plan_usage.get("completionTokens"),
@@ -3263,7 +3629,7 @@ class EvaluationRunner:
                 score=0,
                 elapsed_seconds=time.perf_counter() - started,
                 phase_seconds={
-                    "planning": plan_codex.elapsed_seconds,
+                    "planning": plan_elapsed,
                     "local": local_seconds,
                     "review": 0.0,
                     "oracle": 0.0,
@@ -3295,50 +3661,122 @@ class EvaluationRunner:
         ):
             review_claim = store.claim_review(
                 session_dir,
-                adapter="codex-cli-evaluation",
+                adapter=self.profile.frontier.adapter,
             )
-            review_response = evidence_root / "review-response.json"
-            review_result = run_command(
-                codex_command(
+            review_prompt_text = Path(
+                review_claim["promptPath"]
+            ).read_text(encoding="utf-8")
+            if is_hermes:
+                review_usage_file = evidence_root / "review-usage.json"
+                review_response = evidence_root / "review-response.json"
+                review_command = frontier_command(
                     self.profile,
                     cwd=repository,
-                    sandbox="read-only",
+                    sandbox="",
                     output_last_message=review_response,
-                ),
-                cwd=repository,
-                timeout=min(
-                    self.profile.frontier.review_timeout_seconds,
-                    max(1, math.floor(deadline - time.perf_counter())),
-                ),
-                env=frontier_environment(),
-                input_text=Path(review_claim["promptPath"]).read_text(
-                    encoding="utf-8"
-                ),
-            )
-            review_seconds = review_result.elapsed_seconds
-            review_timed_out = review_result.timed_out
-            (evidence_root / "review-events.jsonl").write_text(
-                review_result.stdout,
-                encoding="utf-8",
-            )
-            review_usage = parse_codex_usage_jsonl(review_result.stdout)
-            if (
-                not review_result.timed_out
-                and review_result.returncode == 0
-                and review_response.is_file()
-            ):
-                imported_review = store.import_review(
-                    session_dir,
-                    review_response,
-                    claim_id=review_claim["claimId"],
-                    adapter="codex-cli-evaluation",
-                    provider="openai-codex",
-                    model=self.profile.frontier.model,
-                    prompt_tokens=review_usage.get("promptTokens"),
-                    completion_tokens=review_usage.get("completionTokens"),
-                    total_tokens=review_usage.get("totalTokens"),
+                    usage_file=review_usage_file,
+                    oneshot_prompt=review_prompt_text,
                 )
-                review_verdict = imported_review["review"]["verdict"]
+                review_result = run_command(
+                    review_command,
+                    cwd=repository,
+                    timeout=min(
+                        self.profile.frontier.review_timeout_seconds,
+                        max(1, math.floor(deadline - time.perf_counter())),
+                    ),
+                    env=frontier_environment(),
+                )
+                review_seconds = review_result.elapsed_seconds
+                review_timed_out = review_result.timed_out
+                (evidence_root / "review-stdout.log").write_text(
+                    review_result.stdout,
+                    encoding="utf-8",
+                )
+                (evidence_root / "review-stderr.log").write_text(
+                    review_result.stderr,
+                    encoding="utf-8",
+                )
+                raw_review_usage = ""
+                if review_usage_file.is_file():
+                    raw_review_usage = review_usage_file.read_text(
+                        encoding="utf-8"
+                    )
+                (evidence_root / "review-usage-raw.json").write_text(
+                    raw_review_usage,
+                    encoding="utf-8",
+                )
+                review_usage = parse_hermes_usage_json(
+                    raw_review_usage,
+                    expected_provider=self.profile.frontier.provider,
+                    expected_model=self.profile.frontier.model,
+                )
+                if (
+                    not review_result.timed_out
+                    and review_result.returncode == 0
+                    and review_usage["usageStatus"] == "reported"
+                    and review_result.stdout.strip()
+                ):
+                    review_response.write_text(
+                        strip_one_json_fence(review_result.stdout),
+                        encoding="utf-8",
+                    )
+                    imported_review = store.import_review(
+                        session_dir,
+                        review_response,
+                        claim_id=review_claim["claimId"],
+                        adapter=self.profile.frontier.adapter,
+                        provider=self.profile.frontier.provider,
+                        model=self.profile.frontier.model,
+                        prompt_tokens=review_usage.get("promptTokens"),
+                        completion_tokens=review_usage.get(
+                            "completionTokens"
+                        ),
+                        total_tokens=review_usage.get("totalTokens"),
+                    )
+                    review_verdict = imported_review["review"]["verdict"]
+            else:
+                review_response = evidence_root / "review-response.json"
+                review_result = run_command(
+                    codex_command(
+                        self.profile,
+                        cwd=repository,
+                        sandbox="read-only",
+                        output_last_message=review_response,
+                    ),
+                    cwd=repository,
+                    timeout=min(
+                        self.profile.frontier.review_timeout_seconds,
+                        max(1, math.floor(deadline - time.perf_counter())),
+                    ),
+                    env=frontier_environment(),
+                    input_text=review_prompt_text,
+                )
+                review_seconds = review_result.elapsed_seconds
+                review_timed_out = review_result.timed_out
+                (evidence_root / "review-events.jsonl").write_text(
+                    review_result.stdout,
+                    encoding="utf-8",
+                )
+                review_usage = parse_codex_usage_jsonl(review_result.stdout)
+                if (
+                    not review_result.timed_out
+                    and review_result.returncode == 0
+                    and review_response.is_file()
+                ):
+                    imported_review = store.import_review(
+                        session_dir,
+                        review_response,
+                        claim_id=review_claim["claimId"],
+                        adapter="codex-cli-evaluation",
+                        provider="openai-codex",
+                        model=self.profile.frontier.model,
+                        prompt_tokens=review_usage.get("promptTokens"),
+                        completion_tokens=review_usage.get(
+                            "completionTokens"
+                        ),
+                        total_tokens=review_usage.get("totalTokens"),
+                    )
+                    review_verdict = imported_review["review"]["verdict"]
         remaining = deadline - time.perf_counter()
         if structural_error is None and diff and remaining > 0:
             oracle = self._score_candidate(
@@ -3363,11 +3801,13 @@ class EvaluationRunner:
         if review_usage is not None:
             phases.append(("review", review_usage))
         usage = usage_with_phases(phases)
+        usage_invalid = usage.get("usageStatus") != "reported"
         completed = bool(
             session.state.get("status") == "completed"
             and review_verdict is not None
             and not local_result.timed_out
             and not oracle.get("timedOut")
+            and not usage_invalid
         )
         infrastructure_error = oracle_infrastructure_failure(oracle)
         if infrastructure_error is not None:
@@ -3377,7 +3817,7 @@ class EvaluationRunner:
         )
         status = (
             "invalid"
-            if infrastructure_error is not None
+            if infrastructure_error is not None or usage_invalid
             else "timed_out"
             if local_result.timed_out or review_timed_out or deadline_expired
             else "completed"
@@ -3393,7 +3833,7 @@ class EvaluationRunner:
             score=1 if oracle["passed"] else 0,
             elapsed_seconds=elapsed,
             phase_seconds={
-                "planning": plan_codex.elapsed_seconds,
+                "planning": plan_elapsed,
                 "local": local_seconds,
                 "review": review_seconds,
                 "oracle": oracle.get("elapsedSeconds", 0.0),
@@ -4823,6 +5263,172 @@ def frontier_alone_prompt(task_packet: str) -> str:
     )
 
 
+def frontier_alone_response_prompt(task_packet: str) -> str:
+    """Prompt for the response-only frontier-alone arm (no file tools)."""
+    return (
+        "You are the frontier-alone baseline in a paired code-repair study.\n"
+        "You have no terminal, file, or browser tools. You cannot inspect "
+        "files or run tests. Diagnose the bug from the evidence below and "
+        "return your repair as one strict edit-manifest-v1 JSON object.\n\n"
+        "The edit-manifest-v1 schema is:\n"
+        '{"edits": [{"path": "relative/path.py", "old": "exact text to '
+        'replace", "new": "replacement text"}, ...]}\n\n'
+        "Rules:\n"
+        "- The top-level object must contain exactly one key: \"edits\".\n"
+        "- Each edit must contain exactly path, old, and new (all strings).\n"
+        "- The old text must match exactly one occurrence in the target file.\n"
+        "- Modify only paths below the approved write roots.\n"
+        "- Do not modify tests, Git metadata, dependencies, or benchmark "
+        "evidence.\n"
+        "- Return only the JSON object. Do not wrap it in markdown code "
+        "fences. Do not include explanations.\n\n"
+        f"{task_packet}"
+    )
+
+
+def strip_one_json_fence(text: str) -> str:
+    """Remove at most one outer JSON code fence from a model response."""
+    stripped = text.strip()
+    lines = stripped.splitlines()
+    if (
+        len(lines) >= 3
+        and lines[0].strip() in {"```", "```json", "```JSON"}
+        and lines[-1].strip() == "```"
+    ):
+        return "\n".join(lines[1:-1]).strip()
+    return stripped
+
+
+def materialize_frontier_edit_manifest(
+    response: str,
+    *,
+    repository: Path,
+    approved_write_roots: Sequence[str],
+) -> str:
+    """Convert a response-only edit-manifest into a unified Git diff.
+
+    This mirrors the worker ``materialize_edit_manifest`` contract but
+    operates directly on the frontier-alone arm repository without a
+    workspace snapshot.  It enforces the same path-safety, uniqueness,
+    and no-op checks.
+    """
+    from .workspace import (
+        _path_within,
+        _reject_symlink_components,
+        _safe_patch_path,
+    )
+
+    payload = strip_one_json_fence(response)
+    try:
+        manifest = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise EvaluationError(
+            f"Frontier edit manifest is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(manifest, dict) or set(manifest) != {"edits"}:
+        raise EvaluationError(
+            "Frontier edit manifest must contain exactly one top-level "
+            "edits key."
+        )
+    edits = manifest["edits"]
+    if not isinstance(edits, list) or not 1 <= len(edits) <= 64:
+        raise EvaluationError(
+            "Frontier edit manifest must contain 1 to 64 edits."
+        )
+    if len(payload.encode("utf-8")) > _MAX_FRONTIER_RESPONSE_BYTES:
+        raise EvaluationError("Frontier edit manifest exceeds size limit.")
+    originals: dict[str, str] = {}
+    modified: dict[str, str] = {}
+    order: list[str] = []
+    for index, raw_edit in enumerate(edits):
+        if not isinstance(raw_edit, dict) or set(raw_edit) != {
+            "path",
+            "old",
+            "new",
+        }:
+            raise EvaluationError(
+                f"Frontier edit {index + 1} must contain exactly path, "
+                "old, and new."
+            )
+        path_value = raw_edit["path"]
+        old = raw_edit["old"]
+        new = raw_edit["new"]
+        if not all(isinstance(value, str) for value in (path_value, old, new)):
+            raise EvaluationError(
+                f"Frontier edit {index + 1} path, old, and new must be "
+                "strings."
+            )
+        path = _safe_patch_path(path_value)
+        if not old:
+            raise EvaluationError(
+                f"Frontier edit {index + 1} old text must not be empty."
+            )
+        if old == new:
+            raise EvaluationError(f"Frontier edit {index + 1} is a no-op.")
+        if not any(_path_within(path, root) for root in approved_write_roots):
+            raise EvaluationError(
+                f"Frontier edit path is outside approved write roots: {path}"
+            )
+        candidate = repository / path
+        _reject_symlink_components(repository, candidate, path)
+        if not candidate.is_file():
+            raise EvaluationError(
+                f"Frontier edit path is not a regular file: {path}"
+            )
+        if path not in originals:
+            try:
+                content = candidate.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError) as exc:
+                raise EvaluationError(
+                    f"Frontier edit path is not readable UTF-8 text: {path}"
+                ) from exc
+            if "\x00" in content:
+                raise EvaluationError(
+                    f"Frontier edit path contains binary data: {path}"
+                )
+            originals[path] = content
+            modified[path] = content
+            order.append(path)
+        occurrences = modified[path].count(old)
+        if occurrences != 1:
+            raise EvaluationError(
+                f"Frontier edit {index + 1} old text must match exactly "
+                f"once in {path}; found {occurrences}."
+            )
+        modified[path] = modified[path].replace(old, new, 1)
+    import difflib
+
+    sections: list[str] = []
+    for path in order:
+        before = originals[path]
+        after = modified[path]
+        if before == after:
+            continue
+        unified = "".join(
+            difflib.unified_diff(
+                before.splitlines(keepends=True),
+                after.splitlines(keepends=True),
+                fromfile=f"a/{path}",
+                tofile=f"b/{path}",
+                n=3,
+                lineterm="\n",
+            )
+        )
+        if not unified:
+            raise EvaluationError(
+                f"Could not materialize frontier edit diff: {path}"
+            )
+        sections.append(f"diff --git a/{path} b/{path}\n{unified}")
+    if not sections:
+        raise EvaluationError(
+            "Frontier edit manifest produced no repository changes."
+        )
+    diff = "".join(sections)
+    if not diff.endswith("\n"):
+        diff += "\n"
+    return diff
+
+
 def validate_evaluation_plan(
     plan: Plan,
     repository: Path,
@@ -4969,6 +5575,75 @@ def codex_command(
         str(output_last_message),
         "-",
     ]
+
+
+def hermes_command(
+    profile: EvaluationProfile,
+    *,
+    usage_file: Path,
+    oneshot_prompt: str,
+) -> list[str]:
+    """Build the argv for a stateless Hermes one-shot frontier invocation.
+
+    Returns a plain argument array; never interpolates a shell.  The prompt
+    is passed via ``--oneshot`` and the exact usage JSON is written to
+    ``--usage-file``.  ``--safe-mode`` is mandatory, as are explicit
+    provider/model/toolsets so no configured fallbacks leak in.
+    """
+    if profile.frontier.adapter != "hermes-oneshot":
+        raise EvaluationError(
+            "hermes_command requires the hermes-oneshot adapter."
+        )
+    argv: list[str] = [
+        profile.frontier.command,
+        "--safe-mode",
+        "--provider",
+        profile.frontier.provider,
+        "--model",
+        profile.frontier.model,
+    ]
+    for toolset in profile.frontier.toolsets:
+        argv.extend(["--toolsets", toolset])
+    argv.extend([
+        "--usage-file",
+        str(usage_file),
+        "--oneshot",
+        oneshot_prompt,
+    ])
+    return argv
+
+
+def frontier_command(
+    profile: EvaluationProfile,
+    *,
+    cwd: Path,
+    sandbox: str,
+    output_last_message: Path,
+    usage_file: Path | None = None,
+    oneshot_prompt: str | None = None,
+) -> list[str]:
+    """Dispatch to the correct adapter command builder."""
+    if profile.frontier.adapter == "codex-cli":
+        return codex_command(
+            profile,
+            cwd=cwd,
+            sandbox=sandbox,
+            output_last_message=output_last_message,
+        )
+    if profile.frontier.adapter == "hermes-oneshot":
+        if usage_file is None or oneshot_prompt is None:
+            raise EvaluationError(
+                "hermes-oneshot adapter requires usage_file and "
+                "oneshot_prompt."
+            )
+        return hermes_command(
+            profile,
+            usage_file=usage_file,
+            oneshot_prompt=oneshot_prompt,
+        )
+    raise EvaluationError(
+        f"Unsupported frontier adapter: {profile.frontier.adapter}"
+    )
 
 
 def frontier_environment(
@@ -5896,7 +6571,14 @@ def study_context(
         "benchmarkRevision": suite["benchmark"]["revision"],
         "seed": suite["seed"],
         "recordedAt": environment.get("recordedAt"),
+        "frontierAdapter": environment.get("frontierAdapter"),
+        "frontierProvider": environment.get("frontierProvider"),
         "frontierModel": environment.get("frontierModel"),
+        "frontierCommandVersion": environment.get(
+            "frontierCommandVersion"
+        ),
+        "frontierToolsets": environment.get("frontierToolsets"),
+        "frontierContextWindow": environment.get("frontierContextWindow"),
         "reasoningEffort": environment.get("reasoningEffort"),
         "codexVersion": environment.get("codexVersion"),
         "mlxSwarmCommit": environment.get("mlxSwarmCommit"),
@@ -5979,7 +6661,7 @@ def environment_fingerprint(
     *,
     container: dict[str, Any],
 ) -> dict[str, Any]:
-    codex_version = inspect_codex_version(profile)
+    frontier_version = inspect_frontier_version(profile)
     source = mlx_swarm_source_revision()
     model_path = None
     model_fingerprint = None
@@ -6009,9 +6691,18 @@ def environment_fingerprint(
         "platform": platform.platform(),
         "machine": platform.machine(),
         "python": sys.version.split()[0],
-        "codexVersion": codex_version,
+        "codexVersion": (
+            frontier_version
+            if profile.frontier.adapter == "codex-cli"
+            else None
+        ),
+        "frontierAdapter": profile.frontier.adapter,
+        "frontierProvider": profile.frontier.provider,
         "frontierModel": profile.frontier.model,
-        "reasoningEffort": profile.frontier.reasoning_effort,
+        "frontierCommandVersion": frontier_version,
+        "frontierToolsets": list(profile.frontier.toolsets),
+        "frontierContextWindow": profile.frontier.context_window,
+        "reasoningEffort": profile.frontier.reasoning_effort or None,
         "mlxSwarmCommit": source["commit"],
         "mlxSwarmSourceDirty": source["dirty"],
         "hardware": {
@@ -6055,6 +6746,32 @@ def inspect_codex_version(profile: EvaluationProfile) -> str:
             f"{actual or 'unavailable'}."
         )
     return actual
+
+
+def inspect_frontier_version(profile: EvaluationProfile) -> str:
+    """Fail closed unless the frontier command version matches the profile pin.
+
+    For the codex-cli adapter this checks ``codexVersion`` via
+    ``command --version``.  For hermes-oneshot it checks ``commandVersion``
+    via ``command --version``.  The returned string is the frozen identity
+    used in environment fingerprints and drift checks.
+    """
+    if profile.frontier.adapter == "codex-cli":
+        return inspect_codex_version(profile)
+    if profile.frontier.adapter == "hermes-oneshot":
+        actual = _best_effort_version(
+            [profile.frontier.command, "--version"]
+        )
+        if actual != profile.frontier.command_version:
+            raise EvaluationError(
+                "Frontier command version mismatch: "
+                f"expected {profile.frontier.command_version}, got "
+                f"{actual or 'unavailable'}."
+            )
+        return actual
+    raise EvaluationError(
+        f"Unsupported frontier adapter: {profile.frontier.adapter}"
+    )
 
 
 def mlx_swarm_source_revision() -> dict[str, Any]:
@@ -6412,6 +7129,7 @@ def _validate_frontier_usage(value: Any, name: str) -> None:
                 "totalTokens",
                 "malformedLines",
             },
+            {"cacheWriteTokens"},
         )
         _text(phase["phase"], f"{name}.phases[{index}].phase")
         phase_status = _enum(
@@ -6804,7 +7522,16 @@ def _format_interval(lower: float | None, upper: float | None) -> str:
 
 
 def _best_effort_version(argv: Sequence[str]) -> str | None:
-    return _best_effort_output(argv)
+    try:
+        result = run_command(
+            argv,
+            cwd=Path.cwd(),
+            timeout=10,
+        )
+    except Exception:
+        return None
+    output = (result.stdout or result.stderr).strip()
+    return output.splitlines()[0].strip() if output else None
 
 
 def _pid_is_alive(pid: int) -> bool:

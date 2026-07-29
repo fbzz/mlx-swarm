@@ -217,10 +217,11 @@ balanced across two small, two medium, and two large reference patches. This
 is 16 arm executions. Only move to the full six-calibration / 30-measured
 profile after local-agent acceptance is competitive.
 
-Both modes use GPT-5.6 Sol with high reasoning for the paired frontier work,
-the configured local MLX model with at most two repairs, a 45-minute ceiling
-per arm, seed `20260728`, a 20 GiB storage ceiling, and a 15 GiB free-space
-reserve.
+The frontier is adapter-neutral. The legacy `bugsinpy-v1` profile pins
+GPT-5.6 Sol through Codex; `bugsinpy-glm52` pins GLM 5.2 through a stateless
+Hermes one-shot adapter. Both use the configured local MLX model with at most
+two repairs, a 45-minute ceiling per arm, seed `20260728`, a 20 GiB storage
+ceiling, and a 15 GiB free-space reserve.
 
 Fair-protocol evaluations additionally freeze one shared task packet and one
 shared set of production write roots for both arms. The packet contains the
@@ -233,9 +234,9 @@ Every local prompt and raw response is retained in an immutable attempt record.
 The exact shared authority and packet digest are retained as
 `pair-contract.json` beside the frozen case.
 
-The profile pins `codex-cli 0.145.0`. Install that exact official CLI in the
-ignored benchmark tooling directory and put it first on `PATH` for every
-prepare, run, status, and report command:
+Every profile pins its frontier command version and canonical digest. For the
+Codex profile, install the exact official CLI in the ignored benchmark tooling
+directory and put it first on `PATH`:
 
 ```bash
 npm install --prefix .swarm/tooling/codex-0.145.0 \
@@ -244,7 +245,23 @@ export PATH="$PWD/.swarm/tooling/codex-0.145.0/node_modules/.bin:$PATH"
 codex --version  # codex-cli 0.145.0
 ```
 
-Preparation and execution fail closed if the CLI version or profile digest
+For the GLM 5.2 study, configure Hermes with provider `ollama-cloud`, then
+verify the frozen identity:
+
+```bash
+hermes status
+hermes --version
+# Hermes Agent v0.19.0 (2026.7.20) · upstream cbc1054e
+```
+
+The harness invokes Hermes with `--safe-mode`, explicit provider/model,
+exactly the response-only `todo` toolset, `--oneshot`, and `--usage-file`.
+Neither GLM arm receives terminal or file tools. Both return strict JSON:
+the direct arm returns `edit-manifest-v1`; the swarm arm returns one validated
+plan and, only after eligible local completion, one structured review. Missing,
+incomplete, mismatched-provider/model, or arithmetically inconsistent Hermes
+usage receipts invalidate the measurement rather than becoming zero.
+Preparation and execution fail closed if the command version or profile digest
 differs from the frozen environment.
 
 Prepare the preliminary immutable suite, pass its two-case calibration gate,
@@ -262,6 +279,23 @@ mlx-swarm --config LOCAL_MODEL_CONFIG eval replay-local EVALUATION_ID \
 
 mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
   --phase measured --profile benchmarks/bugsinpy-v1/profile.json --preliminary
+```
+
+Run the equivalent preliminary GLM 5.2 comparison by changing only the pinned
+profile:
+
+```bash
+mlx-swarm --config LOCAL_MODEL_CONFIG eval prepare \
+  benchmarks/bugsinpy-glm52/profile.json --preliminary
+
+mlx-swarm --config LOCAL_MODEL_CONFIG eval run EVALUATION_ID \
+  --phase pilot --profile benchmarks/bugsinpy-glm52/profile.json --preliminary
+
+mlx-swarm --config LOCAL_MODEL_CONFIG eval replay-local EVALUATION_ID \
+  --worker-mode reasoning-edit --reasoning-max-tokens 1200
+
+mlx-swarm --config LOCAL_MODEL_CONFIG eval run EVALUATION_ID \
+  --phase measured --profile benchmarks/bugsinpy-glm52/profile.json --preliminary
 ```
 
 `eval replay-local` performs no frontier planning or review. It copies each
@@ -349,7 +383,7 @@ mlx-swarm --config examples/swarm.json eval prepare \
 
 Execution is one case at a time, pass@1, and resumable. The measured phase
 remains locked until the calibration pairs prove preparation, isolation,
-Codex usage capture, storage enforcement, immutable result serialization, and
+frontier usage capture, storage enforcement, immutable result serialization, and
 the separate zero-frontier local replay gate.
 Preparation also requires a clean MLX Swarm source checkout so the recorded
 commit identifies the exact harness. The metadata checkout, upstream project
