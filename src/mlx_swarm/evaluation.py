@@ -54,10 +54,10 @@ from .workspace import (
 
 
 EVALUATION_SCHEMA_VERSION = 1
-PROFILE_SCHEMA_VERSION = 3
+PROFILE_SCHEMA_VERSION = 4
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 12
+FAIR_EVALUATION_PROTOCOL_VERSION = 13
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -355,8 +355,9 @@ _FRONTIER_ADAPTERS = (
     "codex-cli",
     "hermes-oneshot",
     "hermes-completion",
+    "hermes-agent",
 )
-_FRONTIER_TOOLSETS = ("todo",)
+_FRONTIER_TOOLSETS = ("todo", "read-source", "submit-plan")
 _MAX_FRONTIER_RESPONSE_BYTES = 1_000_000
 
 
@@ -376,6 +377,7 @@ class FrontierSettings:
     toolsets: tuple[str, ...] = ()
     context_window: int = 0
     max_completion_tokens: int = 0
+    max_agent_turns: int = 1
 
 
 @dataclass(frozen=True)
@@ -464,7 +466,7 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         1,
         100,
     )
-    if schema_version not in {1, 2, 3}:
+    if schema_version not in {1, 2, 3, 4}:
         raise EvaluationError("Unsupported evaluation profile schema version.")
     benchmark = _object(raw["benchmark"], "profile.benchmark")
     _exact_keys(
@@ -518,13 +520,13 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         measured_size=_integer(
             selection_raw["measuredSize"],
             "profile.selection.measuredSize",
-            1,
+            0,
             500,
         ),
         min_projects=_integer(
             selection_raw["minProjects"],
             "profile.selection.minProjects",
-            1,
+            0,
             32,
         ),
         max_per_project=_integer(
@@ -693,6 +695,11 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         )
         max_completion_tokens = 0
     else:
+        agent_fields = (
+            {"maxAgentTurns"}
+            if schema_version == 4
+            else set()
+        )
         _exact_keys(
             frontier_raw,
             "profile.frontier",
@@ -706,6 +713,7 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
                 "maxCompletionTokens",
                 "reasoningEffort",
                 "toolsets",
+                *agent_fields,
                 *timeout_fields,
             },
         )
@@ -745,6 +753,18 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
             1,
             131_072,
         )
+        max_agent_turns = (
+            _integer(
+                frontier_raw["maxAgentTurns"],
+                "profile.frontier.maxAgentTurns",
+                1,
+                8,
+            )
+            if schema_version == 4
+            else 1
+        )
+    if schema_version in {1, 2}:
+        max_agent_turns = 1
     if adapter not in _FRONTIER_ADAPTERS:
         raise EvaluationError(
             f"profile.frontier.adapter must be one of: "
@@ -773,6 +793,15 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         if toolsets:
             raise EvaluationError(
                 "hermes-completion adapter does not permit toolsets."
+            )
+    elif adapter == "hermes-agent":
+        if schema_version != 4:
+            raise EvaluationError(
+                "hermes-agent requires evaluation profile schema version 4."
+            )
+        if toolsets != ("read-source", "submit-plan"):
+            raise EvaluationError(
+                "hermes-agent requires exactly read-source and submit-plan."
             )
     elif schema_version != 1:
         raise EvaluationError(
@@ -813,6 +842,7 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
         toolsets=toolsets,
         context_window=context_window,
         max_completion_tokens=max_completion_tokens,
+        max_agent_turns=max_agent_turns,
     )
     if (
         frontier.planning_timeout_seconds
@@ -990,6 +1020,10 @@ def profile_payload(profile: EvaluationProfile) -> dict[str, Any]:
             "toolsets": list(profile.frontier.toolsets),
             **timeouts,
         }
+        if profile.schema_version == 4:
+            payload["frontier"]["maxAgentTurns"] = (
+                profile.frontier.max_agent_turns
+            )
     return payload
 
 
@@ -1009,6 +1043,23 @@ def preliminary_evaluation_profile(
             pilot_size=2,
             measured_size=6,
             min_projects=6,
+            max_per_project=1,
+        ),
+    )
+
+
+def qualification_evaluation_profile(
+    profile: EvaluationProfile,
+) -> EvaluationProfile:
+    """Derive a two-case, calibration-only profile with no measured cases."""
+    return replace(
+        profile,
+        profile_id=f"{profile.profile_id}-qualification",
+        selection=replace(
+            profile.selection,
+            pilot_size=2,
+            measured_size=0,
+            min_projects=0,
             max_per_project=1,
         ),
     )
@@ -7431,6 +7482,40 @@ def frontier_alone_response_prompt(task_packet: str) -> str:
     )
 
 
+def frontier_agent_planning_prompt(
+    task_packet: str,
+    *,
+    worker_capabilities: dict[str, Any],
+) -> str:
+    """Prompt the bounded planning agent without exposing execution tools."""
+    capability_json = json.dumps(
+        worker_capabilities,
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return (
+        "You are the frontier commander in a paired code-repair study. "
+        "Your job is diagnosis and exact edit selection for a deliberately "
+        "small local worker. You may inspect bounded source ranges with "
+        "read_source, then you must call submit_plan. You have no terminal, "
+        "file-write, network, shell, or arbitrary-command tool.\n\n"
+        "submit_plan is typed. Describe the causal hypothesis and the exact "
+        "replacement ranges; MLX Swarm derives old anchors, worker prompts, "
+        "gates, and the complete Plan v2 mechanically. A submitted candidate "
+        "is applied only in a disposable repository and checked by the frozen "
+        "verifier. If validation fails, use that bounded evidence to correct "
+        "the proposal within this same planning phase. Do not invent worker "
+        "commands, tests, or paths outside the approved roots. Cite only "
+        "SOURCE labels already displayed or returned by read_source.\n\n"
+        "The local worker cannot investigate or redesign the patch. It can "
+        "only reproduce the accepted exact edit manifest. Keep the edit "
+        "small enough for its generation limit.\n\n"
+        "LOCAL WORKER CAPABILITY CONTRACT:\n"
+        f"{capability_json}\n\n"
+        f"{task_packet}"
+    )
+
+
 def frontier_delegation_blueprint_prompt(
     task_packet: str,
     *,
@@ -7600,6 +7685,216 @@ def _task_packet_failure_witnesses(
             "Task packet contains duplicate FAILURE-DELTA WITNESS objects."
         )
     return witnesses
+
+
+def parse_frontier_agent_submission(
+    response: str,
+    *,
+    objective: str,
+    task_packet: str,
+    repository: Path,
+    approved_write_roots: Sequence[str],
+    maximum_manifest_characters: int,
+    available_source_labels: Sequence[str] | None = None,
+) -> dict[str, Any]:
+    """Compile a typed frontier-agent submission into exact edit authority.
+
+    The frontier supplies semantic diagnosis and repository ranges. The
+    harness derives failing witnesses, exact old anchors, newline handling,
+    and the worker edit manifest so mechanical echo fields cannot invalidate
+    an otherwise useful planning phase.
+    """
+    payload = strip_one_json_fence(response)
+    if len(payload.encode("utf-8")) > _MAX_FRONTIER_RESPONSE_BYTES:
+        raise EvaluationError("Frontier agent submission exceeds size limit.")
+    try:
+        submission = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise EvaluationError(
+            f"Frontier agent submission is not valid JSON: {exc}"
+        ) from exc
+    if not isinstance(submission, dict) or set(submission) != {
+        "schemaVersion",
+        "planId",
+        "objective",
+        "diagnosis",
+        "edits",
+    }:
+        raise EvaluationError(
+            "Frontier agent submission has unknown or missing top-level fields."
+        )
+    if submission["schemaVersion"] != 5:
+        raise EvaluationError(
+            "Frontier agent submission schemaVersion must be 5."
+        )
+    plan_id = submission["planId"]
+    if not isinstance(plan_id, str) or not _IDENTIFIER.fullmatch(plan_id):
+        raise EvaluationError("Frontier agent submission planId is invalid.")
+    if submission["objective"] != objective:
+        raise EvaluationError(
+            "Frontier agent submission objective differs from the frozen case."
+        )
+    diagnosis = submission["diagnosis"]
+    diagnosis_keys = {
+        "observedFailure",
+        "causalHypothesis",
+        "validationEvidence",
+        "falsificationCondition",
+        "evidenceSources",
+        "candidateChange",
+        "failingPathPrediction",
+        "preservedControlPrediction",
+        "minimalityEvidence",
+        "changeEvidenceSources",
+    }
+    if not isinstance(diagnosis, dict) or set(diagnosis) != diagnosis_keys:
+        raise EvaluationError(
+            "Frontier agent diagnosis has unknown or missing fields."
+        )
+    for name in sorted(
+        diagnosis_keys - {"evidenceSources", "changeEvidenceSources"}
+    ):
+        value = diagnosis[name]
+        if not isinstance(value, str) or not value.strip():
+            raise EvaluationError(
+                f"Frontier agent diagnosis.{name} must be non-empty text."
+            )
+
+    source_authority = (
+        set(available_source_labels)
+        if available_source_labels is not None
+        else None
+    )
+    normalized_sources: dict[str, list[str]] = {}
+    for name in ("evidenceSources", "changeEvidenceSources"):
+        values = diagnosis[name]
+        if (
+            not isinstance(values, list)
+            or not values
+            or len(values) > 32
+            or not all(isinstance(value, str) for value in values)
+            or len(set(values)) != len(values)
+        ):
+            raise EvaluationError(
+                f"Frontier agent diagnosis.{name} must contain 1 to 32 "
+                "unique source labels."
+            )
+        normalized: list[str] = []
+        for value in values:
+            label = value.removeprefix("SOURCE ")
+            if source_authority is not None:
+                canonical = _normalize_evidence_source_label(
+                    label,
+                    source_authority,
+                )
+                if canonical is None:
+                    raise EvaluationError(
+                        f"Frontier agent diagnosis.{name} references a source "
+                        f"that was not displayed or read: {value}"
+                    )
+                label = canonical
+            # Parent-side revalidation intentionally accepts any safe,
+            # readable label. The live bridge applies the stricter displayed-
+            # or-read authority above before accepting the submission.
+            _read_labeled_source(repository, label)
+            normalized.append(label)
+        normalized_sources[name] = list(dict.fromkeys(normalized))
+        diagnosis[name] = normalized_sources[name]
+
+    edits = submission["edits"]
+    if not isinstance(edits, list) or not (
+        1 <= len(edits) <= MAX_FRONTIER_DELEGATION_EDITS
+    ):
+        raise EvaluationError(
+            "Frontier agent submission must contain 1 to "
+            f"{MAX_FRONTIER_DELEGATION_EDITS} edits."
+        )
+    materialized: list[dict[str, str]] = []
+    change_sources = normalized_sources["changeEvidenceSources"]
+    for index, raw in enumerate(edits):
+        if not isinstance(raw, dict) or set(raw) != {
+            "path",
+            "startLine",
+            "endLine",
+            "new",
+        }:
+            raise EvaluationError(
+                f"Frontier agent edits[{index}] has unknown or missing fields."
+            )
+        path = raw["path"]
+        start = raw["startLine"]
+        end = raw["endLine"]
+        new = raw["new"]
+        if (
+            not isinstance(path, str)
+            or not path
+            or isinstance(start, bool)
+            or not isinstance(start, int)
+            or isinstance(end, bool)
+            or not isinstance(end, int)
+            or start <= 0
+            or end < start
+            or not isinstance(new, str)
+        ):
+            raise EvaluationError(
+                f"Frontier agent edits[{index}] contains invalid values."
+            )
+        candidate_label = f"{path}:L{start}-L{end}"
+        covering: list[tuple[int, str]] = []
+        for label in change_sources:
+            match = re.fullmatch(r"(.+):L(\d+)-L(\d+)", label)
+            if match is None or match.group(1) != path:
+                continue
+            label_start = int(match.group(2))
+            label_end = int(match.group(3))
+            if label_start <= start and end <= label_end:
+                covering.append((label_end - label_start, label))
+        if not covering:
+            raise EvaluationError(
+                f"Frontier agent edits[{index}] range is not covered by "
+                "diagnosis.changeEvidenceSources."
+            )
+        old = _read_labeled_source(repository, candidate_label)
+        source_path = repository / path
+        try:
+            file_text = source_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise EvaluationError(
+                f"Frontier agent edits[{index}] source is unreadable."
+            ) from exc
+        lines = file_text.splitlines(keepends=True)
+        old = "".join(lines[start - 1:end])
+        if not old:
+            raise EvaluationError(
+                f"Frontier agent edits[{index}] selects no source text."
+            )
+        if old.endswith("\n") and new and not new.endswith("\n"):
+            new += "\n"
+        materialized.append({"path": path, "old": old, "new": new})
+
+    manifest_text = json.dumps(
+        {"edits": materialized},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    if len(manifest_text) > maximum_manifest_characters:
+        raise EvaluationError(
+            "Frontier agent edit manifest exceeds the frozen local worker "
+            "generation budget."
+        )
+    materialize_frontier_edit_manifest(
+        manifest_text,
+        repository=repository,
+        approved_write_roots=approved_write_roots,
+    )
+    submission["diagnosis"] = {
+        **diagnosis,
+        "failingWitnesses": _task_packet_failure_witnesses(task_packet),
+    }
+    submission["edits"] = materialized
+    # The Plan materializer only consumes fields, not the compact contract
+    # version. Preserve schema 5 so evidence can distinguish this compiler.
+    return submission
 
 
 def parse_frontier_delegation_blueprint(
