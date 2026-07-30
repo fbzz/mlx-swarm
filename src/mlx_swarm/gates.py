@@ -14,6 +14,12 @@ _SINGLE_CODE_FENCE = re.compile(
     r"(?P<body>[\s\S]*?)\r?\n```\s*\Z"
 )
 
+_SINGLE_JSON_MANIFEST = re.compile(
+    r"\A<manifest>[ \t]*\r?\n?"
+    r"(?P<body>[\s\S]*?)"
+    r"\r?\n?</manifest>\Z"
+)
+
 _AGGRESSIVE_PREAMBLE = re.compile(
     r"\A\s*(?:Here(?:'s| is| are)[^.\n]*\.\s*|Sure[^.\n]*\.\s*|Let me[^.\n]*\.\s*|I'll[^.\n]*\.\s*)+",
     re.IGNORECASE,
@@ -61,6 +67,12 @@ def normalize_output(output: str, gate: OutputGate | None) -> tuple[str, list[st
         if match is not None:
             normalized = match.group("body")
             normalizations.append("single-code-fence")
+
+    if gate is not None and gate.output_format == "json":
+        match = _SINGLE_JSON_MANIFEST.fullmatch(normalized)
+        if match is not None:
+            normalized = match.group("body").strip()
+            normalizations.append("single-json-manifest")
 
     return normalized, normalizations
 

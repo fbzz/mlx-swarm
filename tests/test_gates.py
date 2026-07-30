@@ -34,6 +34,32 @@ def test_normalize_output_no_fence() -> None:
     assert n == []
 
 
+def test_normalize_output_strips_single_json_manifest_wrapper() -> None:
+    gate = OutputGate(output_format="json")
+    output = '<manifest>\n{"edits": []}\n</manifest>'
+    normalized, normalizations = normalize_output(output, gate)
+    assert normalized == '{"edits": []}'
+    assert normalizations == ["single-json-manifest"]
+    assert evaluate_gate(output, gate)["passed"] is True
+
+
+def test_normalize_output_preserves_manifest_wrapper_for_text_gate() -> None:
+    gate = OutputGate(output_format="text")
+    output = '<manifest>\n{"edits": []}\n</manifest>'
+    normalized, normalizations = normalize_output(output, gate)
+    assert normalized == output
+    assert normalizations == []
+
+
+def test_normalize_output_does_not_strip_manifest_with_surrounding_prose() -> None:
+    gate = OutputGate(output_format="json")
+    output = 'Result:\n<manifest>\n{"edits": []}\n</manifest>'
+    normalized, normalizations = normalize_output(output, gate)
+    assert normalized == output
+    assert normalizations == []
+    assert evaluate_gate(output, gate)["passed"] is False
+
+
 def test_normalize_output_gate_none() -> None:
     normalized, n = normalize_output("anything", None)
     assert normalized == "anything"
