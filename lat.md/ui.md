@@ -83,8 +83,10 @@ cleanup is never exposed.
 
 The frontier panel presents planning usage and review usage as separate phases.
 Combined frontier totals appear only when both included receipts report usage;
-Codex-skill receipts remain explicitly unavailable rather than becoming zero.
-Codex CLI JSONL usage may be imported with the response; malformed streams are
-rejected and each accepted phase remains separate from local usage.
+skill-hosted receipts remain explicitly unavailable rather than becoming zero.
+The optional Codex CLI adapter may import its exact JSONL usage with the
+response; malformed streams are rejected and each accepted phase remains
+separate from local usage. Claude Code skill receipts currently remain
+unavailable rather than estimated.
 The browser and server never invoke a frontier provider directly. See
 [[workspace-execution]].

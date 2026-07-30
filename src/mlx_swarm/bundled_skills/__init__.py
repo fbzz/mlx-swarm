@@ -1,1 +1,1 @@
-"""Bundled Codex skills installed on explicit operator request."""
+"""Bundled Agent Skills installed on explicit operator request."""

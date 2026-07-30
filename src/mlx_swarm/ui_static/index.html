@@ -46,7 +46,7 @@
         </div>
         <form id="commander-form">
           <label for="commander-objective">Objective</label>
-          <textarea id="commander-objective" rows="3" maxlength="12000" required placeholder="Describe the bounded result local workers should produce."></textarea>
+          <textarea id="commander-objective" rows="3" maxlength="12000" required placeholder="Describe the bounded result local agents should produce."></textarea>
           <label for="commander-constraints">Constraints <span class="muted">(one per line)</span></label>
           <textarea id="commander-constraints" rows="2" maxlength="8000" placeholder="No network access&#10;Return auditable artifacts"></textarea>
           <label for="commander-revision">Continue run <span class="muted">(optional plan/session)</span></label>
@@ -60,7 +60,7 @@
         <div id="commander-handoff" class="handoff" hidden>
           <p id="commander-status-copy" class="field-hint"></p>
           <pre id="commander-command" class="command-copy"></pre>
-          <button id="copy-plan-command" class="button secondary wide" type="button">Copy “Plan with Codex” command</button>
+          <button id="copy-plan-command" class="button secondary wide" type="button">Copy planning handoff</button>
         </div>
       </section>
 
@@ -189,7 +189,7 @@
           <div class="run-actions">
             <button id="resume-button" class="button secondary" type="button" hidden>Resume</button>
             <button id="retry-button" class="button secondary" type="button" hidden>Retry as new run</button>
-            <button id="review-button" class="button secondary" type="button" hidden>Review with Codex</button>
+            <button id="review-button" class="button secondary" type="button" hidden>Copy review handoff</button>
             <button id="cleanup-workspace-button" class="button secondary" type="button" hidden>Remove worktree</button>
           </div>
         </header>

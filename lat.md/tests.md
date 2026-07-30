@@ -338,8 +338,9 @@ rejected and sealed.
 Canonical plan SHA-256 mismatch prevents launch.
 
 ### Usage separation
-Planning and review receipts remain separate from local usage. Missing Codex
-usage is nullable and explicitly unavailable.
+Planning and review receipts remain separate from local usage. Missing
+frontier-host usage is nullable and explicitly unavailable; the optional Codex
+JSONL adapter is tested separately for exact machine-readable usage.
 
 ### Completed-only review
 Completed sessions accept one structured verdict. Partial and failed sessions
@@ -352,8 +353,9 @@ binds review claims and receipts to its own digest. Evidence-changing tampering
 with either packet is rejected.
 
 ### Bundled skill
-The packaged skill validates, installs to an explicit skills root, and refuses
-implicit overwrite.
+The packaged Agent Skill validates, installs for Claude Code or Codex to an
+explicit skills root, omits Codex-only metadata from Claude installations, and
+refuses implicit overwrite.
 
 The skill contract routes simple low-risk one- or two-file cosmetic or literal
 mechanical edits directly, while explicitly governed or decomposition-worthy

@@ -1,4 +1,4 @@
-"""Install the bundled MLX Swarm Commander skill for Codex."""
+"""Install the bundled MLX Swarm Commander Agent Skill."""
 # @lat: [[Commander]]
 
 from __future__ import annotations
@@ -11,6 +11,11 @@ from importlib.resources.abc import Traversable
 from pathlib import Path
 
 SKILL_NAME = "mlx-swarm-commander"
+SUPPORTED_SKILL_HOSTS = {"claude", "codex"}
+SKILL_ADAPTERS = {
+    "claude": "claude-code-skill",
+    "codex": "codex-skill",
+}
 
 
 class SkillInstallError(RuntimeError):
@@ -19,19 +24,26 @@ class SkillInstallError(RuntimeError):
 
 def install_bundled_skill(
     *,
+    host: str,
     skills_dir: Path | None = None,
     force: bool = False,
 ) -> Path:
-    """Copy the validated bundled skill into the Codex skills directory."""
+    """Copy the validated bundled skill into a supported host directory."""
+    normalized_host = host.strip().lower()
+    if normalized_host not in SUPPORTED_SKILL_HOSTS:
+        supported = ", ".join(sorted(SUPPORTED_SKILL_HOSTS))
+        raise SkillInstallError(
+            f"Unsupported skill host {host!r}; choose one of: {supported}."
+        )
     destination_root = (
         skills_dir.expanduser()
         if skills_dir is not None
-        else _default_skills_dir()
+        else _default_skills_dir(normalized_host)
     ).resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
-    destination = (destination_root / SKILL_NAME).resolve()
+    destination = destination_root / SKILL_NAME
     if destination.parent != destination_root:
-        raise SkillInstallError("Invalid Codex skill destination.")
+        raise SkillInstallError("Invalid Agent Skill destination.")
     if destination.exists() and not force:
         raise SkillInstallError(
             f"Skill already exists at {destination}; pass --force to replace it."
@@ -46,12 +58,16 @@ def install_bundled_skill(
         )
 
     resource = files("mlx_swarm.bundled_skills").joinpath(SKILL_NAME)
-    _validate_skill_resource(resource)
+    _validate_skill_resource(resource, host=normalized_host)
     staging = destination_root / f".{SKILL_NAME}-{uuid.uuid4().hex}.tmp"
     try:
         staging.mkdir()
-        _copy_resource_tree(resource, staging)
-        _validate_skill(staging)
+        _copy_resource_tree(
+            resource,
+            staging,
+            include_openai_metadata=normalized_host == "codex",
+        )
+        _validate_skill(staging, host=normalized_host)
         if destination.exists():
             shutil.rmtree(destination)
         staging.replace(destination)
@@ -61,19 +77,30 @@ def install_bundled_skill(
     return destination
 
 
-def _default_skills_dir() -> Path:
+def _default_skills_dir(host: str) -> Path:
+    if host == "claude":
+        claude_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
+        if claude_config_dir:
+            return Path(claude_config_dir).expanduser() / "skills"
+        return Path.home() / ".claude" / "skills"
     codex_home = os.environ.get("CODEX_HOME")
     if codex_home:
         return Path(codex_home).expanduser() / "skills"
     return Path.home() / ".codex" / "skills"
 
 
-def _validate_skill(path: Path) -> None:
+def _validate_skill(path: Path, *, host: str) -> None:
     skill_file = path / "SKILL.md"
     metadata_file = path / "agents" / "openai.yaml"
-    if not skill_file.is_file() or not metadata_file.is_file():
+    if not skill_file.is_file():
+        raise SkillInstallError("Bundled skill is missing SKILL.md.")
+    if host == "codex" and not metadata_file.is_file():
         raise SkillInstallError(
             "Bundled skill is missing SKILL.md or agents/openai.yaml."
+        )
+    if host == "claude" and metadata_file.exists():
+        raise SkillInstallError(
+            "Claude skill installation contains Codex-only UI metadata."
         )
     content = skill_file.read_text(encoding="utf-8")
     if not content.startswith("---\n") or "\n---\n" not in content[4:]:
@@ -85,10 +112,12 @@ def _validate_skill(path: Path) -> None:
         raise SkillInstallError("Bundled skill description is missing.")
 
 
-def _validate_skill_resource(resource: Traversable) -> None:
+def _validate_skill_resource(resource: Traversable, *, host: str) -> None:
     skill_file = resource.joinpath("SKILL.md")
     metadata_file = resource.joinpath("agents").joinpath("openai.yaml")
-    if not skill_file.is_file() or not metadata_file.is_file():
+    if not skill_file.is_file():
+        raise SkillInstallError("Bundled skill is missing SKILL.md.")
+    if host == "codex" and not metadata_file.is_file():
         raise SkillInstallError(
             "Bundled skill is missing SKILL.md or agents/openai.yaml."
         )
@@ -97,11 +126,22 @@ def _validate_skill_resource(resource: Traversable) -> None:
         raise SkillInstallError("Bundled skill name does not match its folder.")
 
 
-def _copy_resource_tree(source: Traversable, destination: Path) -> None:
+def _copy_resource_tree(
+    source: Traversable,
+    destination: Path,
+    *,
+    include_openai_metadata: bool,
+) -> None:
     for entry in source.iterdir():
+        if entry.name == "agents" and not include_openai_metadata:
+            continue
         target = destination / entry.name
         if entry.is_dir():
             target.mkdir()
-            _copy_resource_tree(entry, target)
+            _copy_resource_tree(
+                entry,
+                target,
+                include_openai_metadata=include_openai_metadata,
+            )
         elif entry.is_file():
             target.write_bytes(entry.read_bytes())

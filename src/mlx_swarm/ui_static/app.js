@@ -505,7 +505,7 @@ function renderCommanderPreview() {
   }
   el("commander-plan-json").textContent = displayPlan
     ? JSON.stringify(displayPlan, null, 2)
-    : "The validated plan will appear here after the Codex handoff is imported.";
+    : "The validated plan will appear here after the frontier handoff is imported.";
 }
 
 function renderCommanderDag(detail) {
@@ -573,7 +573,7 @@ function renderCommanderDag(detail) {
 
 function commanderStatusCopy(status) {
   const messages = {
-    awaiting_plan: "Copy the handoff into Codex. The cockpit will poll for the validated plan.",
+    awaiting_plan: "Copy the handoff into your frontier agent. The cockpit will poll for the validated plan.",
     plan_invalid: "The single planning response failed validation. Create a new request to try again.",
     plan_ready: "Preview the complete contract and digest, then approve it to launch local work.",
     launched: "This immutable request has already launched its approved local run.",
@@ -910,7 +910,7 @@ function renderInspector() {
     };
     el("inspector-empty").hidden = true;
     el("inspector-content").hidden = false;
-    el("task-role").textContent = `${taskDef.role || "general"} worker · approval preview`;
+    el("task-role").textContent = `${taskDef.role || "general"} agent · approval preview`;
     el("task-title").textContent = taskId;
     setStateChip(el("task-state-chip"), "pending");
     renderTabs();
@@ -933,7 +933,7 @@ function renderInspector() {
   const taskDef = (detail.plan?.tasks || []).find((task) => task.id === taskId) || {};
   el("inspector-empty").hidden = true;
   el("inspector-content").hidden = false;
-  el("task-role").textContent = `${taskDef.role || taskState.role || "general"} worker`;
+  el("task-role").textContent = `${taskDef.role || taskState.role || "general"} agent`;
   el("task-title").textContent = taskId;
   setStateChip(el("task-state-chip"), taskState.status || "pending");
   renderTabs();
@@ -954,12 +954,12 @@ function renderOverview(panel, taskDef, taskState) {
     ["Dependencies", (taskDef.dependsOn || taskState.dependsOn || []).join(", ") || "None"],
     ["Repair attempts", `${taskState.repairAttempts || 0} / ${taskDef.maxRepairAttempts ?? "—"}`],
     ["Artifact type", taskDef.artifactType || taskState.artifactType || "report"],
-    ["Worker output", taskDef.workerOutputProtocol || taskState.workerOutputProtocol || "artifact"],
+    ["Agent output", taskDef.workerOutputProtocol || taskState.workerOutputProtocol || "artifact"],
     ["Allowed paths", (taskDef.allowedPaths || taskState.allowedPaths || []).join(", ") || "None"],
     ["Verification", (taskDef.verification || taskState.verification || []).join(", ") || "None"],
   ].forEach(([label, value]) => grid.append(detailCell(label, value)));
   panel.append(grid);
-  panel.append(detailSection("Worker instruction", taskDef.prompt || "Historical prompt unavailable."));
+  panel.append(detailSection("Agent instruction", taskDef.prompt || "Historical prompt unavailable."));
   panel.append(detailSection("Output protocol", taskDef.outputProtocol || "Role default."));
   if (taskState.error) {
     const section = detailSection("Runtime error", taskState.error);
@@ -1249,7 +1249,7 @@ async function createCommanderRequest(event) {
     el("commander-select").value = detail.request.requestId;
     renderCommanderPreview();
     renderInspector();
-    showToast("Planning request created. Copy the Codex handoff.");
+    showToast("Planning request created. Copy the frontier handoff.");
   } catch (error) {
     showToast(error.message, true);
   } finally {

@@ -2,6 +2,26 @@
 
 All notable changes to MLX Swarm are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Claude Code installation for the shared `mlx-swarm-commander` Agent Skill
+  through `mlx-swarm skill install --host claude`, including
+  `CLAUDE_CONFIG_DIR` discovery.
+- Provider-neutral structured planning and review handoffs with host-specific
+  receipt provenance for Claude Code, Codex, and compatible Agent Skills hosts.
+
+### Changed
+
+- Skill installation now requires `--host claude` or `--host codex`.
+- Cockpit and public documentation use frontier-agent language instead of
+  presenting Codex as the product boundary.
+- Planning and review imports can no longer override the host adapter sealed by
+  their claim.
+- Skill replacement refuses symlink destinations before resolving or removing
+  the leaf path.
+
 ## [0.4.0] - 2026-07-30
 
 ### Added
@@ -19,7 +39,7 @@ All notable changes to MLX Swarm are documented in this file.
 
 ### Changed
 
-- The default local execution profile now uses two concurrent workers, a
+- The default local execution profile now uses two concurrent agents, a
   49,152-token aggregate prompt ceiling, and a 2,048-token model generation
   ceiling.
 - Workspace execution contracts advance to schema version 3 for revision

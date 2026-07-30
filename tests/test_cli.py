@@ -692,12 +692,17 @@ def test_cli_skill_install_does_not_require_config(
     assert main([
         "skill",
         "install",
+        "--host",
+        "claude",
         "--skills-dir",
         str(skills_dir),
     ]) == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["installed"] is True
+    assert payload["host"] == "claude"
+    assert payload["adapter"] == "claude-code-skill"
     assert Path(payload["path"]).is_dir()
+    assert not (Path(payload["path"]) / "agents").exists()
 
 
 def test_cli_evaluation_prepare_status_and_run_use_pinned_profile(

@@ -155,10 +155,10 @@ def test_plan_prompt_exposes_worker_capability_and_delegation_boundary(
     assert "WORKER CAPABILITY CONTRACT" in prompt
     assert "parameter scale: 4B" in prompt
     assert "model context window: 262144 tokens" in prompt
-    assert "maximum generation per worker: 800 tokens" in prompt
+    assert "maximum generation per agent: 800 tokens" in prompt
     assert "calibration: failed (0/2 passed" in prompt
     assert "Do not delegate discovery" in prompt
-    assert "This describes local generation capability, not worker concurrency" in prompt
+    assert "This describes local generation capability, not agent concurrency" in prompt
     assert "CANDIDATE CHANGE SPECIFICITY GATE" in prompt
     assert "preservedControlPrediction" in prompt
     assert "narrowest distinguishing property" in prompt
@@ -307,6 +307,36 @@ def _import_plan(
         **usage,
     )
     return request_id, imported
+
+
+def test_claude_claim_adapter_is_inherited_by_plan_receipt(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    detail = store.create_request("Produce a bounded artifact")
+    request_id = detail["request"]["requestId"]
+    claim = store.claim_plan(
+        request_id,
+        adapter="claude-code-skill",
+    )
+    response = tmp_path / "claude-plan.json"
+    response.write_text(json.dumps(_plan()), encoding="utf-8")
+
+    with pytest.raises(CommanderError, match="sealed by the claim"):
+        store.import_plan(
+            request_id,
+            response,
+            claim_id=claim["claimId"],
+            adapter="codex-skill",
+        )
+
+    imported = store.import_plan(
+        request_id,
+        response,
+        claim_id=claim["claimId"],
+    )
+
+    assert imported["planningReceipt"]["adapter"] == "claude-code-skill"
 
 
 def test_request_prompt_is_fixed_to_config_workspace(tmp_path: Path) -> None:
@@ -746,7 +776,10 @@ def test_digest_bound_approval_and_completed_review_flow(
     assert "planContract" not in compact
     assert "Return RESULT." not in json.dumps(compact, sort_keys=True)
 
-    claim = store.claim_review(session_dir)
+    claim = store.claim_review(
+        session_dir,
+        adapter="claude-code-skill",
+    )
     assert claim["frontierReviewInput"].endswith(
         "frontier-review-input.json"
     )
@@ -772,6 +805,13 @@ def test_digest_bound_approval_and_completed_review_flow(
         }),
         encoding="utf-8",
     )
+    with pytest.raises(CommanderError, match="sealed by the claim"):
+        store.import_review(
+            session_dir,
+            review_response,
+            claim_id=claim["claimId"],
+            adapter="codex-skill",
+        )
     reviewed = store.import_review(
         session_dir,
         review_response,
@@ -789,6 +829,7 @@ def test_digest_bound_approval_and_completed_review_flow(
         reviewed["receipt"]["inputArtifactSha256"]
         == canonical_json_sha256(compact)
     )
+    assert reviewed["receipt"]["adapter"] == "claude-code-skill"
     state = json.loads((session_dir / "session.json").read_text())
     assert state["status"] == "completed"
     assert state["reviewStatus"] == "changes_requested"
@@ -1122,19 +1163,85 @@ def test_review_path_and_identity_are_confined_to_artifacts(
 def test_bundled_skill_installs_and_refuses_overwrite(
     tmp_path: Path,
 ) -> None:
-    skills_dir = tmp_path / "skills"
-    installed = install_bundled_skill(skills_dir=skills_dir)
+    skills_dir = tmp_path / "codex-skills"
+    installed = install_bundled_skill(
+        skills_dir=skills_dir,
+        host="codex",
+    )
     assert installed.name == "mlx-swarm-commander"
     assert "name: mlx-swarm-commander" in (
         installed / "SKILL.md"
     ).read_text(encoding="utf-8")
     assert (installed / "agents" / "openai.yaml").is_file()
     with pytest.raises(SkillInstallError, match="already exists"):
-        install_bundled_skill(skills_dir=skills_dir)
+        install_bundled_skill(skills_dir=skills_dir, host="codex")
     assert install_bundled_skill(
         skills_dir=skills_dir,
         force=True,
+        host="codex",
     ) == installed
+
+
+def test_bundled_skill_installs_for_claude_without_codex_metadata(
+    tmp_path: Path,
+) -> None:
+    installed = install_bundled_skill(
+        skills_dir=tmp_path / "claude-skills",
+        host="claude",
+    )
+    skill_text = (installed / "SKILL.md").read_text(encoding="utf-8")
+    assert "Claude Code: `claude-code-skill`" in skill_text
+    assert not (installed / "agents").exists()
+
+
+def test_claude_skill_install_honors_config_dir_and_explicit_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    custom_config = tmp_path / "claude-config"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(custom_config))
+
+    configured = install_bundled_skill(host="claude")
+    assert configured == (
+        custom_config / "skills" / "mlx-swarm-commander"
+    ).resolve()
+
+    explicit_root = tmp_path / "explicit-skills"
+    explicit = install_bundled_skill(
+        host="claude",
+        skills_dir=explicit_root,
+    )
+    assert explicit == (
+        explicit_root / "mlx-swarm-commander"
+    ).resolve()
+
+
+def test_bundled_skill_rejects_unknown_host_and_symlink_destination(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(SkillInstallError, match="Unsupported skill host"):
+        install_bundled_skill(
+            skills_dir=tmp_path / "skills",
+            host="unknown",
+        )
+
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    sibling = skills_dir / "existing-skill"
+    sibling.mkdir()
+    marker = sibling / "keep.txt"
+    marker.write_text("keep", encoding="utf-8")
+    (skills_dir / "mlx-swarm-commander").symlink_to(
+        sibling,
+        target_is_directory=True,
+    )
+    with pytest.raises(SkillInstallError, match="symlinked"):
+        install_bundled_skill(
+            skills_dir=skills_dir,
+            host="claude",
+            force=True,
+        )
+    assert marker.read_text(encoding="utf-8") == "keep"
 
 
 def test_legacy_namespace_resolves_to_canonical_modules() -> None:

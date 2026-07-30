@@ -13,7 +13,8 @@ For schema v1, the config directory is the approved inspection root. For
 schema v2, MLX Swarm resolves and displays the nearest Git top-level above the
 config directory. A deterministic prompt describes the objective, constraints,
 Plan schema v3, typed artifact fields, configured write roots/profile IDs, and
-local runtime limits. It also contains a strict worker capability contract:
+local runtime limits. It also contains a strict local-agent capability
+contract:
 model parameter scale, context window, prompt and generation ceilings,
 specialization, execution mode, observed strengths/limitations, calibration
 receipt, and maximum safe delegation level. This is explicitly distinct from
@@ -43,7 +44,7 @@ chosen discriminator, and the authoritative source labels supporting those
 claims. A source trace of the current implementation alone is insufficient:
 the same planning call must simulate the proposed change on both paths. For
 `exact-edit`, the candidate description must agree with the old-to-new
-transformation delegated to the worker. The base [[Plans]] loader keeps this
+transformation delegated to the local agent. The base [[Plans]] loader keeps this
 field optional so historical non-commander plans remain readable.
 
 Planning transitions through `open → claimed → accepted|invalid`. Claim files
@@ -123,16 +124,22 @@ the completed run; follow-up work requires a separately approved request.
 `localUsage`.
 
 Reported adapters must supply internally consistent prompt, completion, and
-total tokens. The bundled Codex adapter records nullable token fields with
-`usageStatus: unavailable`; it never estimates usage.
+total tokens. Skill-hosted Claude Code and Codex receipts use nullable token
+fields with `usageStatus: unavailable` unless an explicitly supported
+machine-readable usage artifact is imported; MLX Swarm never estimates usage.
 
 The accepted-response ledger is auditable, but MLX Swarm cannot observe hidden
-model calls or token accounting inside the Codex host.
+model calls or token accounting inside a frontier host.
 
-## Codex Skill
+## Agent Skill
 
-The bundled `mlx-swarm-commander` skill is installed explicitly by
-`mlx-swarm skill install`.
+The bundled `mlx-swarm-commander` skill uses one portable `SKILL.md` across
+supported frontier hosts.
+
+Install it explicitly with `mlx-swarm skill install --host claude` or
+`mlx-swarm skill install --host codex`. Claude installations omit the
+Codex-only `agents/openai.yaml` metadata. Default personal roots respect
+`CLAUDE_CONFIG_DIR` and `CODEX_HOME`; `--skills-dir` overrides either.
 
 Before claiming a phase, the skill routes a one- or two-file cosmetic,
 copy/layout-only, or literal mechanical change directly when it crosses no
@@ -140,7 +147,8 @@ behavioral, security, data, concurrency, public-API, or migration boundary.
 That direct path performs the edit and one relevant verification without
 invoking Swarm. Explicitly governed Swarm requests still use the commander.
 
-For eligible work the skill remains thin: it claims a phase, reads the
-deterministic prompt, inspects only the approved root, writes one strict JSON
-response, and imports it through the CLI. Persistence and validation remain in
-the Python core.
+For eligible work the skill remains thin: it records `claude-code-skill`,
+`codex-skill`, or the generic `frontier-skill` adapter when claiming a phase,
+reads the deterministic prompt, inspects only the approved root, writes one
+strict JSON response, and imports it through the CLI. Imports inherit the
+claim's adapter. Persistence and validation remain in the Python core.

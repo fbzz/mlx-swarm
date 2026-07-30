@@ -482,11 +482,12 @@ APPROVED WORKSPACE ROOT
 
 {revision_contract}
 Inspect only files below the approved workspace root. Put any material source
-text needed by workers into context.authoritativeSources as inline content.
+text needed by local agents into context.authoritativeSources as inline
+content.
 When a source comes from a workspace file, include its repository-relative
 path in the label and copy one exact contiguous excerpt. Never summarize,
 rewrite, or silently remove lines inside a source excerpt.
-Do not ask local workers to call tools, execute code, or read arbitrary paths.
+Do not ask local agents to call tools, execute code, or read arbitrary paths.
 {worker_capability_contract}
 
 CAUSAL DIAGNOSIS GATE
@@ -657,19 +658,19 @@ def _worker_capability_contract(config: SwarmConfig) -> str:
     }[capability["delegationLevel"]]
     return f"""
 WORKER CAPABILITY CONTRACT
-- This describes local generation capability, not worker concurrency.
+- This describes local generation capability, not agent concurrency.
 - model repository: {config.model.repository}
 - model revision: {config.model.revision or "(unreported)"}
 - parameter scale: {capability["parameterScale"]}
 - model context window: \
 {capability["contextWindowTokens"] or "(unreported)"} tokens
-- maximum generation per worker: {capability["maxGenerationTokens"]} tokens
+- maximum generation per agent: {capability["maxGenerationTokens"]} tokens
 - specialization: {capability["specialization"]}
 - delegation level: {capability["delegationLevel"]}
 - generation mode: {config.worker.mode}
 - reasoning-stage token ceiling: {config.worker.reasoning_max_tokens}
 - prompt ceiling: {min(config.batch.max_prompt_characters, MAX_PROMPT_CHARS)} characters
-- local workers cannot inspect the workspace, call tools, run verification,
+- local agents cannot inspect the workspace, call tools, run verification,
   invent commands, or recover missing source context.
 - calibration: {calibration["status"]} \
 ({calibration["passedCases"]}/{calibration["totalCases"]} passed; \
@@ -1660,8 +1661,12 @@ class CommanderStore:
             "executionError": execution_error,
             "planPrompt": str(request_dir / "plan-prompt.txt"),
             "handoff": {
+                "skillName": "mlx-swarm-commander",
+                "action": "plan",
+                "requestId": request_id,
                 "planCommand": (
-                    "Use $mlx-swarm-commander to plan commander request "
+                    "Use the mlx-swarm-commander skill to plan commander "
+                    "request "
                     f"{request_id} with config {self.config.source}"
                 ),
             },
@@ -1671,7 +1676,7 @@ class CommanderStore:
         self,
         request_id: str,
         *,
-        adapter: str = "codex-skill",
+        adapter: str = "frontier-skill",
     ) -> dict[str, Any]:
         request_dir, request = self._load_request(request_id)
         if request["status"] != "awaiting_plan":
@@ -1775,11 +1780,7 @@ class CommanderStore:
         )
         normalized_provider = _optional_text(provider, "provider", 200)
         normalized_model = _optional_text(model, "model", 300)
-        normalized_adapter = _text(
-            adapter or claim["adapter"],
-            "adapter",
-            100,
-        )
+        normalized_adapter = _claimed_adapter(claim, adapter)
         response = ""
         raw_response_path = request_dir / "frontier-plan.raw.txt"
         request["updatedAt"] = utc_now()
@@ -2009,7 +2010,7 @@ class CommanderStore:
         self,
         session_dir: Path,
         *,
-        adapter: str = "codex-skill",
+        adapter: str = "frontier-skill",
     ) -> dict[str, Any]:
         session_dir, _state = self._load_session(session_dir)
         with _locked_revision_predecessor(session_dir):
@@ -2172,11 +2173,7 @@ class CommanderStore:
         )
         normalized_provider = _optional_text(provider, "provider", 200)
         normalized_model = _optional_text(model, "model", 300)
-        normalized_adapter = _text(
-            adapter or claim["adapter"],
-            "adapter",
-            100,
-        )
+        normalized_adapter = _claimed_adapter(claim, adapter)
         response = ""
         raw_response_path = session_dir / "frontier-review.raw.txt"
         claimed_input_digest = claim.get("inputArtifactSha256")
@@ -2305,8 +2302,14 @@ class CommanderStore:
                 session_dir / "frontier-review.error.json"
             ),
             "handoff": {
+                "skillName": "mlx-swarm-commander",
+                "action": "review",
+                "sessionRef": (
+                    f"{state.get('planId')}/{state.get('sessionId')}"
+                ),
                 "reviewCommand": (
-                    "Use $mlx-swarm-commander to review completed run "
+                    "Use the mlx-swarm-commander skill to review completed "
+                    "run "
                     f"{state.get('planId')}/{state.get('sessionId')} "
                     f"with config {self.config.source}"
                 )
@@ -3035,6 +3038,21 @@ def _optional_text(
     if value is None:
         return None
     return _text(value, name, max_characters)
+
+
+def _claimed_adapter(
+    claim: dict[str, Any],
+    import_adapter: str | None,
+) -> str:
+    claimed_adapter = _text(claim.get("adapter"), "claim.adapter", 100)
+    if import_adapter is None:
+        return claimed_adapter
+    normalized_import = _text(import_adapter, "adapter", 100)
+    if normalized_import != claimed_adapter:
+        raise CommanderError(
+            "Import adapter must match the adapter sealed by the claim."
+        )
+    return claimed_adapter
 
 
 def _integer(value: Any, name: str, minimum: int, maximum: int) -> int:

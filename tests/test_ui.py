@@ -824,6 +824,11 @@ def test_commander_api_acceptance_run_exposes_completed_dag_and_review(
     assert detail["frontierResult"]["schemaVersion"] == 2
     assert detail["frontierResult"]["requiresFrontierReview"] is True
     assert detail["actions"]["review"] is True
+    assert detail["commander"]["skillName"] == "mlx-swarm-commander"
+    assert detail["commander"]["action"] == "review"
+    assert detail["commander"]["sessionRef"] == (
+        f"{plan.plan_id}/{launched['run']['sessionId']}"
+    )
 
     review_claim = app.commander.claim_review(session_dir)
     review = tmp_path / "acceptance-review.json"
@@ -1068,7 +1073,12 @@ def test_http_commander_request_and_unknown_fields(http_cockpit) -> None:
         )[1]
     )
     assert detail["request"]["status"] == "awaiting_plan"
-    assert "$mlx-swarm-commander" in detail["handoff"]["planCommand"]
+    assert detail["handoff"]["skillName"] == "mlx-swarm-commander"
+    assert detail["handoff"]["action"] == "plan"
+    assert detail["handoff"]["requestId"] == request_id
+    assert "Use the mlx-swarm-commander skill" in (
+        detail["handoff"]["planCommand"]
+    )
 
     status, payload = _post(
         base + "/api/commander/requests",

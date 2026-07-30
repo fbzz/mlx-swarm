@@ -4,12 +4,14 @@ The mlx-swarm framework architecture: how config, plans, DAG execution, gates, a
 
 ## Overview
 
-MLX Swarm is a token-efficient MLX execution layer: a frontier model writes one DAG, local workers execute it with deterministic gates, and one compact packet returns for final frontier review.
+MLX Swarm is a token-efficient MLX execution layer: a frontier agent writes
+one DAG, local agents execute it with deterministic gates, and one compact
+packet returns for final frontier review.
 
-The frontier model is deliberately not called between local worker waves.
-The Codex skill also declines to invoke Swarm for a simple one- or two-file
-cosmetic or literal mechanical edit that is safer to implement and verify
-directly.
+The frontier agent is deliberately not called between local-agent waves.
+The shared Agent Skill also declines to invoke Swarm for a simple one- or
+two-file cosmetic or literal mechanical edit that is safer to implement and
+verify directly.
 
 ## Module Layout
 
@@ -28,7 +30,7 @@ src/mlx_swarm/
   workspace.py       — Git worktrees, typed artifacts, decisions, and verification profiles
   ui.py              — localhost-only HTTP API, run launcher, and history serialization
   ui_static/         — packaged HTML, CSS, and JavaScript operator cockpit
-  skill_install.py   — explicit installation of the bundled Codex skill
+  skill_install.py   — host-aware installation of the bundled Agent Skill
   cli.py             — runtime, commander, cockpit, and skill commands
 ```
 
@@ -36,8 +38,9 @@ src/mlx_swarm/
 
 How a plan moves from config to completed session.
 
-1. The Codex skill routes a simple low-risk one- or two-file edit directly; an
-   eligible governed request proceeds to [[Commander]]
+1. The Agent Skill routes a simple low-risk one- or two-file edit directly; an
+   eligible governed request from Claude Code, Codex, or another compatible
+   host proceeds to [[Commander]]
 2. [[Commander]] records an objective and accepts one strict [[Plans|plan JSON]]
 3. The [[UI]] previews the full DAG and records approval of its canonical
    digest; workspace plans also require the [[workspace-execution|execution
@@ -78,10 +81,12 @@ Core trade-offs shaping the framework's behavior.
   while a deterministic projection binds that result's digest and supplies
   only decision-relevant evidence to the final reviewer. See [[Commander#Final
   Review]].
-- **Original-checkout isolation**: Workspace plans bind an execution digest,
-  apply only to retained session worktrees, and have no automatic promotion
-  action. See [[workspace-execution]].
-- **Profile-only commands**: Workers name configured verification profiles but
+- **Worktree by default**: Workspace plans bind an execution digest and use a
+  retained session worktree by default. Main-checkout YOLO is a separate,
+  explicit clean-tree target; neither mode has automatic promotion. See
+  [[workspace-execution]].
+- **Profile-only commands**: Agents name configured verification profiles but
   never supply command arguments. See [[Config]].
-- **Separate accounting**: Local worker usage and frontier planning/review receipts are never combined. See [[Commander#Usage Accounting]].
+- **Separate accounting**: Local-agent usage and frontier planning/review
+  receipts are never combined. See [[Commander#Usage Accounting]].
 - **Dependency safety**: Only completed dependency output is injected; rejected or failed parents block their descendants. See [[Executor]].

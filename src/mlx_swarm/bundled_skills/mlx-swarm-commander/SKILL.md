@@ -1,6 +1,6 @@
 ---
 name: mlx-swarm-commander
-description: Decide whether MLX Swarm is warranted, create strict frontier-authored DAG plans for qualifying commander requests, and perform one final review of completed runs. Use when the user asks to plan, command, continue, wait for, or review MLX Swarm work; route simple changes to direct Codex implementation instead of invoking Swarm.
+description: Decide whether MLX Swarm is warranted, create strict frontier-authored DAG plans for qualifying commander requests, and perform one final review of completed runs. Use in Claude Code, Codex, or another Agent Skills host when the user asks to plan, command, continue, wait for, or review MLX Swarm work; route simple changes to direct host-agent implementation instead of invoking Swarm.
 ---
 
 # MLX Swarm Commander
@@ -13,7 +13,7 @@ validation, approval, execution, or claim logic in ad hoc scripts.
 
 Route before creating or claiming a commander request. Do not invoke MLX Swarm
 for a simple change unless the user explicitly requires a governed run. Use the
-ordinary direct Codex edit-and-test workflow when all of these are true:
+ordinary direct host-agent edit-and-test workflow when all of these are true:
 
 - the change is confined to one or two files;
 - it is cosmetic, copy-only, local layout, or an obvious mechanical/literal
@@ -27,6 +27,19 @@ more ceremony than safety. Invoke Swarm for substantial multi-file work or
 changes whose integration, isolation, approval, or audit risk justifies a
 governed DAG. Once a commander request has already been approved or launched,
 continue its durable workflow rather than rerouting it mid-session.
+
+## Identify the frontier host
+
+Use one adapter ID for each claim. This records provenance without changing the
+provider-neutral plan or review schema:
+
+- Claude Code: `claude-code-skill`
+- Codex: `codex-skill`
+- another Agent Skills host: `frontier-skill`
+
+Substitute the matching value wherever a command below shows `HOST_ADAPTER`.
+Never pass the literal text `HOST_ADAPTER`. Import commands inherit the adapter
+from their claim; do not override it.
 
 ## Use the two-agent envelope
 
@@ -52,7 +65,7 @@ use a configured local reasoning stage only as a selective fallback.
 1. Obtain the config path and commander request ID from the cockpit handoff.
 2. Run:
 
-   `mlx-swarm --config CONFIG commander claim-plan REQUEST_ID`
+   `mlx-swarm --config CONFIG commander claim-plan REQUEST_ID --adapter HOST_ADAPTER`
 
 3. Read the returned `promptPath`. Inspect only files whose resolved paths are
    below the returned, auto-detected `workspaceRoot`.
@@ -96,7 +109,7 @@ use a configured local reasoning stage only as a selective fallback.
    `frontier-plan.response.json`.
 6. Import it once using the returned claim:
 
-   `mlx-swarm --config CONFIG commander import-plan REQUEST_ID RESPONSE --claim-id CLAIM_ID --adapter codex-skill`
+   `mlx-swarm --config CONFIG commander import-plan REQUEST_ID RESPONSE --claim-id CLAIM_ID`
 
 7. Report the validation result and tell the operator to preview and approve
    both the plan digest and the displayed Git execution digest in the cockpit.
@@ -133,7 +146,7 @@ Only review a completed session:
 
 1. Run:
 
-   `mlx-swarm --config CONFIG commander claim-review SESSION_DIR`
+   `mlx-swarm --config CONFIG commander claim-review SESSION_DIR --adapter HOST_ADAPTER`
 
 2. If the phase is already claimed or reviewed, inspect its status instead of
    creating another result.
@@ -144,10 +157,12 @@ Only review a completed session:
    as `frontier-review.response.json`.
 5. Import it once:
 
-   `mlx-swarm --config CONFIG commander import-review SESSION_DIR RESPONSE --claim-id CLAIM_ID --adapter codex-skill`
+   `mlx-swarm --config CONFIG commander import-review SESSION_DIR RESPONSE --claim-id CLAIM_ID`
 
 6. Report the persisted verdict. Never mutate the completed session or launch a
    follow-up automatically.
 
-Do not pass token flags for the Codex adapter. MLX Swarm must record its
-frontier token usage as unavailable rather than estimating it.
+Do not invent token flags for a skill-hosted adapter. MLX Swarm must record
+frontier token usage as unavailable rather than estimating it. Import exact
+usage only through an explicitly supported host adapter and its original
+machine-readable usage artifact.

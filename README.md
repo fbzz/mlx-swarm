@@ -2,7 +2,8 @@
 
 # MLX Swarm
 
-**Codex plans. Small local agents do the heavy lifting. Codex reviews.**
+**Your frontier agent plans. Small local agents do the heavy lifting. Your
+frontier agent reviews.**
 
 Run controlled coding-agent workflows on Apple silicon with one resident MLX
 model. The shipped profile defaults to two local agents working at the same
@@ -20,10 +21,11 @@ time.
 
 </div>
 
-MLX Swarm is a local-first coding-agent runtime for Mac. A strong planning
-model turns an objective into exact, dependency-aware tasks. A small local
-model implements those tasks, writes tests, checks outputs, and produces
-reports. The strong model returns only for one final review.
+MLX Swarm is a local-first coding-agent runtime for Mac. A strong frontier
+coding agent—Claude Code, Codex, or another compatible Agent Skills host—turns
+an objective into exact, dependency-aware tasks. A small local model implements
+those tasks, writes tests, checks outputs, and produces reports. The frontier
+agent returns only for one final review.
 
 The Python runtime does not call a remote model between local-agent waves.
 Prompts, intermediate outputs, retries, and generated artifacts remain on your
@@ -31,7 +33,7 @@ machine during execution.
 
 | Plan once | Execute locally | Review once |
 | --- | --- | --- |
-| Codex defines the files, interfaces, dependencies, and acceptance rules | The default profile runs up to two local agents at a time on one loaded 4B MLX model | Codex receives one compact evidence packet and returns a structured verdict |
+| Your frontier agent defines the files, interfaces, dependencies, and acceptance rules | The default profile runs up to two local agents at a time on one loaded 4B MLX model | Your frontier agent receives one compact evidence packet and returns a structured verdict |
 
 This is not an attempt to make a 4B model discover an architecture by itself.
 The strong model keeps diagnosis and design authority; the local model receives
@@ -43,8 +45,8 @@ Sending every implementation step through a frontier model can be expensive
 and unnecessary. Asking one small model to solve an entire repository task in
 one prompt is usually unreliable. MLX Swarm deliberately separates those jobs:
 
-- **Strong reasoning where it matters.** Codex owns diagnosis, decomposition,
-  source anchors, interface contracts, and acceptance criteria.
+- **Strong reasoning where it matters.** The frontier agent owns diagnosis,
+  decomposition, source anchors, interface contracts, and acceptance criteria.
 - **Local tokens for repeated work.** The 4B model handles bounded edits, test
   artifacts, structured reviews, and reports on Apple silicon.
 - **A model loaded once.** Compatible agent tasks share one resident MLX
@@ -65,21 +67,21 @@ open shell.
 ```mermaid
 flowchart LR
     A["Your objective"] --> R{"Simple change?"}
-    R -->|"Yes"| D["Codex edits and tests directly"]
-    R -->|"No"| P["Codex creates a fixed task graph"]
+    R -->|"Yes"| D["Frontier agent edits and tests directly"]
+    R -->|"No"| P["Frontier agent creates a fixed task graph"]
     P --> H["You approve the plan and execution scope"]
     H --> L["Default: two local agents at a time"]
     L --> G["Deterministic gates and preconfigured tests"]
     G --> W["Git worktree with durable evidence"]
     W --> C["Compact final-review packet"]
-    C --> F["One Codex review"]
+    C --> F["One frontier review"]
     F -->|"Changes requested"| I["One linked incremental revision"]
 ```
 
 ### 1. Plan
 
-The bundled Codex skill decides whether Swarm is warranted. If it is, Codex
-returns one strict plan containing:
+The bundled Agent Skill decides whether Swarm is warranted. If it is, the
+frontier agent returns one strict plan containing:
 
 - a fixed dependency graph;
 - exact task ownership and allowed paths;
@@ -109,15 +111,15 @@ a smaller `frontier-review-input.json`. The compact packet contains the
 relevant patches, reports, failures, tests, and lineage; its SHA-256 binding
 also protects the full result from silent replacement.
 
-Codex reviews that packet once. If it requests changes, MLX Swarm can create
-one linked successor that carries validated completed work forward and plans
-only the unfinished or corrective tasks.
+The frontier agent reviews that packet once. If it requests changes, MLX Swarm
+can create one linked successor that carries validated completed work forward
+and plans only the unfinished or corrective tasks.
 
 ## Use Swarm when it helps
 
 Swarm is intentionally not the answer to every edit.
 
-| Use direct Codex | Use MLX Swarm |
+| Use the frontier agent directly | Use MLX Swarm |
 | --- | --- |
 | One or two files | Several dependent tasks or files |
 | Copy, color, layout, or literal replacement | Implementation plus tests and review |
@@ -177,10 +179,32 @@ mlx-swarm --config examples/swarm.json run \
 The example runs three gated agent tasks without modifying the repository and
 writes a durable session plus final result below `examples/.swarm/runs/`.
 
-Or install the Codex bridge and open the local cockpit:
+Install the same commander skill for your frontier host:
 
 ```bash
-mlx-swarm skill install
+# Claude Code personal skill: ~/.claude/skills/mlx-swarm-commander
+mlx-swarm skill install --host claude
+
+# Or Codex personal skill: ~/.codex/skills/mlx-swarm-commander
+mlx-swarm skill install --host codex
+```
+
+The installer respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME` when those host
+configuration roots are set.
+
+The canonical `SKILL.md` follows the
+[Agent Skills standard](https://code.claude.com/docs/en/slash-commands).
+Claude Code can discover it automatically or invoke `/mlx-swarm-commander`;
+Codex can invoke `$mlx-swarm-commander`. To share the Claude skill with one
+repository instead, install it as a project skill:
+
+```bash
+mlx-swarm skill install --host claude --skills-dir .claude/skills
+```
+
+Then open the local cockpit:
+
+```bash
 mlx-swarm --config examples/swarm.json ui
 ```
 
@@ -188,17 +212,18 @@ Open `http://127.0.0.1:8765`. The cockpit shows the plan, task graph, local
 usage, artifacts, gates, approvals, verification receipts, run history, and
 final-review handoff.
 
-The skill uses your existing Codex access; MLX Swarm does not require a second
-frontier-provider key.
+The skill uses your existing frontier-host access; MLX Swarm does not require
+a second frontier-provider key.
 
 ## Your first governed workflow
 
 1. Enter the objective and constraints in **Frontier Commander**.
-2. Copy the displayed **Plan with Codex** handoff into Codex.
+2. Copy the displayed planning handoff into Claude Code, Codex, or another
+   compatible Agent Skills host.
 3. Inspect the returned graph, paths, tests, and two SHA-256 approval digests.
 4. Choose supervised execution or approved YOLO in an isolated worktree.
 5. Let the local agents execute without frontier coordination.
-6. Inspect the completed evidence and use **Review with Codex** once.
+6. Inspect the completed evidence and copy the review handoff once.
 7. If needed, start one incremental successor from the retained worktree.
 
 The two approval digests serve different purposes:
@@ -286,8 +311,8 @@ Session files can contain sensitive source and output. Keep `.swarm/` private.
 During execution, the model checkpoint, agent prompts, dependency outputs,
 candidate patches, test logs, repairs, and session evidence remain local.
 
-Only the explicit handoffs you copy to Codex leave the model-orchestration
-boundary:
+Only the explicit handoffs you copy to the selected frontier host leave the
+model-orchestration boundary:
 
 - planning: objective, constraints, capability envelope, and the repository
   context included in the commander prompt;
@@ -296,9 +321,9 @@ boundary:
 Inspect those handoffs before sending them when working with sensitive code.
 Operator-configured verification commands are local subprocesses, but MLX
 Swarm does not network-sandbox them; a test command may communicate externally
-if the operator configured it to do so. When Codex does not expose exact usage,
-MLX Swarm records it as `unavailable` rather than inventing a number. Local and
-frontier token totals are never combined.
+if the operator configured it to do so. When the selected host does not expose
+exact usage, MLX Swarm records it as `unavailable` rather than inventing a
+number. Local and frontier token totals are never combined.
 
 ## Measured evidence
 
@@ -320,8 +345,8 @@ does not establish coding quality on other tasks or hardware.
 
 The shipped 4B profile has a conservative `exact-edit` authority. Production-
 shaped quality calibration remains `unmeasured`, and the earlier autonomous-
-diagnosis calibration failed both frozen cases. Codex must therefore retain
-diagnosis, API discovery, and causal-fix selection.
+diagnosis calibration failed both frozen cases. The frontier agent must
+therefore retain diagnosis, API discovery, and causal-fix selection.
 
 The published preliminary BugsInPy economics run is also marked
 `protocol_invalid`; its 0/6 Swarm result must not be used to claim token savings
@@ -380,10 +405,11 @@ mlx-swarm --config CONFIG resume SESSION_DIR
 mlx-swarm --config CONFIG workspace preview PLAN
 mlx-swarm --config CONFIG artifact show SESSION_DIR TASK_ID
 mlx-swarm --config CONFIG commander create --objective TEXT
-mlx-swarm skill install
+mlx-swarm skill install --host HOST
 ```
 
-Run `mlx-swarm COMMAND --help` for the complete CLI.
+Use `claude` or `codex` for `HOST`. Run `mlx-swarm COMMAND --help` for the
+complete CLI.
 
 ## Documentation
 

@@ -16,7 +16,7 @@ checks, and character limits without frontier coordination between waves. Only
 a completed local run is eligible for final frontier review.
 
 This preserves frontier tokens, ensures reproducibility, and makes repair
-feedback actionable. Trade-off: the bundled Codex bridge cannot observe
+feedback actionable. Trade-off: a skill-hosted frontier bridge cannot observe
 host-internal calls or token totals, so it guarantees one accepted artifact per
 phase and records usage as unavailable.
 
@@ -55,7 +55,7 @@ timeout, and environment authority come from config.
 
 That authority is sealed into the execution digest/session snapshot. This
 permits trusted project checks while keeping command authority outside
-frontier and local worker output.
+frontier and local-agent output.
 
 ## Batched Generation by Dependency Level
 
@@ -67,7 +67,7 @@ This preserves per-task generation settings while still batching compatible work
 
 Every state change is immediately persisted to session.json. This enables crash recovery and resume, but adds I/O overhead per update. Trade-off: durability over performance.
 
-## Untrusted Worker Output Model
+## Untrusted Local-Agent Output Model
 
 Only successful dependency outputs are injected into prompts, with explicit warnings to treat them as untrusted candidate artifacts rather than instructions.
 

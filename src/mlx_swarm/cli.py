@@ -36,7 +36,11 @@ from .evaluation import (
 from .executor import execute_plan
 from .model_identity import model_metadata
 from .session import Session, _run_id, _utc_now
-from .skill_install import SkillInstallError, install_bundled_skill
+from .skill_install import (
+    SKILL_ADAPTERS,
+    SkillInstallError,
+    install_bundled_skill,
+)
 from .workspace import (
     APPROVAL_MODES,
     WORKSPACE_TARGETS,
@@ -234,7 +238,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Atomically claim one planning response slot.",
     )
     claim_plan_parser.add_argument("request_id")
-    claim_plan_parser.add_argument("--adapter", default="codex-skill")
+    claim_plan_parser.add_argument("--adapter", default="frontier-skill")
 
     release_plan_parser = commander_sub.add_parser(
         "release-plan",
@@ -257,7 +261,7 @@ def _parser() -> argparse.ArgumentParser:
         help="Atomically claim one final-review response slot.",
     )
     claim_review_parser.add_argument("session_dir", type=Path)
-    claim_review_parser.add_argument("--adapter", default="codex-skill")
+    claim_review_parser.add_argument("--adapter", default="frontier-skill")
 
     release_review_parser = commander_sub.add_parser(
         "release-review",
@@ -394,7 +398,7 @@ def _parser() -> argparse.ArgumentParser:
 
     skill_parser = sub.add_parser(
         "skill",
-        help="Manage the bundled Codex orchestration skill.",
+        help="Manage the bundled frontier orchestration Agent Skill.",
     )
     skill_sub = skill_parser.add_subparsers(
         dest="skill_command",
@@ -408,7 +412,13 @@ def _parser() -> argparse.ArgumentParser:
         "--skills-dir",
         type=Path,
         default=None,
-        help="Override the Codex skills directory.",
+        help="Override the selected host's destination skills directory.",
+    )
+    install_parser.add_argument(
+        "--host",
+        choices=sorted(SKILL_ADAPTERS),
+        required=True,
+        help="Install for Claude Code or Codex.",
     )
     install_parser.add_argument(
         "--force",
@@ -422,7 +432,14 @@ def _parser() -> argparse.ArgumentParser:
 def _add_frontier_receipt_options(
     parser: argparse.ArgumentParser,
 ) -> None:
-    parser.add_argument("--adapter", default=None)
+    parser.add_argument(
+        "--adapter",
+        default=None,
+        help=(
+            "Optional adapter assertion; it must match the adapter sealed "
+            "by the phase claim."
+        ),
+    )
     parser.add_argument("--provider", default=None)
     parser.add_argument("--model", default=None)
     parser.add_argument("--prompt-tokens", type=_non_negative_int, default=None)
@@ -484,10 +501,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 installed = install_bundled_skill(
                     skills_dir=args.skills_dir,
                     force=args.force,
+                    host=args.host,
                 )
                 _print({
                     "installed": True,
                     "skill": "mlx-swarm-commander",
+                    "host": args.host,
+                    "adapter": SKILL_ADAPTERS[args.host],
                     "path": str(installed),
                 })
                 return 0
