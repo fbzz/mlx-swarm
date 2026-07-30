@@ -245,7 +245,7 @@ function renderEvaluationSummary(detail) {
 
 function renderPlanDescription() {
   const plan = appState.plans.find((item) => item.planId === el("plan-select").value);
-  const workspacePlan = plan?.schemaVersion === 2;
+  const workspacePlan = plan?.schemaVersion >= 2;
   el("execution-policy-controls").hidden = !workspacePlan;
   if (!workspacePlan) {
     el("approval-mode").value = "supervised";
@@ -429,7 +429,8 @@ function renderCommanderPreview() {
   el("commander-workspace").hidden = false;
   const request = detail.request;
   const plan = detail.plan;
-  const workspacePlan = plan?.schemaVersion === 2;
+  const revision = detail.revisionInput;
+  const workspacePlan = plan?.schemaVersion >= 2;
   const status = request.status || "awaiting_plan";
   const historicalApproval = status === "launched" && request.approval;
   if (historicalApproval) {
@@ -447,16 +448,23 @@ function renderCommanderPreview() {
   el("commander-request-id").textContent = request.requestId || "";
   el("commander-plan-title").textContent = plan?.planId || "Frontier planning request";
   el("commander-plan-objective").textContent = plan?.objective || request.objective || "";
-  el("commander-workspace-root").textContent = request.workspaceRoot || "";
+  el("commander-workspace-root").textContent = (
+    revision?.inspectionRoot
+    || request.workspaceRoot
+    || ""
+  );
   el("commander-plan-digest").textContent = request.planDigest || "Awaiting validated frontier plan";
   const execution = selectedExecutionPreview(detail);
   el("commander-execution-digest-wrap").hidden = !execution;
   el("commander-base-wrap").hidden = !execution;
   el("commander-execution-digest").textContent = execution?.executionDigest || "";
   el("commander-base-sha").textContent = execution?.baseSha || "";
+  const revisionMeta = revision
+    ? ` · revision of ${revision.revisionOf} · ${(revision.carriedTasks || []).length} carried`
+    : "";
   el("commander-plan-meta").textContent = plan
-    ? `${plan.tasks.length} task${plan.tasks.length === 1 ? "" : "s"} · ${plan.levels.length} wave${plan.levels.length === 1 ? "" : "s"}`
-    : "No validated DAG yet";
+    ? `${plan.tasks.length} task${plan.tasks.length === 1 ? "" : "s"} · ${plan.levels.length} wave${plan.levels.length === 1 ? "" : "s"}${revisionMeta}`
+    : `No validated DAG yet${revisionMeta}`;
   el("approve-run-button").hidden = catalogPreview || status !== "plan_ready";
   el("approve-run-button").disabled = (
     status !== "plan_ready"
@@ -1214,11 +1222,16 @@ async function createCommanderRequest(event) {
     .split("\n")
     .map((value) => value.trim())
     .filter(Boolean);
+  const revisionOf = el("commander-revision").value.trim();
   setActionBusy(el("commander-create"), true, "Creating…");
   try {
     const detail = await api("/api/commander/requests", {
       method: "POST",
-      body: JSON.stringify({objective, constraints}),
+      body: JSON.stringify({
+        objective,
+        constraints,
+        ...(revisionOf ? {revisionOf} : {}),
+      }),
     });
     appState.commanderRequests.unshift({
       requestId: detail.request.requestId,
@@ -1321,7 +1334,7 @@ async function launchRun(event) {
       body: JSON.stringify({
         planId,
         maxRepair: Number(el("max-repair").value),
-        ...(plan?.schemaVersion === 2 ? {
+        ...(plan?.schemaVersion >= 2 ? {
           planDigest: plan.digest,
           executionDigest: execution?.executionDigest,
           approvalMode: el("approval-mode").value,
@@ -1339,7 +1352,7 @@ async function launchRun(event) {
     setActionBusy(
       el("launch-button"),
       false,
-      selectedPlan?.schemaVersion === 2
+      selectedPlan?.schemaVersion >= 2
         ? el("approval-mode").value === "yolo"
           ? "Approve YOLO run"
           : "Approve and launch"

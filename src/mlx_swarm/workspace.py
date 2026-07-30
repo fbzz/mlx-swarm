@@ -27,11 +27,14 @@ from .contracts import (
 )
 
 WORKSPACE_CONTRACT_VERSION = 2
+REVISION_WORKSPACE_CONTRACT_VERSION = 3
 ARTIFACT_SCHEMA_VERSION = 1
 DECISION_SCHEMA_VERSION = 1
 EXECUTION_POLICY_VERSION = 2
 CHECKOUT_LEASE_SCHEMA_VERSION = 2
 VERIFICATION_RECEIPT_SCHEMA_VERSION = 2
+MAX_CARRIED_NON_MUTATING_CHARS = 8_000
+MAX_CARRIED_MUTATING_DIFF_CHARS = 8_000
 APPROVAL_MODES = {"supervised", "yolo"}
 WORKSPACE_TARGETS = {"worktree", "checkout"}
 DEFAULT_APPROVAL_MODE = "supervised"
@@ -86,12 +89,78 @@ def canonical_sha256(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _validate_revision_authority(
+    root: Path,
+    raw: dict[str, Any],
+    *,
+    require_predecessor_branch: bool,
+) -> dict[str, Any]:
+    """Validate the frozen predecessor head used by an incremental revision."""
+    required = {
+        "schemaVersion",
+        "revisionOf",
+        "revisionInputSha256",
+        "predecessorExecutionDigest",
+        "predecessorBranch",
+        "baseSha",
+    }
+    if not isinstance(raw, dict) or set(raw) != required:
+        raise WorkspaceError("Incremental revision authority is invalid.")
+    if raw.get("schemaVersion") != 1:
+        raise WorkspaceError(
+            "Unsupported incremental revision authority version."
+        )
+    for key in ("revisionInputSha256", "predecessorExecutionDigest"):
+        if _SHA256.fullmatch(str(raw.get(key))) is None:
+            raise WorkspaceError(
+                f"Incremental revision {key} is invalid."
+            )
+    if _GIT_OID.fullmatch(str(raw.get("baseSha"))) is None:
+        raise WorkspaceError("Incremental revision baseSha is invalid.")
+    revision_of = raw.get("revisionOf")
+    if (
+        not isinstance(revision_of, str)
+        or revision_of.count("/") != 1
+        or any(not part for part in revision_of.split("/", 1))
+    ):
+        raise WorkspaceError("Incremental revision lineage is invalid.")
+    branch = raw.get("predecessorBranch")
+    if not isinstance(branch, str) or not branch:
+        raise WorkspaceError(
+            "Incremental revision predecessor branch is invalid."
+        )
+    _git(root, ["check-ref-format", "--branch", branch])
+    base_sha = str(raw["baseSha"])
+    _git(root, ["cat-file", "-e", f"{base_sha}^{{commit}}"])
+    if require_predecessor_branch:
+        branch_head = _git_text(
+            root,
+            ["rev-parse", f"refs/heads/{branch}"],
+        )
+        if branch_head != base_sha:
+            raise WorkspaceError(
+                "Incremental revision predecessor branch moved after "
+                "evidence was frozen."
+            )
+    return {
+        "schemaVersion": 1,
+        "revisionOf": revision_of,
+        "revisionInputSha256": str(raw["revisionInputSha256"]),
+        "predecessorExecutionDigest": str(
+            raw["predecessorExecutionDigest"]
+        ),
+        "predecessorBranch": branch,
+        "baseSha": base_sha,
+    }
+
+
 def execution_preview(
     config: SwarmConfig,
     plan: Plan,
     *,
     approval_mode: str = DEFAULT_APPROVAL_MODE,
     workspace_target: str = DEFAULT_WORKSPACE_TARGET,
+    revision_authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve and hash the operator-visible workspace execution contract."""
     if config.workspace is None or not plan.workspace_execution:
@@ -108,6 +177,18 @@ def execution_preview(
         root,
         required=workspace_target == "checkout",
     )
+    normalized_revision_authority = None
+    if revision_authority is not None:
+        if workspace_target != "worktree":
+            raise WorkspaceError(
+                "Incremental revisions require an isolated worktree."
+            )
+        normalized_revision_authority = _validate_revision_authority(
+            root,
+            revision_authority,
+            require_predecessor_branch=True,
+        )
+        base_sha = normalized_revision_authority["baseSha"]
     _reject_external_filters(root)
     worktrees_root = (config.artifacts_dir / "_worktrees").resolve()
     _require_runtime_root_safe(root, config.artifacts_dir.resolve())
@@ -144,7 +225,11 @@ def execution_preview(
             "environment": dict(profile.environment),
         }
     contract = {
-        "schemaVersion": WORKSPACE_CONTRACT_VERSION,
+        "schemaVersion": (
+            REVISION_WORKSPACE_CONTRACT_VERSION
+            if normalized_revision_authority is not None
+            else WORKSPACE_CONTRACT_VERSION
+        ),
         "planSha256": canonical_sha256(plan.raw),
         "workspaceRoot": str(root),
         "baseSha": base_sha,
@@ -155,6 +240,8 @@ def execution_preview(
         "executionPolicy": policy,
         "executionPolicySha256": canonical_sha256(policy),
     }
+    if normalized_revision_authority is not None:
+        contract["revisionAuthority"] = normalized_revision_authority
     return {
         **contract,
         "executionDigest": canonical_sha256(contract),
@@ -217,7 +304,11 @@ def validate_execution_snapshot(
 ) -> None:
     """Recompute immutable execution authority before every runner starts."""
     version = workspace.get("schemaVersion")
-    if version not in {1, WORKSPACE_CONTRACT_VERSION}:
+    if version not in {
+        1,
+        WORKSPACE_CONTRACT_VERSION,
+        REVISION_WORKSPACE_CONTRACT_VERSION,
+    }:
         raise WorkspaceError(
             "Unsupported workspace execution snapshot version."
         )
@@ -293,7 +384,7 @@ def validate_execution_snapshot(
             raise WorkspaceError(
                 "Session worktree branch identity is invalid."
             )
-    contract_keys = (
+    contract_keys = [
         "schemaVersion",
         "planSha256",
         "workspaceRoot",
@@ -304,7 +395,26 @@ def validate_execution_snapshot(
         "startingBranch",
         "executionPolicy",
         "executionPolicySha256",
-    )
+    ]
+    if version == REVISION_WORKSPACE_CONTRACT_VERSION:
+        if policy["workspaceTarget"] != "worktree":
+            raise WorkspaceError(
+                "Incremental revisions require an isolated worktree."
+            )
+        authority = _validate_revision_authority(
+            Path(workspace["workspaceRoot"]).resolve(),
+            workspace.get("revisionAuthority"),
+            require_predecessor_branch=False,
+        )
+        if workspace.get("baseSha") != authority["baseSha"]:
+            raise WorkspaceError(
+                "Incremental revision base differs from its authority."
+            )
+        contract_keys.append("revisionAuthority")
+    elif workspace.get("revisionAuthority") is not None:
+        raise WorkspaceError(
+            "Legacy workspace snapshots cannot contain revision authority."
+        )
     contract = {key: workspace.get(key) for key in contract_keys}
     execution_digest = canonical_sha256(contract)
     if workspace.get("executionDigest") != execution_digest:
@@ -329,6 +439,8 @@ def validate_execution_snapshot(
 def execution_previews(
     config: SwarmConfig,
     plan: Plan,
+    *,
+    revision_authority: dict[str, Any] | None = None,
 ) -> dict[str, dict[str, dict[str, Any]]]:
     """Return every supported operator choice with errors kept local."""
     result: dict[str, dict[str, dict[str, Any]]] = {
@@ -346,6 +458,7 @@ def execution_previews(
                     plan,
                     approval_mode=approval_mode,
                     workspace_target=workspace_target,
+                    revision_authority=revision_authority,
                 )
             except WorkspaceError as exc:
                 policy = execution_policy(
@@ -468,6 +581,7 @@ def prepare_workspace(
     expected_execution_digest: str,
     approval_mode: str = DEFAULT_APPROVAL_MODE,
     workspace_target: str = DEFAULT_WORKSPACE_TARGET,
+    revision_authority: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Prepare either an isolated worktree or the explicit main checkout."""
     preview = execution_preview(
@@ -475,6 +589,7 @@ def prepare_workspace(
         plan,
         approval_mode=approval_mode,
         workspace_target=workspace_target,
+        revision_authority=revision_authority,
     )
     if expected_execution_digest != preview["executionDigest"]:
         raise WorkspaceError(
@@ -1876,6 +1991,10 @@ def load_completed_artifact_evidence(
             )
     return {
         "manifest": manifest,
+        "payload": payload,
+        "payloadSha256": hashlib.sha256(
+            payload.encode("utf-8")
+        ).hexdigest(),
         "applyReceipt": apply_receipt,
         "applyReceiptSha256": canonical_sha256(apply_receipt),
         "verificationReceipts": verification_receipts,
@@ -1909,6 +2028,211 @@ def load_completed_non_mutating_artifact_evidence(
             payload.encode("utf-8")
         ).hexdigest(),
     }
+
+
+def revision_base_evidence(
+    session_dir: Path,
+    plan: Plan,
+    state: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate one terminal worktree as an incremental revision base."""
+    if state.get("status") not in {"completed", "partial", "failed"}:
+        raise WorkspaceError(
+            "Incremental revisions require a terminal predecessor session."
+        )
+    workspace = load_workspace_snapshot(session_dir)
+    validate_execution_snapshot(
+        workspace,
+        plan=plan,
+        approval=state.get("executionApproval"),
+        session_id=str(state.get("sessionId", "")),
+    )
+    if _workspace_target(workspace) != "worktree":
+        raise WorkspaceError(
+            "Incremental carry-forward currently requires an isolated "
+            "worktree predecessor."
+        )
+    worktree = _execution_path(workspace)
+    if not worktree.is_dir() or workspace.get("cleanedUp"):
+        raise WorkspaceError(
+            "Incremental carry-forward requires the retained predecessor "
+            "worktree."
+        )
+    head_sha = _workspace_head(workspace)
+    _require_clean_tracked_worktree(worktree)
+    root = Path(workspace["workspaceRoot"]).resolve()
+    branch = str(workspace.get("branch", ""))
+    branch_head = _git_text(
+        root,
+        ["rev-parse", f"refs/heads/{branch}"],
+    )
+    if branch_head != head_sha:
+        raise WorkspaceError(
+            "Predecessor branch differs from its validated workspace head."
+        )
+
+    carried_tasks: list[dict[str, Any]] = []
+    unfinished_subgraph: list[dict[str, Any]] = []
+    task_states = state.get("tasks")
+    if not isinstance(task_states, dict):
+        raise WorkspaceError("Predecessor task state is invalid.")
+    for task in plan.tasks:
+        raw_state = task_states.get(task.id)
+        if not isinstance(raw_state, dict):
+            raise WorkspaceError(
+                f"Predecessor task state is missing for {task.id}."
+            )
+        status = raw_state.get("status")
+        artifact_dir = session_dir / "artifacts" / task.id
+        if status == "completed":
+            if task.mutates_workspace:
+                evidence = load_completed_artifact_evidence(
+                    session_dir,
+                    task,
+                    workspace,
+                )
+                commit_sha = evidence["applyReceipt"].get("commitSha")
+                if not isinstance(commit_sha, str):
+                    raise WorkspaceError(
+                        f"Completed task {task.id} has no commit evidence."
+                    )
+                ancestor = _git(
+                    worktree,
+                    ["merge-base", "--is-ancestor", commit_sha, head_sha],
+                    check=False,
+                )
+                if ancestor.returncode != 0:
+                    raise WorkspaceError(
+                        f"Completed task {task.id} is not present in the "
+                        "predecessor head."
+                    )
+                payload = evidence["payload"]
+                diff_truncated = (
+                    len(payload) > MAX_CARRIED_MUTATING_DIFF_CHARS
+                )
+                if diff_truncated:
+                    half = MAX_CARRIED_MUTATING_DIFF_CHARS // 2
+                    diff_excerpt = (
+                        payload[:half]
+                        + "\n...[bounded carried diff omitted]...\n"
+                        + payload[-half:]
+                    )
+                else:
+                    diff_excerpt = payload
+                carried_tasks.append({
+                    "taskId": task.id,
+                    "artifactType": task.artifact_type,
+                    "affectedPaths": list(
+                        evidence["manifest"]["affectedPaths"]
+                    ),
+                    "artifactSha256": evidence["manifest"]["sha256"],
+                    "commitSha": commit_sha,
+                    "applyReceiptSha256": evidence[
+                        "applyReceiptSha256"
+                    ],
+                    "verificationReceiptSha256": evidence[
+                        "verificationReceiptSha256"
+                    ],
+                    "diffSha256": evidence["payloadSha256"],
+                    "diffExcerpt": diff_excerpt,
+                    "diffTruncated": diff_truncated,
+                })
+            else:
+                evidence = load_completed_non_mutating_artifact_evidence(
+                    session_dir,
+                    task,
+                    workspace,
+                )
+                payload = evidence["payload"]
+                output_truncated = (
+                    len(payload) > MAX_CARRIED_NON_MUTATING_CHARS
+                )
+                if output_truncated:
+                    half = MAX_CARRIED_NON_MUTATING_CHARS // 2
+                    output_excerpt = (
+                        payload[:half]
+                        + "\n...[bounded carried output omitted]...\n"
+                        + payload[-half:]
+                    )
+                else:
+                    output_excerpt = payload
+                carried_tasks.append({
+                    "taskId": task.id,
+                    "artifactType": task.artifact_type,
+                    "affectedPaths": [],
+                    "artifactSha256": evidence["artifactSha256"],
+                    "manifestSha256": evidence["manifestSha256"],
+                    "payloadSha256": evidence["payloadSha256"],
+                    "outputExcerpt": output_excerpt,
+                    "outputTruncated": output_truncated,
+                })
+            continue
+
+        if (
+            (artifact_dir / "apply-receipt.json").is_file()
+            and not (artifact_dir / "revert-receipt.json").is_file()
+        ):
+            raise WorkspaceError(
+                f"Unfinished task {task.id} has an unresolved applied commit."
+            )
+        gate = raw_state.get("gateResult")
+        violations = (
+            [
+                str(value.get("id"))
+                for value in gate.get("violations", [])
+                if isinstance(value, dict) and value.get("id") is not None
+            ]
+            if isinstance(gate, dict)
+            else []
+        )
+        unfinished_subgraph.append({
+            "taskId": task.id,
+            "status": status,
+            "role": task.role,
+            "artifactType": task.artifact_type,
+            "dependsOn": list(task.depends_on),
+            "allowedPaths": list(task.allowed_paths),
+            "verification": list(task.verification),
+            "violationIds": violations,
+            "error": raw_state.get("error"),
+        })
+
+    return {
+        "workspace": workspace,
+        "workspaceSnapshotSha256": canonical_sha256(workspace),
+        "baseSha": head_sha,
+        "predecessorBranch": branch,
+        "inspectionRoot": str(worktree),
+        "predecessorExecutionDigest": workspace["executionDigest"],
+        "carriedTasks": carried_tasks,
+        "unfinishedSubgraph": unfinished_subgraph,
+    }
+
+
+def validate_revision_inspection_root(
+    inspection_root: Path,
+    *,
+    predecessor_branch: str,
+    base_sha: str,
+) -> Path:
+    """Revalidate the exact clean predecessor tree exposed to planning."""
+    root = inspection_root.resolve()
+    if not root.is_dir():
+        raise WorkspaceError(
+            "Incremental revision inspection worktree is unavailable."
+        )
+    if _current_branch(root) != predecessor_branch:
+        raise WorkspaceError(
+            "Incremental revision inspection branch changed after "
+            "evidence was frozen."
+        )
+    if _git_text(root, ["rev-parse", "HEAD"]) != base_sha:
+        raise WorkspaceError(
+            "Incremental revision inspection head changed after evidence "
+            "was frozen."
+        )
+    _require_clean_tracked_worktree(root)
+    return root
 
 
 def _validate_verification_receipt(

@@ -189,7 +189,7 @@ def test_cli_doctor_ready(
         result = main(["--config", str(config_path), "doctor"])
     assert result == 0
     payload = json.loads(capsys.readouterr().out)
-    assert payload["batch"]["maxBatchPromptTokens"] == 32768
+    assert payload["batch"]["maxBatchPromptTokens"] == 49152
     assert payload["worker"]["capabilities"]["delegationLevel"] == "exact-edit"
     assert payload["model"]["metadata"]["metadataReady"] is True
 

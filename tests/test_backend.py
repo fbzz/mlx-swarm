@@ -94,7 +94,7 @@ def test_strict_json_tasks_share_deterministic_sampler_by_default() -> None:
 
     assert result["temperature"] == 0.0
     assert result["top_p"] == 1.0
-    assert result["max_tokens"] == 800
+    assert result["max_tokens"] == 1024
     assert result["seed"] == 11
 
 

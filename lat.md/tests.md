@@ -48,9 +48,9 @@ Config without model field raises ContractError.
 ### Bad max workers
 maxWorkers=0 raises ContractError (must be >= 1).
 
-### Calibrated default workers
-Omitting maxWorkers uses the four-worker interactive default while explicit
-values through thirty-two remain valid.
+### Default agents
+Omitting maxWorkers uses the measured two-agent default while explicit values
+through thirty-two remain valid.
 
 ### Strict boolean config
 Non-boolean enableThinking values raise ContractError.
@@ -316,6 +316,14 @@ Frontier contracts and persistence tests. See
 Requests bind to the config directory, preserve constraints and revision
 lineage, and generate deterministic prompts.
 
+One incremental successor may snapshot a terminal, clean, retained isolated
+worktree. Tests bind its `revision-input.json`, carried completed-task evidence,
+predecessor head, and execution authority; repeated carried task IDs,
+nonterminal or cleaned predecessors, moved/dirty heads or inspection trees,
+invalid evidence, and a second carry-forward successor are rejected. The
+planning claim exposes the predecessor worktree, not the stale main checkout,
+as its bounded inspection root.
+
 ### Exclusive phase claims
 Planning and review response slots cannot be claimed or imported twice. Claims
 can be released only before a raw response is recorded.
@@ -337,9 +345,19 @@ usage is nullable and explicitly unavailable.
 Completed sessions accept one structured verdict. Partial and failed sessions
 remain ineligible and use local resume/retry evidence.
 
+Completed sessions emit both the full `frontier-result.json` audit packet and
+deterministic compact `frontier-review-input.json`. Tests prove the compact
+packet omits repeated plan/payload/log bulk, binds the full result digest, and
+binds review claims and receipts to its own digest. Evidence-changing tampering
+with either packet is rejected.
+
 ### Bundled skill
 The packaged skill validates, installs to an explicit skills root, and refuses
 implicit overwrite.
+
+The skill contract routes simple low-risk one- or two-file cosmetic or literal
+mechanical edits directly, while explicitly governed or decomposition-worthy
+work continues through Commander.
 
 ## UI
 
@@ -392,6 +410,11 @@ committed HEAD, and applied artifacts create commits only in the worktree.
 
 Final v3 packets contain base/head/diff evidence, cleanup removes only the
 worktree, and the branch remains.
+
+Incremental execution-contract v3 starts a successor worktree at the validated
+predecessor head, binds predecessor branch/execution/revision-input evidence
+into the new digest, carries completed commits through ancestry, and still
+requires new plan and execution approvals.
 
 ### Diff boundary
 

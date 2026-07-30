@@ -10,7 +10,12 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Protocol
 
-from .contracts import ROLE_DEFAULTS, SwarmConfig, TaskDef
+from .contracts import (
+    EXACT_EDIT_MAX_TOKENS,
+    ROLE_DEFAULTS,
+    SwarmConfig,
+    TaskDef,
+)
 
 
 class BatchBackend(Protocol):
@@ -88,13 +93,19 @@ def _role_generation_config(task: TaskDef, config: SwarmConfig) -> dict[str, Any
             result["top_p"] = 1.0
         if "max_tokens" not in task.generation_override:
             result["max_tokens"] = min(
-                int(result.get("max_tokens", 800)),
-                800,
+                int(
+                    result.get(
+                        "max_tokens",
+                        EXACT_EDIT_MAX_TOKENS,
+                    )
+                ),
+                EXACT_EDIT_MAX_TOKENS,
+                config.worker.capabilities.max_generation_tokens,
             )
     result.update(task.generation_override)
     result.setdefault("temperature", 0.2)
     result.setdefault("top_p", 0.9)
-    result.setdefault("max_tokens", 1200)
+    result.setdefault("max_tokens", ROLE_DEFAULTS["general"]["max_tokens"])
     result.setdefault("enable_thinking", config.enable_thinking)
     result.setdefault("seed", config.seed)
     return result

@@ -19,9 +19,12 @@ The executor in [[src/mlx_swarm/executor.py#execute_plan]] orchestrates the full
    g. Call the persistent [[Backend]] directly, or run a local reasoning pass
       followed by a strict editing pass for mutating tasks when configured.
    h. Process outputs: evaluate [[Gates]], normalize, update session.
-   i. **Repair loop**: For rejected tasks within both task and CLI repair caps, compose repair prompts with [[Gates#Gate Feedback]].
+   i. **Repair loop**: For rejected tasks within explicit non-zero task and CLI
+      repair caps, compose repair prompts with [[Gates#Gate Feedback]].
 4. **Final status**: "completed" if all pass, "failed" if execution failed, "partial" otherwise.
-5. **Frontier handoff**: Persist one compact `frontier-result.json` for final frontier review.
+5. **Frontier handoff**: Persist the full `frontier-result.json` audit packet;
+   when status is completed, derive compact digest-bound
+   `frontier-review-input.json` for final frontier review.
 
 See [[src/mlx_swarm/executor.py#execute_plan]].
 
@@ -68,13 +71,20 @@ Git commits without duplicate apply. See
 
 ## Repair Loop
 
-After initial generation, rejected tasks with remaining task-level and global `--max-repair` budget enter the repair loop:
+After initial generation, rejected tasks with remaining task-level and global
+`--max-repair` budget enter the repair loop. Both defaults are zero, so repair
+is an explicit opt-in:
 
 1. Collect all rejected tasks with remaining repair budget.
 2. Compose repair prompts with [[Gates#Gate Feedback]] and previous output.
 3. Run repair batch through [[Backend|generate_batch]].
 4. Process outputs and evaluate gates again.
 5. Repeat until all pass or budget exhausted.
+
+An output whose final generation stage reports `hitTokenLimit` fails
+immediately with an `output-token-limit` violation and never enters repair.
+The commander must split or tighten that task instead of spending another
+local generation call on the same oversized contract.
 
 See [[src/mlx_swarm/executor.py#_process_task_output]].
 

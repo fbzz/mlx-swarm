@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .contracts import Plan, TaskDef
+from .contracts import DEFAULT_REASONING_MAX_TOKENS, Plan, TaskDef
 
 
 def _utc_now() -> str:
@@ -138,7 +138,10 @@ class Session:
                 worker=WorkerConfig(
                     mode=str(stored_worker.get("mode", "direct")),
                     reasoning_max_tokens=int(
-                        stored_worker.get("reasoningMaxTokens", 1200)
+                        stored_worker.get(
+                            "reasoningMaxTokens",
+                            DEFAULT_REASONING_MAX_TOKENS,
+                        )
                     ),
                     capabilities=worker_capabilities_from_payload(
                         stored_worker["capabilities"]
@@ -381,9 +384,12 @@ class Session:
         approval: dict[str, Any],
         planning_receipt: dict[str, Any],
         revision_of: str | None = None,
+        revision_input: dict[str, Any] | None = None,
+        revision_input_sha256: str | None = None,
     ) -> None:
         """Attach immutable commander evidence to a newly approved session."""
         from .commander import (
+            REVISION_INPUT_NAME,
             canonical_json_sha256,
             validate_frontier_receipt,
             write_frontier_usage,
@@ -399,6 +405,69 @@ class Session:
         self.state["frontierPlanReceipt"] = "frontier-plan-receipt.json"
         if revision_of is not None:
             self.state["revisionOf"] = revision_of
+        if revision_input is not None:
+            if revision_of is None or revision_input.get(
+                "revisionOf"
+            ) != revision_of:
+                raise RuntimeError(
+                    "Incremental revision input differs from its lineage."
+                )
+            actual_revision_digest = canonical_json_sha256(
+                revision_input
+            )
+            if (
+                revision_input_sha256 is None
+                or actual_revision_digest != revision_input_sha256
+            ):
+                raise RuntimeError(
+                    "Incremental revision input digest is invalid."
+                )
+            workspace = self.workspace_snapshot()
+            authority = (
+                workspace.get("revisionAuthority")
+                if isinstance(workspace, dict)
+                else None
+            )
+            expected_authority = {
+                "revisionOf": revision_of,
+                "revisionInputSha256": actual_revision_digest,
+                "predecessorExecutionDigest": revision_input.get(
+                    "predecessorExecutionDigest"
+                ),
+                "predecessorBranch": revision_input.get(
+                    "predecessorBranch"
+                ),
+                "baseSha": revision_input.get("baseSha"),
+            }
+            if (
+                not isinstance(authority, dict)
+                or any(
+                    authority.get(key) != value
+                    for key, value in expected_authority.items()
+                )
+            ):
+                raise RuntimeError(
+                    "Incremental revision input differs from its workspace "
+                    "authority."
+                )
+            self.state["revisionDepth"] = revision_input.get("depth")
+            self.state["revisionInputSha256"] = actual_revision_digest
+            self.state["inheritedBaseSha"] = revision_input.get(
+                "baseSha"
+            )
+            self.state["carriedTasks"] = revision_input.get(
+                "carriedTasks",
+                [],
+            )
+            self.state["revisionInput"] = REVISION_INPUT_NAME
+            _atomic_json(
+                self.dir / REVISION_INPUT_NAME,
+                revision_input,
+            )
+        elif revision_input_sha256 is not None:
+            raise RuntimeError(
+                "Incremental revision digest has no revision input."
+            )
         _atomic_json(
             self.dir / "frontier-plan-receipt.json",
             planning_receipt,
@@ -703,7 +772,12 @@ class Session:
         status_override: str | None = None,
     ) -> Path:
         """Persist the single compact packet intended for final frontier review."""
-        from .commander import canonical_json_sha256, write_frontier_usage
+        from .commander import (
+            FRONTIER_REVIEW_INPUT_NAME,
+            build_review_input,
+            canonical_json_sha256,
+            write_frontier_usage,
+        )
 
         path = self.dir / "frontier-result.json"
         effective_status = status_override or self.state.get("status")
@@ -722,6 +796,64 @@ class Session:
         packet["planApproval"] = self.state.get("planApproval")
         packet["commanderRequestId"] = self.state.get("commanderRequestId")
         packet["revisionOf"] = self.state.get("revisionOf")
+        if self.state.get("revisionInputSha256") is not None:
+            revision_path = self.dir / "revision-input.json"
+            try:
+                revision_input = json.loads(
+                    revision_path.read_text(encoding="utf-8")
+                )
+            except (OSError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    "Incremental revision input is unavailable or invalid."
+                ) from exc
+            if (
+                not isinstance(revision_input, dict)
+                or canonical_json_sha256(revision_input)
+                != self.state["revisionInputSha256"]
+            ):
+                raise RuntimeError(
+                    "Incremental revision input digest is invalid."
+                )
+            expected_state_projection = {
+                "revisionOf": revision_input.get("revisionOf"),
+                "revisionDepth": revision_input.get("depth"),
+                "inheritedBaseSha": revision_input.get("baseSha"),
+                "carriedTasks": revision_input.get("carriedTasks", []),
+            }
+            if any(
+                self.state.get(key) != value
+                for key, value in expected_state_projection.items()
+            ):
+                raise RuntimeError(
+                    "Incremental revision session state differs from its "
+                    "validated input."
+                )
+            packet["incrementalRevision"] = {
+                "revisionOf": revision_input.get("revisionOf"),
+                "depth": revision_input.get("depth"),
+                "revisionInputSha256": self.state.get(
+                    "revisionInputSha256"
+                ),
+                "inheritedBaseSha": revision_input.get("baseSha"),
+                "carriedTasks": revision_input.get(
+                    "carriedTasks",
+                    [],
+                ),
+                "predecessorEvidence": {
+                    "status": revision_input.get("predecessorStatus"),
+                    "unfinishedSubgraph": revision_input.get(
+                        "unfinishedSubgraph",
+                        [],
+                    ),
+                    "integrationFailures": revision_input.get(
+                        "integrationFailures",
+                        [],
+                    ),
+                    "frontierReview": revision_input.get(
+                        "frontierReview"
+                    ),
+                },
+            }
         packet["localUsage"] = self.local_usage()
         packet["localExecutionProfile"] = self.state.get(
             "localExecutionProfile"
@@ -887,6 +1019,11 @@ class Session:
             encoding="utf-8",
         )
         temp_path.replace(path)
+        if effective_status == "completed":
+            _atomic_json(
+                self.dir / FRONTIER_REVIEW_INPUT_NAME,
+                build_review_input(packet),
+            )
         if (self.dir / "frontier-plan-receipt.json").is_file():
             write_frontier_usage(self.dir)
         return path

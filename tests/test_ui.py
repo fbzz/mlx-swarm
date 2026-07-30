@@ -33,6 +33,24 @@ def test_packaged_styles_preserve_native_hidden_state() -> None:
     assert "[hidden] { display: none !important; }" in styles
 
 
+def test_packaged_cockpit_exposes_incremental_revision_lineage() -> None:
+    static = (
+        Path(__file__).parents[1]
+        / "src"
+        / "mlx_swarm"
+        / "ui_static"
+    )
+    html = (static / "index.html").read_text(encoding="utf-8")
+    script = (static / "app.js").read_text(encoding="utf-8")
+
+    assert 'id="commander-revision"' in html
+    assert 'revisionOf = el("commander-revision")' in script
+    assert "...(revisionOf ? {revisionOf} : {})" in script
+    assert "revision?.inspectionRoot" in script
+    assert "schemaVersion === 2" not in script
+    assert script.count("schemaVersion >= 2") == 4
+
+
 def _write_workspace(tmp_path: Path) -> tuple[Path, Path]:
     model_dir = tmp_path / "model"
     model_dir.mkdir()
@@ -352,7 +370,7 @@ def test_plan_discovery_and_status(tmp_path: Path) -> None:
     status = app.status_payload()
     assert status["ready"] is True
     assert status["reviewMode"] == "frontier-final-only"
-    assert status["batch"]["maxBatchPromptTokens"] == 32768
+    assert status["batch"]["maxBatchPromptTokens"] == 49152
     assert status["worker"]["capabilities"]["delegationLevel"] == "exact-edit"
 
 
@@ -684,6 +702,78 @@ def test_commander_request_preview_and_digest_approval(
     )
     assert retry_state["commanderRequestId"] == request_id
     assert (retry_dir / "frontier-plan-receipt.json").is_file()
+    app._processes.clear()
+    (retry_dir / "runner.json").unlink(missing_ok=True)
+    resumed = app.resume_run(
+        retried["run"]["planId"],
+        retried["run"]["sessionId"],
+    )
+    assert resumed["run"]["sessionId"] == retried["run"]["sessionId"]
+    assert "resume" in recorder.calls[-1][0]
+
+
+def test_failed_commander_attachment_is_not_resumable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = _app(tmp_path, _PopenRecorder())
+    created = app.create_commander_request(
+        "Build and verify a local result",
+        [],
+        None,
+    )
+    request_id = created["request"]["requestId"]
+    claim = app.commander.claim_plan(request_id)
+    imported = app.commander.import_plan(
+        request_id,
+        tmp_path / "plan.json",
+        claim_id=claim["claimId"],
+    )
+    digest = imported["request"]["planDigest"]
+    plan, plan_path, approval, receipt, request = (
+        app.commander.approved_plan(request_id, digest)
+    )
+
+    def fail_attachment(self, **_kwargs):
+        raise RuntimeError("injected commander attachment failure")
+
+    monkeypatch.setattr(Session, "attach_commander", fail_attachment)
+    with pytest.raises(
+        RuntimeError,
+        match="injected commander attachment failure",
+    ):
+        app.launch_run(
+            plan.plan_id,
+            0,
+            plan_override=(plan, plan_path),
+            commander_evidence={
+                "requestId": request_id,
+                "approval": approval,
+                "planningReceipt": receipt,
+                "revisionOf": request.get("revisionOf"),
+                "revisionInput": None,
+                "revisionInputSha256": None,
+                "revisionAuthority": None,
+            },
+            mark_commander_launched=True,
+            plan_digest=digest,
+        )
+
+    session_dirs = [
+        path
+        for path in (app.artifacts_dir / plan.plan_id).iterdir()
+        if path.is_dir()
+    ]
+    assert len(session_dirs) == 1
+    failed = json.loads(
+        (session_dirs[0] / "session.json").read_text(encoding="utf-8")
+    )
+    assert failed["status"] == "failed"
+    assert failed["pauseReason"] == (
+        "launch_evidence_attachment_failed"
+    )
+    with pytest.raises(APIError, match="attachment is incomplete"):
+        app.resume_run(plan.plan_id, failed["sessionId"])
 
 
 def test_commander_api_acceptance_run_exposes_completed_dag_and_review(

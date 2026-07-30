@@ -16,6 +16,7 @@ from typing import Any, Iterable
 
 from .backend import BatchBackend, MLXBatchBackend
 from .contracts import (
+    EXACT_EDIT_MAX_TOKENS,
     Plan,
     ROLE_DEFAULTS,
     SwarmConfig,
@@ -71,7 +72,7 @@ def execute_plan(
     config: SwarmConfig,
     plan: Plan,
     session_dir: Path | None = None,
-    max_repair: int = 2,
+    max_repair: int = 0,
     *,
     backend: BatchBackend | None = None,
     retry_of: str | None = None,
@@ -102,7 +103,7 @@ def _execute_plan_unlocked(
     config: SwarmConfig,
     plan: Plan,
     session_dir: Path,
-    max_repair: int = 2,
+    max_repair: int = 0,
     *,
     backend: BatchBackend | None = None,
     retry_of: str | None = None,
@@ -1294,6 +1295,20 @@ def _process_task_output(
         and previous_output == output
     )
     gate_result = evaluate_gate(output, task.gate)
+    hit_token_limit = _task_output_hit_token_limit(
+        statistics,
+        task.id,
+    )
+    if hit_token_limit:
+        gate_result["passed"] = False
+        gate_result.setdefault("violations", []).append({
+            "id": "output-token-limit",
+            "kind": "size",
+            "message": (
+                "Generation reached its output-token limit. Split the task "
+                "or deliberately raise its bounded generation ceiling."
+            ),
+        })
     reject_repeated = bool(
         session.state["tasks"][task.id].get("rejectRepeatedOutput")
     )
@@ -1337,7 +1352,14 @@ def _process_task_output(
             })
     status = "completed" if gate_result["passed"] else "rejected"
     error = None
-    if repeated_output and not gate_result["passed"]:
+    if hit_token_limit:
+        status = "failed"
+        error = (
+            "Local generation reached its output-token limit; blind repair "
+            "was stopped. Split the task or deliberately raise its bounded "
+            "generation ceiling."
+        )
+    elif repeated_output and not gate_result["passed"]:
         status = "failed"
         error = (
             "Local generation repeated the previous rejected output; "
@@ -1369,6 +1391,21 @@ def _process_task_output(
         artifact=artifact,
         error=error,
     )
+
+
+def _task_output_hit_token_limit(
+    statistics: dict[str, Any],
+    task_id: str,
+) -> bool:
+    """Use the last task stage so reasoning truncation does not mask editing."""
+    result = False
+    matched = False
+    for group in statistics.get("groups", []):
+        values = group.get("hitTokenLimit")
+        if isinstance(values, dict) and task_id in values:
+            result = values[task_id] is True
+            matched = True
+    return result if matched else False
 
 
 def _await_workspace_tasks(
@@ -1914,7 +1951,7 @@ def _local_execution_profile(
         "structuredOutputDefaults": {
             "temperature": 0.0,
             "topP": 1.0,
-            "maxTokens": 800,
+            "maxTokens": EXACT_EDIT_MAX_TOKENS,
             "appliesWhenPlanOmitsOverride": True,
         },
         "runtime": {

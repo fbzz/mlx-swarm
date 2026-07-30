@@ -34,7 +34,12 @@ See [[src/mlx_swarm/gates.py#evaluate_gate]].
 
 When a gate fails, `gate_feedback_for_repair` generates a structured feedback string listing all violations. This is injected into a repair prompt that re-runs the task.
 
-The [[Executor]] checks each rejected task's `maxRepairAttempts` budget. If remaining, it composes a repair prompt with gate feedback and the previous failed output, then re-runs through MLX. The loop continues until the task passes or the budget is exhausted. See [[src/mlx_swarm/executor.py#execute_plan]].
+The [[Executor]] checks each rejected task's `maxRepairAttempts` budget and the
+global `--max-repair` cap. Both default to zero. When both explicitly permit a
+repair, it composes a prompt with gate feedback and the previous failed output,
+then re-runs through MLX until the task passes or the budget is exhausted.
+Token-limited output fails fast and is never repaired. See
+[[src/mlx_swarm/executor.py#execute_plan]].
 
 ## Normalization
 

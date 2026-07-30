@@ -787,7 +787,7 @@
     "localModel": {
       "repository": "local/qwen35-4b-opus-uncensored-6bit",
       "revision": "local",
-      "path": "/Users/fzuin/models/qwen35-4b-opus-uncensored-6bit",
+      "path": "~/models/qwen35-4b-opus-uncensored-6bit",
       "fingerprint": "e017ecf449428c52171387b7dee317e4803708940b8f50ea1c1ef0d25529cd3d"
     },
     "hardware": {

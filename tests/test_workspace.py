@@ -16,6 +16,7 @@ import pytest
 
 from mlx_swarm import executor as executor_module
 from mlx_swarm import workspace as workspace_module
+from mlx_swarm.commander import CommanderError, CommanderStore
 from mlx_swarm.contracts import (
     ContractError,
     MUTATING_ARTIFACT_TYPES,
@@ -1337,6 +1338,500 @@ def _v3_edit_task(
     return task
 
 
+def _revision_plan(
+    plan_id: str,
+    task_id: str,
+    *,
+    old_value: int,
+    new_value: int,
+) -> dict[str, Any]:
+    source_label = f"{task_id}-source"
+    return {
+        "schemaVersion": 3,
+        "planId": plan_id,
+        "objective": f"Change VALUE from {old_value} to {new_value}.",
+        "integrationVerification": ["syntax"],
+        "context": {
+            "objective": f"Change VALUE from {old_value} to {new_value}.",
+            "authoritativeSources": [{
+                "label": source_label,
+                "content": (
+                    "src/value.py contains "
+                    f"VALUE = {old_value}."
+                ),
+            }],
+            "constraints": ["Modify only src/value.py."],
+            "rejectionCriteria": [
+                f"VALUE is not {new_value}.",
+            ],
+            "outputProtocol": "Return only the contracted artifact.",
+            "diagnosis": {
+                "observedFailure": (
+                    f"src/value.py still defines VALUE = {old_value}."
+                ),
+                "causalHypothesis": (
+                    "The stale literal is the direct source of the value."
+                ),
+                "validationMethod": "source-trace",
+                "validationEvidence": (
+                    "The authoritative source identifies the exact "
+                    "assignment."
+                ),
+                "falsificationCondition": (
+                    "Another authoritative source overrides VALUE."
+                ),
+                "evidenceSources": [source_label],
+                "changeValidation": {
+                    "candidateChange": (
+                        f"Replace VALUE = {old_value} with "
+                        f"VALUE = {new_value}."
+                    ),
+                    "failingPathPrediction": (
+                        f"The direct module value becomes {new_value}."
+                    ),
+                    "preservedControlPrediction": (
+                        "No other file or symbol changes."
+                    ),
+                    "minimalityEvidence": (
+                        "The exact defining assignment is the narrowest "
+                        "change."
+                    ),
+                    "evidenceSources": [source_label],
+                },
+            },
+        },
+        "tasks": [_v3_edit_task(
+            task_id,
+            "src/value.py",
+            source_label,
+            execution_mode="deterministic-edit",
+            edits=[{
+                "path": "src/value.py",
+                "old": f"VALUE = {old_value}",
+                "new": f"VALUE = {new_value}",
+            }],
+        )],
+    }
+
+
+def _completed_revision_base(
+    tmp_path: Path,
+) -> tuple[Path, Any, Any, Path, dict[str, Any]]:
+    repo, config_path = _repo(tmp_path)
+    raw_config = json.loads(config_path.read_text(encoding="utf-8"))
+    raw_config["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
+        "python",
+        "-c",
+        (
+            "from pathlib import Path; "
+            "compile(Path('src/value.py').read_text(), "
+            "'src/value.py', 'exec')"
+        ),
+    ]
+    config_path.write_text(
+        json.dumps(raw_config),
+        encoding="utf-8",
+    )
+    config = load_config(config_path)
+    plan_path = repo / "config" / "revision-base.json"
+    plan_path.write_text(
+        json.dumps(_revision_plan(
+            "revision-base",
+            "carry-value",
+            old_value=1,
+            new_value=2,
+        )),
+        encoding="utf-8",
+    )
+    plan = load_plan(plan_path, config)
+    preview = execution_preview(
+        config,
+        plan,
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_id = "base-session"
+    snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=session_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan_path)
+    session.attach_workspace(
+        snapshot,
+        execution_approval=_approval(preview),
+    )
+    outcome = execute_plan(
+        config,
+        plan,
+        session_dir=session_dir,
+        approval_poll_seconds=0.01,
+    )
+    assert outcome.state["status"] == "completed"
+    assert Path(snapshot["worktreePath"], "src/value.py").read_text() == (
+        "VALUE = 2\n"
+    )
+    return repo, config, plan, session_dir, snapshot
+
+
+def test_incremental_revision_inherits_validated_head_and_new_approval(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, predecessor_plan, predecessor_dir, snapshot = (
+        _completed_revision_base(tmp_path)
+    )
+    predecessor_state = json.loads(
+        (predecessor_dir / "session.json").read_text(encoding="utf-8")
+    )
+    predecessor_head = predecessor_state["workspace"]["headSha"]
+    store = CommanderStore(config)
+    review_claim = store.claim_review(predecessor_dir)
+    review_response = tmp_path / "predecessor-review.json"
+    review_response.write_text(json.dumps({
+        "schemaVersion": 1,
+        "sessionId": predecessor_state["sessionId"],
+        "planId": predecessor_plan.plan_id,
+        "verdict": "changes_requested",
+        "summary": "Carry the successful edit and finish the follow-up.",
+        "findings": [{
+            "id": "finish-follow-up",
+            "severity": "medium",
+            "taskId": "carry-value",
+            "title": "Finish the follow-up",
+            "evidence": "VALUE = 2 is carried in the validated head.",
+            "recommendation": "Apply a separately approved successor edit.",
+        }],
+    }), encoding="utf-8")
+    store.import_review(
+        predecessor_dir,
+        review_response,
+        claim_id=review_claim["claimId"],
+    )
+    created = store.create_request(
+        "Continue from the successful value change.",
+        revision_of=(
+            f"{predecessor_plan.plan_id}/"
+            f"{predecessor_state['sessionId']}"
+        ),
+        request_id="incremental-successor",
+    )
+    revision_input = created["revisionInput"]
+    assert revision_input["baseSha"] == predecessor_head
+    assert [value["taskId"] for value in revision_input["carriedTasks"]] == [
+        "carry-value"
+    ]
+    assert "VALUE = 2" in revision_input["carriedTasks"][0][
+        "diffExcerpt"
+    ]
+    assert revision_input["carriedTasks"][0]["diffTruncated"] is False
+    assert revision_input["unfinishedSubgraph"] == []
+    assert revision_input["frontierReview"]["verdict"] == (
+        "changes_requested"
+    )
+    assert revision_input["inspectionRoot"] == snapshot["worktreePath"]
+    assert created["executionPreview"] is None
+    prompt = Path(created["planPrompt"]).read_text(encoding="utf-8")
+    assert "Do not" in prompt
+    assert "carry-value" in prompt
+    assert predecessor_head in prompt
+    assert snapshot["worktreePath"] in prompt
+
+    claim = store.claim_plan("incremental-successor")
+    assert claim["workspaceRoot"] == snapshot["worktreePath"]
+    response = tmp_path / "successor-plan.json"
+    response.write_text(
+        json.dumps(_revision_plan(
+            "revision-successor",
+            "finish-value",
+            old_value=2,
+            new_value=3,
+        )),
+        encoding="utf-8",
+    )
+    imported = store.import_plan(
+        "incremental-successor",
+        response,
+        claim_id=claim["claimId"],
+    )
+    preview = imported["executionPreviews"]["yolo"]["worktree"]
+    assert preview["schemaVersion"] == 3
+    assert preview["baseSha"] == predecessor_head
+    assert preview["revisionAuthority"]["revisionInputSha256"] == (
+        imported["request"]["revisionInputSha256"]
+    )
+
+    plan, plan_path, approval, receipt, request = store.approved_plan(
+        "incremental-successor",
+        imported["request"]["planDigest"],
+        execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+    )
+    successor_id = "successor-session"
+    successor_snapshot = prepare_workspace(
+        config,
+        plan,
+        session_id=successor_id,
+        expected_execution_digest=preview["executionDigest"],
+        approval_mode="yolo",
+        workspace_target="worktree",
+        revision_authority=store.revision_authority(
+            "incremental-successor"
+        ),
+    )
+    successor_path = Path(successor_snapshot["worktreePath"])
+    assert (successor_path / "src/value.py").read_text() == "VALUE = 2\n"
+    successor_dir = config.artifacts_dir / plan.plan_id / successor_id
+    successor = Session(
+        successor_dir,
+        plan,
+        session_id=successor_id,
+    )
+    successor.set_sources(
+        config_source=config.source,
+        plan_source=plan_path,
+    )
+    successor.attach_workspace(
+        successor_snapshot,
+        execution_approval=_approval(preview),
+    )
+    successor.attach_commander(
+        request_id="incremental-successor",
+        approval=approval.to_json(),
+        planning_receipt=receipt,
+        revision_of=request["revisionOf"],
+        revision_input=store.revision_input(
+            "incremental-successor"
+        ),
+        revision_input_sha256=request["revisionInputSha256"],
+    )
+    outcome = execute_plan(
+        config,
+        plan,
+        session_dir=successor_dir,
+        approval_poll_seconds=0.01,
+    )
+    assert outcome.state["status"] == "completed"
+    assert (successor_path / "src/value.py").read_text() == "VALUE = 3\n"
+    assert outcome.state["revisionDepth"] == 1
+    assert outcome.state["inheritedBaseSha"] == predecessor_head
+    assert (successor_dir / "revision-input.json").is_file()
+    result = json.loads(
+        (successor_dir / "frontier-result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert result["incrementalRevision"]["inheritedBaseSha"] == (
+        predecessor_head
+    )
+    assert result["incrementalRevision"]["carriedTasks"][0][
+        "taskId"
+    ] == "carry-value"
+    assert result["incrementalRevision"]["predecessorEvidence"] == {
+        "status": "completed",
+        "unfinishedSubgraph": [],
+        "integrationFailures": [],
+        "frontierReview": revision_input["frontierReview"],
+    }
+    compact = json.loads(
+        (successor_dir / "frontier-review-input.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert compact["incrementalRevision"][
+        "predecessorEvidence"
+    ]["status"] == "completed"
+    assert compact["incrementalRevision"]["predecessorEvidence"][
+        "frontierReview"
+    ]["findings"][0]["id"] == "finish-follow-up"
+    carried_state = outcome.state["carriedTasks"]
+    outcome.state["carriedTasks"] = []
+    with pytest.raises(
+        RuntimeError,
+        match="session state differs",
+    ):
+        outcome.write_frontier_result()
+    outcome.state["carriedTasks"] = carried_state
+    assert snapshot["headSha"] != predecessor_head
+
+    with pytest.raises(CommanderError, match="limited to one"):
+        store.create_request(
+            "Try to carry the chain forward again.",
+            revision_of=f"{plan.plan_id}/{successor_id}",
+            request_id="second-successor",
+        )
+
+
+def test_incremental_revision_plan_cannot_repeat_carried_task_id(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, plan, session_dir, _snapshot = (
+        _completed_revision_base(tmp_path)
+    )
+    state = json.loads(
+        (session_dir / "session.json").read_text(encoding="utf-8")
+    )
+    store = CommanderStore(config)
+    store.create_request(
+        "Continue without recreating completed work.",
+        revision_of=f"{plan.plan_id}/{state['sessionId']}",
+        request_id="repeated-task",
+    )
+    claim = store.claim_plan("repeated-task")
+    response = tmp_path / "repeated-task-plan.json"
+    response.write_text(
+        json.dumps(_revision_plan(
+            "bad-revision",
+            "carry-value",
+            old_value=2,
+            new_value=3,
+        )),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        CommanderError,
+        match="repeats carried task IDs",
+    ):
+        store.import_plan(
+            "repeated-task",
+            response,
+            claim_id=claim["claimId"],
+        )
+    assert store.request_detail("repeated-task")["request"][
+        "status"
+    ] == "plan_invalid"
+
+
+def test_incremental_revision_claim_rejects_dirty_inspection_tree(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, plan, session_dir, snapshot = (
+        _completed_revision_base(tmp_path)
+    )
+    state = json.loads(
+        (session_dir / "session.json").read_text(encoding="utf-8")
+    )
+    store = CommanderStore(config)
+    store.create_request(
+        "Continue from the validated predecessor tree.",
+        revision_of=f"{plan.plan_id}/{state['sessionId']}",
+        request_id="dirty-inspection",
+    )
+    Path(snapshot["worktreePath"], "untracked.txt").write_text(
+        "not part of the carried commit\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(
+        CommanderError,
+        match="outside the artifact ledger",
+    ):
+        store.claim_plan("dirty-inspection")
+
+
+def test_incremental_revision_waits_for_claimed_frontier_review(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, plan, session_dir, _snapshot = (
+        _completed_revision_base(tmp_path)
+    )
+    state = json.loads(
+        (session_dir / "session.json").read_text(encoding="utf-8")
+    )
+    store = CommanderStore(config)
+    review_claim = store.claim_review(session_dir)
+
+    with pytest.raises(CommanderError, match="review is claimed"):
+        store.create_request(
+            "Continue after the review ledger is settled.",
+            revision_of=f"{plan.plan_id}/{state['sessionId']}",
+            request_id="claimed-review-successor",
+        )
+
+    store.release_review_claim(
+        session_dir,
+        review_claim["claimId"],
+    )
+    created = store.create_request(
+        "Continue after the review claim is released.",
+        revision_of=f"{plan.plan_id}/{state['sessionId']}",
+        request_id="released-review-successor",
+    )
+    assert created["request"]["status"] == "awaiting_plan"
+
+
+def test_unbound_revision_request_cannot_be_loaded_or_claimed(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, plan, session_dir, _snapshot = (
+        _completed_revision_base(tmp_path)
+    )
+    state_path = session_dir / "session.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    store = CommanderStore(config)
+    store.create_request(
+        "Create one durably linked successor.",
+        revision_of=f"{plan.plan_id}/{state['sessionId']}",
+        request_id="durable-successor",
+    )
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state.pop("supersededByRequestId")
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(CommanderError, match="durably bound"):
+        store.claim_plan("durable-successor")
+
+
+def test_incremental_revision_allows_only_one_concurrent_successor(
+    tmp_path: Path,
+) -> None:
+    _repo_path, config, plan, session_dir, _snapshot = (
+        _completed_revision_base(tmp_path)
+    )
+    state = json.loads(
+        (session_dir / "session.json").read_text(encoding="utf-8")
+    )
+    store = CommanderStore(config)
+    barrier = threading.Barrier(3)
+    successes: list[str] = []
+    failures: list[str] = []
+
+    def create(request_id: str) -> None:
+        barrier.wait()
+        try:
+            store.create_request(
+                "Create the only allowed carried-forward successor.",
+                revision_of=f"{plan.plan_id}/{state['sessionId']}",
+                request_id=request_id,
+            )
+            successes.append(request_id)
+        except CommanderError as exc:
+            failures.append(str(exc))
+
+    threads = [
+        threading.Thread(target=create, args=(f"successor-{index}",))
+        for index in range(2)
+    ]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join(timeout=10)
+
+    assert len(successes) == 1
+    assert len(failures) == 1
+    predecessor = json.loads(
+        (session_dir / "session.json").read_text(encoding="utf-8")
+    )
+    assert predecessor["supersededByRequestId"] == successes[0]
+
+
 def test_schema_v3_deterministic_edit_bypasses_local_model(
     tmp_path: Path,
 ) -> None:
@@ -1759,6 +2254,7 @@ def test_yolo_worktree_reverts_repairs_once_and_preserves_failed_artifact(
         config,
         plan,
         session_dir=session_dir,
+        max_repair=1,
         backend=backend,
         approval_poll_seconds=0.01,
     )
@@ -2165,6 +2661,15 @@ def test_final_evidence_failure_is_recoverable_and_not_review_eligible(
         b"local report"
     ).hexdigest()
     assert completed_packet["tasks"]["report"]["output"] == "local report"
+    revision = CommanderStore(config).create_request(
+        "Continue while retaining the completed local report.",
+        revision_of=f"{plan.plan_id}/{session_id}",
+        request_id="report-successor",
+    )
+    carried_report = revision["revisionInput"]["carriedTasks"][0]
+    assert carried_report["taskId"] == "report"
+    assert carried_report["outputExcerpt"] == "local report"
+    assert carried_report["outputTruncated"] is False
 
 
 def test_failed_checkout_rejection_remains_replayable_after_cleanup(
@@ -2347,6 +2852,7 @@ def test_structural_patch_failure_uses_bounded_local_repair(
             config,
             plan,
             session_dir=session_dir,
+            max_repair=1,
             backend=backend,
             approval_poll_seconds=0.01,
         )),

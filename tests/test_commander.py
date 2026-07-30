@@ -16,6 +16,7 @@ from mlx_swarm.commander import (
     CommanderError,
     CommanderStore,
     build_plan_prompt,
+    build_review_input,
     canonical_json_sha256,
     frontier_usage,
 )
@@ -462,13 +463,16 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     assert "edit-manifest-v1" in prompt
     assert "verification may contain only these profile IDs: unit" in prompt
     assert "workers never receive or produce command arrays" in prompt
-    assert "target 350 to 500 expected output" in prompt
-    assert "most 800" in prompt
+    assert "target 350 to 700 expected output" in prompt
+    assert "most 1024" in prompt
     assert "deterministic-edit" in prompt
     assert "contextRefs" in prompt
     assert "pairwise disjoint" in prompt
-    assert "For review tasks, set max_tokens to at most 1000" in prompt
-    assert "For report tasks, set max_tokens to at most 1800" in prompt
+    assert "Every local-agent task uses maxRepairAttempts 0" in prompt
+    assert "aggregate rendered prompt budget per physical batch: 49152" in prompt
+    assert "never divide it into fixed per-agent" in prompt
+    assert "For review tasks, normally set max_tokens to at most 768" in prompt
+    assert "For report tasks, normally set max_tokens to at most 1536" in prompt
 
     claim = store.claim_plan(request_id)
     response = tmp_path / "workspace-response.json"
@@ -724,13 +728,31 @@ def test_digest_bound_approval_and_completed_review_flow(
     session._save()
 
     packet = json.loads(result_path.read_text(encoding="utf-8"))
+    compact = json.loads(
+        (session_dir / "frontier-review-input.json").read_text(
+            encoding="utf-8"
+        )
+    )
     assert packet["schemaVersion"] == 2
     assert packet["requiresFrontierReview"] is True
     assert packet["planContract"] == _plan()
     assert packet["tasks"]["build"]["gateResult"]["passed"] is True
     assert packet["localUsage"]["generationCalls"] == 0
+    assert compact == build_review_input(packet)
+    assert compact["sourceArtifact"]["sha256"] == (
+        canonical_json_sha256(packet)
+    )
+    assert compact["tasks"][0]["output"] == "RESULT"
+    assert "planContract" not in compact
+    assert "Return RESULT." not in json.dumps(compact, sort_keys=True)
 
     claim = store.claim_review(session_dir)
+    assert claim["frontierReviewInput"].endswith(
+        "frontier-review-input.json"
+    )
+    assert claim["inputArtifactSha256"] == canonical_json_sha256(
+        compact
+    )
     review_response = tmp_path / "review.json"
     review_response.write_text(
         json.dumps({
@@ -765,7 +787,7 @@ def test_digest_bound_approval_and_completed_review_flow(
     assert reviewed["frontierUsage"]["total"]["usageStatus"] == "unavailable"
     assert (
         reviewed["receipt"]["inputArtifactSha256"]
-        == canonical_json_sha256(packet)
+        == canonical_json_sha256(compact)
     )
     state = json.loads((session_dir / "session.json").read_text())
     assert state["status"] == "completed"
@@ -809,6 +831,112 @@ def test_digest_bound_approval_and_completed_review_flow(
 
     with pytest.raises(CommanderError, match="already"):
         store.claim_review(session_dir)
+
+
+@pytest.mark.parametrize("tampered_artifact", ["compact", "full"])
+def test_review_rejects_compact_or_full_packet_tampering_after_claim(
+    tmp_path: Path,
+    tampered_artifact: str,
+) -> None:
+    config = _workspace(tmp_path)
+    store = CommanderStore(config)
+    request_id, detail = _import_plan(store, tmp_path)
+    plan, plan_path, approval, receipt, _request = store.approved_plan(
+        request_id,
+        detail["request"]["planDigest"],
+    )
+    session_id = f"tamper-{tampered_artifact}"
+    session_dir = config.artifacts_dir / plan.plan_id / session_id
+    session = Session(session_dir, plan, session_id=session_id)
+    session.set_sources(config_source=config.source, plan_source=plan_path)
+    session.attach_commander(
+        request_id=request_id,
+        approval=approval.to_json(),
+        planning_receipt=receipt,
+    )
+    session.update_task(
+        "build",
+        status="completed",
+        output="RESULT",
+        normalizedOutput="RESULT",
+    )
+    session.set_status("completed")
+    session.write_frontier_result()
+    claim = store.claim_review(session_dir)
+
+    artifact_path = session_dir / (
+        "frontier-review-input.json"
+        if tampered_artifact == "compact"
+        else "frontier-result.json"
+    )
+    artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
+    artifact["objective"] = "tampered after claim"
+    artifact_path.write_text(
+        json.dumps(artifact),
+        encoding="utf-8",
+    )
+    response = tmp_path / f"{tampered_artifact}-review.json"
+    response.write_text(json.dumps({
+        "schemaVersion": 1,
+        "sessionId": session_id,
+        "planId": plan.plan_id,
+        "verdict": "approved",
+        "summary": "Looks good.",
+        "findings": [],
+    }), encoding="utf-8")
+
+    with pytest.raises(CommanderError, match="sealed"):
+        store.import_review(
+            session_dir,
+            response,
+            claim_id=claim["claimId"],
+        )
+    assert store.review_detail(session_dir)["reviewStatus"] == (
+        "review_error"
+    )
+
+
+def test_legacy_review_prompt_remains_bound_to_full_result(
+    tmp_path: Path,
+) -> None:
+    config = _workspace(tmp_path)
+    store = CommanderStore(config)
+    request_id, detail = _import_plan(store, tmp_path)
+    plan, plan_path, approval, receipt, _request = store.approved_plan(
+        request_id,
+        detail["request"]["planDigest"],
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / "legacy-review"
+    session = Session(session_dir, plan, session_id="legacy-review")
+    session.set_sources(config_source=config.source, plan_source=plan_path)
+    session.attach_commander(
+        request_id=request_id,
+        approval=approval.to_json(),
+        planning_receipt=receipt,
+    )
+    session.update_task(
+        "build",
+        status="completed",
+        output="RESULT",
+        normalizedOutput="RESULT",
+    )
+    session.set_status("completed")
+    result_path = session.write_frontier_result()
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    (session_dir / "frontier-review-input.json").unlink()
+    (session_dir / "frontier-review-prompt.txt").write_text(
+        commander_module._build_legacy_review_prompt(result),
+        encoding="utf-8",
+    )
+
+    claim = store.claim_review(session_dir)
+
+    assert claim["frontierReviewInput"].endswith(
+        "frontier-result.json"
+    )
+    assert claim["inputArtifactSha256"] == canonical_json_sha256(
+        result
+    )
 
 
 def test_partial_session_is_not_review_eligible(tmp_path: Path) -> None:

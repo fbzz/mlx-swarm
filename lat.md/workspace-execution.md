@@ -34,6 +34,14 @@ supervised and checkout execution use `pause`. Checkout is valid only with YOLO.
 Approval submits this digest and the independent canonical plan digest. See
 [[src/mlx_swarm/workspace.py#execution_preview]].
 
+Contract version 3 is used only for an incremental revision successor. It adds
+the frozen `revisionAuthority`: predecessor lineage, predecessor execution
+digest and branch, `revision-input.json` digest, and validated predecessor head.
+That head replaces current checkout `HEAD` as the new `baseSha`, and all of
+these fields are covered by the successor execution digest. Preview additionally
+requires the predecessor branch still to point to that head. The successor is
+worktree-only and receives fresh plan and execution approval.
+
 ## Typed task artifacts
 
 Workspace tasks require:
@@ -63,8 +71,9 @@ verification lifecycle. The worktree is not changed during materialization.
 Schema-v3 local mutations must use edit manifests. If the frontier already
 knows the exact bytes, `executionMode: deterministic-edit` stores the manifest
 in the plan and materializes it with zero model calls or repair attempts.
-Otherwise `executionMode: local-agent` permits bounded worker repair and
-preflights expected output at no more than 70% of the generation ceiling.
+Otherwise `executionMode: local-agent` permits bounded agent repair only when
+the task and CLI both opt in with positive budgets, and preflights expected
+output at no more than 70% of the generation ceiling.
 `contextRefs` limits each prompt to its owned authoritative sources and
 `interfaceContract` freezes the boundary it must preserve.
 
@@ -83,6 +92,11 @@ untrusted data. See [[Prompting]].
 Approval records the current branch/HEAD and any staged, unstaged, or untracked
 source warning. The default session starts at that committed SHA in an isolated
 worktree, so dirty source state is excluded.
+
+An authorized incremental successor instead starts its isolated worktree from
+the validated retained predecessor head. The predecessor commits are therefore
+present through Git ancestry; completed predecessor tasks are not rerun or
+inserted into the successor DAG.
 
 MLX Swarm creates:
 
@@ -176,6 +190,16 @@ and retains every plan, artifact, receipt, and log. A held main-checkout lease
 is released only when no task is applying/verifying and no applied commit
 remains unresolved.
 
+Carry-forward is allowed for one successor only, and only from a terminal,
+clean, retained isolated worktree whose branch matches the validated workspace
+head. Before creating `revision-input.json`, MLX Swarm revalidates the
+predecessor execution snapshot and approval, every completed artifact and
+receipt, commit ancestry, and the absence of an unresolved applied commit.
+The packet records compact completed-task evidence and the unfinished subgraph.
+The frontier must plan only unfinished/remediation tasks with new IDs. A
+nonterminal, cleaned, dirty, moved, corrupt, or second-generation predecessor
+is refused; generation-only and main-checkout revisions remain lineage-only.
+
 Completed workspace runs emit `frontier-result.json` schema version 3 with
 base/head/branch lineage, execution approval, applied manifests, apply and
 verification receipts, immutable review/report manifests and payload digests,
@@ -184,6 +208,13 @@ merged log by SHA-256 and byte count and strictly validates exit, timeout,
 cleanup, lineage, profile, and workspace-cleanliness semantics. Legacy v1
 receipts remain readable.
 Partial/rejected runs remain ineligible for frontier review.
+
+A completed run also emits `frontier-review-input.json`, a deterministic compact
+projection containing the final diff, changed paths, applied-artifact and
+receipt digests, concise verification outcomes, and relevant non-mutating
+outputs. The full result remains the audit artifact and is bound by
+`sourceArtifact.sha256`; the compact packet's own digest binds the review claim
+and receipt.
 
 Terminal cleanup removes only an isolated session worktree. The session branch
 remains for manual inspection or external promotion. Checkout cleanup is

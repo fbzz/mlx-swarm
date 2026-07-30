@@ -20,8 +20,12 @@ Session state transitions from creation to completion.
    completed/rejected/failed. Workspace tasks may additionally pause at
    awaiting_approval or verification_failed and pass through applying and
    verifying.
-3. **Finished**: Final status is set to "completed", "partial", or "failed", then one frontier-result packet is written.
-4. **Reviewed**: Completed sessions may receive one separate [[Commander|frontier review]]; local status never changes.
+3. **Finished**: Final status is set to "completed", "partial", or "failed",
+   then the full `frontier-result.json` audit packet is written. A completed
+   session also emits compact `frontier-review-input.json`.
+4. **Reviewed**: Completed sessions may receive one separate
+   [[Commander|frontier review]] from that compact, digest-bound input; local
+   status never changes.
 
 ## State Structure
 
@@ -39,13 +43,24 @@ JSON shape persisted to session.json on disk.
   "approvalMode": "yolo",
   "workspaceTarget": "worktree",
   "commanderRequestId": "request-...",
+  "revisionOf": "prior-plan/prior-session",
+  "revisionDepth": 1,
+  "revisionInputSha256": "...",
+  "inheritedBaseSha": "...",
+  "carriedTasks": [
+    {
+      "taskId": "completed-task",
+      "artifactSha256": "...",
+      "commitSha": "..."
+    }
+  ],
   "planApproval": {
     "planSha256": "...",
     "executionSha256": "...",
     "executionPolicySha256": "..."
   },
   "retryOf": "my-plan/20260727T110000Z-12345678",
-  "maxRepair": 2,
+  "maxRepair": 0,
   "planSnapshot": "plan.snapshot.json",
   "tasks": {
     "task-id": {
@@ -93,12 +108,17 @@ Methods for reading and updating session state.
 - **replay_prompt**: Load a saved evaluation prompt only after verifying its
   session-confined path and SHA-256.
 - **export_results**: Export completed artifacts and compact failure metadata.
-- **attach_commander**: Snapshot the planning receipt, digest approval, and optional revision lineage.
+- **attach_commander**: Snapshot the planning receipt, digest approval, optional
+  revision lineage, and digest-validated `revision-input.json` carry-forward
+  evidence.
 - **attach_workspace**: Persist the immutable execution contract, execution
   policy, Git lineage, branch/execution path, and digest-bound approval.
 - **write_frontier_result**: Persist the self-contained v2 generation packet or
-  v3 completed-workspace packet; rejected raw generations are omitted and
-  compact local usage remains separate from frontier receipts.
+  v3 workspace packet; rejected raw generations are omitted and compact local
+  usage remains separate from frontier receipts. For completed sessions, also
+  derive `frontier-review-input.json`, whose `sourceArtifact.sha256` binds the
+  retained full packet and whose own canonical digest binds review claim and
+  receipt.
 
 Before local generation, the session also seals `localExecutionProfile`: the
 resolved model path and content fingerprint, batch limits, worker capability
@@ -118,3 +138,8 @@ review/report artifacts, the selected target/policy digest, and the final
 base-to-head branch diff. If strict completed evidence is missing or corrupt,
 the executor seals a partial diagnostic packet with the finalization error
 instead of falsely marking the run completed. See [[workspace-execution]].
+
+An incremental successor additionally snapshots `revision-input.json` and its
+digest, inherited predecessor head, depth, and carried completed-task evidence.
+It does not copy completed tasks into the successor DAG: the validated Git head
+and evidence packet are the carry-forward boundary.

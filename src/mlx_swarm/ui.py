@@ -26,6 +26,7 @@ from .commander import (
     CommanderStore,
     PlanApproval,
     canonical_json_sha256,
+    validate_frontier_receipt,
 )
 from .contracts import (
     ContractError,
@@ -42,6 +43,7 @@ from .model_identity import model_metadata
 from .workspace import (
     WorkspaceError,
     cleanup_session_worktree,
+    cleanup_worktree,
     execution_policy,
     execution_preview,
     execution_previews,
@@ -446,6 +448,68 @@ class CockpitApp:
         else:
             plan, plan_path = plan_override
 
+        if commander_evidence is not None:
+            try:
+                validated_receipt = validate_frontier_receipt(
+                    commander_evidence["planningReceipt"],
+                    expected_phase="plan",
+                    expected_artifact_sha256=canonical_json_sha256(
+                        plan.raw
+                    ),
+                )
+                revision_input = commander_evidence.get("revisionInput")
+                revision_digest = commander_evidence.get(
+                    "revisionInputSha256"
+                )
+                revision_authority = commander_evidence.get(
+                    "revisionAuthority"
+                )
+                if revision_input is None:
+                    if (
+                        revision_digest is not None
+                        or revision_authority is not None
+                    ):
+                        raise CommanderError(
+                            "Incremental revision evidence is incomplete."
+                        )
+                else:
+                    actual_revision_digest = canonical_json_sha256(
+                        revision_input
+                    )
+                    expected_authority = {
+                        "revisionOf": commander_evidence.get(
+                            "revisionOf"
+                        ),
+                        "revisionInputSha256": actual_revision_digest,
+                        "predecessorExecutionDigest": revision_input.get(
+                            "predecessorExecutionDigest"
+                        ),
+                        "predecessorBranch": revision_input.get(
+                            "predecessorBranch"
+                        ),
+                        "baseSha": revision_input.get("baseSha"),
+                    }
+                    if (
+                        revision_digest != actual_revision_digest
+                        or not isinstance(revision_authority, dict)
+                        or any(
+                            revision_authority.get(key) != value
+                            for key, value in expected_authority.items()
+                        )
+                    ):
+                        raise CommanderError(
+                            "Incremental revision authority is invalid."
+                        )
+                commander_evidence = {
+                    **commander_evidence,
+                    "planningReceipt": validated_receipt,
+                }
+            except (CommanderError, KeyError, TypeError) as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    f"Commander launch evidence is invalid: {exc}",
+                ) from exc
+
         run_id = _run_id()
         session_dir = self.artifacts_dir / plan.plan_id / run_id
         workspace_snapshot = None
@@ -494,6 +558,11 @@ class CockpitApp:
                     expected_execution_digest=approved_execution_digest,
                     approval_mode=approval_mode,
                     workspace_target=workspace_target,
+                    revision_authority=(
+                        commander_evidence.get("revisionAuthority")
+                        if commander_evidence is not None
+                        else None
+                    ),
                 )
             except WorkspaceError as exc:
                 raise APIError(HTTPStatus.CONFLICT, str(exc)) from exc
@@ -534,44 +603,78 @@ class CockpitApp:
                         ],
                     ),
                 }
-        session = Session(
-            session_dir,
-            plan,
-            session_id=run_id,
-            retry_of=retry_of,
-            launch_source=(
-                "commander"
-                if commander_evidence is not None
-                else "ui"
-            ),
-        )
-        session.set_sources(
-            config_source=self.config.source,
-            plan_source=plan_path,
-        )
-        session.state["maxRepair"] = max_repair
-        session._save()
-        if workspace_snapshot is not None:
-            assert execution_approval is not None
-            session.attach_workspace(
-                workspace_snapshot,
-                execution_approval=execution_approval,
+        session = None
+        try:
+            session = Session(
+                session_dir,
+                plan,
+                session_id=run_id,
+                retry_of=retry_of,
+                launch_source=(
+                    "commander"
+                    if commander_evidence is not None
+                    else "ui"
+                ),
             )
-        if commander_evidence is not None:
-            approval = commander_evidence["approval"]
-            session.attach_commander(
-                request_id=commander_evidence["requestId"],
-                approval=approval.to_json(),
-                planning_receipt=commander_evidence["planningReceipt"],
-                revision_of=commander_evidence.get("revisionOf"),
+            session.set_sources(
+                config_source=self.config.source,
+                plan_source=plan_path,
             )
-            if mark_commander_launched:
-                self.commander.mark_launched(
-                    commander_evidence["requestId"],
-                    approval,
-                    plan_id=plan.plan_id,
-                    session_id=run_id,
+            session.state["maxRepair"] = max_repair
+            session._save()
+            if workspace_snapshot is not None:
+                assert execution_approval is not None
+                session.attach_workspace(
+                    workspace_snapshot,
+                    execution_approval=execution_approval,
                 )
+            if commander_evidence is not None:
+                approval = commander_evidence["approval"]
+                session.attach_commander(
+                    request_id=commander_evidence["requestId"],
+                    approval=approval.to_json(),
+                    planning_receipt=commander_evidence[
+                        "planningReceipt"
+                    ],
+                    revision_of=commander_evidence.get("revisionOf"),
+                    revision_input=commander_evidence.get(
+                        "revisionInput"
+                    ),
+                    revision_input_sha256=commander_evidence.get(
+                        "revisionInputSha256"
+                    ),
+                )
+                if mark_commander_launched:
+                    self.commander.mark_launched(
+                        commander_evidence["requestId"],
+                        approval,
+                        plan_id=plan.plan_id,
+                        session_id=run_id,
+                    )
+        except Exception as exc:
+            if session is not None:
+                session.state["launchError"] = str(exc)
+                session.state["pauseReason"] = (
+                    "launch_evidence_attachment_failed"
+                )
+                session.set_status("failed")
+            if (
+                workspace_snapshot is not None
+                and workspace_target == "worktree"
+            ):
+                try:
+                    cleanup_snapshot = (
+                        load_workspace_snapshot(session_dir)
+                        if (session_dir / "workspace.snapshot.json").is_file()
+                        else workspace_snapshot
+                    )
+                    cleanup_worktree(cleanup_snapshot)
+                    if session is not None:
+                        session.update_workspace(cleanup_snapshot)
+                except WorkspaceError:
+                    pass
+            raise
+        assert session is not None
         self._spawn(
             session,
             [
@@ -632,6 +735,15 @@ class CockpitApp:
                     "approval": approval,
                     "planningReceipt": receipt,
                     "revisionOf": request.get("revisionOf"),
+                    "revisionInput": self.commander.revision_input(
+                        request_id
+                    ),
+                    "revisionInputSha256": request.get(
+                        "revisionInputSha256"
+                    ),
+                    "revisionAuthority": self.commander.revision_authority(
+                        request_id
+                    ),
                 },
                 mark_commander_launched=True,
                 plan_digest=plan_digest,
@@ -644,6 +756,77 @@ class CockpitApp:
         session_dir, state = self._load_run_state(plan_id, session_id)
         if self._runner_active(state):
             raise APIError(HTTPStatus.CONFLICT, "Run is already active.")
+        if state.get("launchSource") == "commander":
+            request_id = state.get("commanderRequestId")
+            if (
+                not isinstance(request_id, str)
+                or not isinstance(state.get("planApproval"), dict)
+                or not (
+                    session_dir / "frontier-plan-receipt.json"
+                ).is_file()
+            ):
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "Commander evidence attachment is incomplete; this run "
+                    "cannot be resumed.",
+                )
+            try:
+                request = self.commander.request_detail(request_id)[
+                    "request"
+                ]
+            except CommanderError as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    f"Commander evidence is invalid: {exc}",
+                ) from exc
+            request_ref = request.get("sessionRef")
+            current_ref = f"{plan_id}/{session_id}"
+            bound_to_request = request_ref == current_ref
+            cursor_state = state
+            seen: set[str] = set()
+            while (
+                not bound_to_request
+                and isinstance(cursor_state.get("retryOf"), str)
+                and len(seen) < 128
+            ):
+                parent_ref = cursor_state["retryOf"]
+                if parent_ref == request_ref:
+                    bound_to_request = True
+                    break
+                if parent_ref in seen or parent_ref.count("/") != 1:
+                    break
+                seen.add(parent_ref)
+                parent_plan, parent_session = parent_ref.split("/", 1)
+                try:
+                    _parent_dir, parent_state = self._load_run_state(
+                        parent_plan,
+                        parent_session,
+                    )
+                except APIError:
+                    break
+                if (
+                    parent_state.get("commanderRequestId")
+                    != request_id
+                ):
+                    break
+                cursor_state = parent_state
+            if (
+                request.get("status") != "launched"
+                or not bound_to_request
+            ):
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "Commander request is not durably bound to this run.",
+                )
+            if state.get("revisionInputSha256") is not None and (
+                not (session_dir / "revision-input.json").is_file()
+                or not (session_dir / "workspace.snapshot.json").is_file()
+            ):
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "Incremental revision authority is incomplete; this run "
+                    "cannot be resumed.",
+                )
         if state.get("status") not in {
             "pending",
             "running",
@@ -654,9 +837,9 @@ class CockpitApp:
                 "Only interrupted or pending runs can be resumed.",
             )
         session = Session.load(session_dir, self.config)
-        max_repair = state.get("maxRepair", 2)
+        max_repair = state.get("maxRepair", 0)
         if not isinstance(max_repair, int) or isinstance(max_repair, bool):
-            max_repair = 2
+            max_repair = 0
         self._spawn(
             session,
             [
@@ -735,9 +918,38 @@ class CockpitApp:
                     "approval": approval,
                     "planningReceipt": _read_json_file(receipt_path),
                     "revisionOf": state.get("revisionOf"),
+                    "revisionInput": self.commander.revision_input(
+                        request_id
+                    ),
+                    "revisionInputSha256": state.get(
+                        "revisionInputSha256"
+                    ),
+                    "revisionAuthority": self.commander.revision_authority(
+                        request_id
+                    ),
                 }
-            except (KeyError, OSError, ValueError):
+            except CommanderError as exc:
+                raise APIError(
+                    HTTPStatus.CONFLICT,
+                    "Incremental commander evidence is invalid: "
+                    f"{exc}",
+                ) from exc
+            except (KeyError, OSError, ValueError) as exc:
+                if state.get("revisionInputSha256") is not None:
+                    raise APIError(
+                        HTTPStatus.CONFLICT,
+                        "Incremental commander evidence is incomplete.",
+                    ) from exc
                 commander_evidence = None
+        if (
+            state.get("revisionInputSha256") is not None
+            and commander_evidence is None
+        ):
+            raise APIError(
+                HTTPStatus.CONFLICT,
+                "Incremental revisions cannot be retried without their "
+                "commander and revision authority.",
+            )
         return self.launch_run(
             plan.plan_id,
             max_repair,
@@ -1411,7 +1623,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     self.app.launch_run(
                         _required_text(body, "planId"),
-                        body.get("maxRepair", 2),
+                        body.get("maxRepair", 0),
                         plan_digest=body.get("planDigest"),
                         execution_digest=body.get("executionDigest"),
                         approval_mode=body.get(
@@ -1444,7 +1656,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                         self.app.approve_commander_run(
                             request_id,
                             _required_text(body, "planDigest"),
-                            body.get("maxRepair", 2),
+                            body.get("maxRepair", 0),
                             body.get("executionDigest"),
                             body.get("approvalMode", "supervised"),
                             body.get("workspaceTarget", "worktree"),
@@ -1511,7 +1723,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                         self.app.retry_run(
                             plan_id,
                             session_id,
-                            body.get("maxRepair", 2),
+                            body.get("maxRepair", 0),
                             execution_digest=body.get("executionDigest"),
                             approval_mode=body.get("approvalMode"),
                             workspace_target=body.get("workspaceTarget"),

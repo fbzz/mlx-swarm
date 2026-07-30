@@ -23,7 +23,7 @@ See [[src/mlx_swarm/backend.py#_resolve_model_path]].
 4. Render every request through the tokenizer's native chat template.
    When thinking is disabled, templates that forcibly open a thinking block are closed in the assistant prefix so reasoning cannot consume the artifact budget.
 5. For strict JSON and edit-manifest tasks, default to deterministic sampling
-   and an 800-token completion budget unless the plan explicitly overrides
+   and a 1024-token completion budget unless the plan explicitly overrides
    them. This improves small-model structure reliability and avoids needless
    sampler fragmentation.
 6. Reject a request when its rendered prompt tokens plus requested generation
@@ -44,10 +44,10 @@ See [[src/mlx_swarm/backend.py#generate_batch]].
 
 Each role has default generation parameters (temperature, top_p, max_tokens). Validated overrides apply per task; batches never silently inherit the first task's configuration. The seed is set per compatible group for reproducibility. See [[Plans]].
 
-The calibrated interactive default is four workers. Eight remains an explicit
-throughput option; the contract accepts one through thirty-two workers. Raising
-the configured worker count changes chunk width, not the number of simultaneously
-resident model copies.
+The measured default is two agents with a 1024-token prefill step and a
+49,152-token aggregate prompt ceiling. The contract still accepts one through
+thirty-two agents. Raising the configured agent count changes chunk width, not
+the number of simultaneously resident model copies.
 
 ## Statistics
 

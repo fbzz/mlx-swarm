@@ -1,6 +1,6 @@
 ---
 name: mlx-swarm-commander
-description: Create strict frontier-authored DAG plans for MLX Swarm commander requests and perform one final review of completed frontier-result.json packets. Use when the user asks to plan, command, continue, wait for, or review an MLX Swarm run without adding frontier calls between local worker waves.
+description: Decide whether MLX Swarm is warranted, create strict frontier-authored DAG plans for qualifying commander requests, and perform one final review of completed runs. Use when the user asks to plan, command, continue, wait for, or review MLX Swarm work; route simple changes to direct Codex implementation instead of invoking Swarm.
 ---
 
 # MLX Swarm Commander
@@ -8,6 +8,44 @@ description: Create strict frontier-authored DAG plans for MLX Swarm commander r
 Use the installed `mlx-swarm` CLI for every state transition. Treat the skill as
 the frontier planning or final-review phase; do not reproduce persistence,
 validation, approval, execution, or claim logic in ad hoc scripts.
+
+## Decide whether to invoke Swarm
+
+Route before creating or claiming a commander request. Do not invoke MLX Swarm
+for a simple change unless the user explicitly requires a governed run. Use the
+ordinary direct Codex edit-and-test workflow when all of these are true:
+
+- the change is confined to one or two files;
+- it is cosmetic, copy-only, local layout, or an obvious mechanical/literal
+  transformation;
+- it does not touch migrations, security, concurrency, external APIs,
+  persistence contracts, or cross-cutting behavior; and
+- one bounded direct verification command can establish correctness.
+
+Briefly tell the user that the work was routed directly because Swarm would add
+more ceremony than safety. Invoke Swarm for substantial multi-file work or
+changes whose integration, isolation, approval, or audit risk justifies a
+governed DAG. Once a commander request has already been approved or launched,
+continue its durable workflow rather than rerouting it mid-session.
+
+## Use the two-agent envelope
+
+Obey the claimed prompt's capability contract if it differs. For the shipped
+Qwen3.5 4B profile, plan at most two runnable local agents per wave, with a
+49,152-token aggregate rendered-prompt budget. The 262,144-token model context
+belongs to each request; never divide it into fixed per-agent slices. Give each
+task only its authoritative context and let the runtime serialize a wave when
+the aggregate budget would be exceeded.
+
+Use deterministic edits when bytes are known, consuming zero model tokens. For
+local patch or test tasks, keep expected output at or below 700 tokens and
+`max_tokens` at or below 1,024. Use 768 for normal reviews, up to 1,024 only
+when evidence-heavy; use 1,536 for reports, up to 2,048 only when genuinely
+indivisible. Set `maxRepairAttempts` to zero. If an artifact could exceed 70%
+of its ceiling, split it before execution. If a result reports
+`hitTokenLimit`, do not request a repair of the same task: split it or
+deliberately raise its bounded ceiling in a new plan. Keep global thinking off;
+use a configured local reasoning stage only as a selective fallback.
 
 ## Prepare a plan
 
@@ -22,11 +60,11 @@ validation, approval, execution, or claim logic in ad hoc scripts.
    workspace execution, use schema version 3 and declare `artifactType`,
    `workerOutputProtocol`, `executionMode`, `contextRefs`,
    `interfaceContract`, `expectedOutputTokens`, `allowedPaths`, and
-   verification profile IDs for every task. Patch and test-suite workers must
-   use `edit-manifest-v1`: workers return strict exact search/replace JSON and
+   verification profile IDs for every task. Patch and test-suite agents must
+   use `edit-manifest-v1`: agents return strict exact search/replace JSON and
    MLX Swarm materializes the operator-visible unified diff. Use
    `deterministic-edit` with an inline manifest when the exact bytes are already
-   known and no worker judgment is required. Review and report tasks are
+   known and no agent judgment is required. Review and report tasks are
    non-mutating. Assign disjoint path ceilings to independent mutating tasks so
    they can share a wave; serialize overlapping ownership. Select only the
    authoritative source labels each task needs, freeze its interface boundary,
@@ -42,7 +80,7 @@ validation, approval, execution, or claim logic in ad hoc scripts.
    It describes local model scale, specialization, measured calibration, and
    the maximum safe delegation level. Never infer stronger capability from the
    model name. For `exact-edit`, retain diagnosis and edit design in this
-   frontier call, then give each mutating worker one mechanical transformation
+   frontier call, then give each mutating agent one mechanical transformation
    with exact file, symbol, source anchors, and old-to-new instructions.
    Complete the mandatory candidate-change specificity gate before emitting the
    plan. Trace the literal proposed edit through the observed failing path and
@@ -82,6 +120,13 @@ may publish its own `source: yolo` decision only because the operator already
 approved that exact execution policy and target digest; the skill never enables
 or changes it.
 
+For a separately approved follow-up to a terminal isolated-worktree run, create
+the successor with `commander create --revision-of PLAN_ID/SESSION_ID`. The
+returned prompt is bound to the predecessor's validated Git head and compact
+`revision-input.json`. Plan only the unfinished or remediation subgraph; never
+repeat carried task IDs. Incremental carry-forward is limited to one successor
+and still requires fresh plan and execution approvals.
+
 ## Perform final review
 
 Only review a completed session:
@@ -92,8 +137,9 @@ Only review a completed session:
 
 2. If the phase is already claimed or reviewed, inspect its status instead of
    creating another result.
-3. Read only the returned `promptPath`, whose review evidence is the completed
-   `frontier-result.json`.
+3. Read only the returned `promptPath`. Its evidence is the compact
+   `frontier-review-input.json`; the embedded source digest binds the retained
+   full `frontier-result.json`.
 4. Produce exactly one FrontierReview JSON object and save it beside the prompt
    as `frontier-review.response.json`.
 5. Import it once:

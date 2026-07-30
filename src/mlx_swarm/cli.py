@@ -16,6 +16,7 @@ from .commander import (
 )
 from .contracts import (
     ContractError,
+    DEFAULT_REASONING_MAX_TOKENS,
     load_config,
     load_plan,
     worker_capabilities_payload,
@@ -74,8 +75,8 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-repair",
         type=_non_negative_int,
-        default=2,
-        help="Global cap on repair attempts per task.",
+        default=0,
+        help="Global cap on opt-in repair attempts per task (default: 0).",
     )
     run_parser.add_argument("--verbose", action="store_true", help="Print full statistics.")
     run_parser.add_argument(
@@ -117,8 +118,8 @@ def _parser() -> argparse.ArgumentParser:
     resume_parser.add_argument(
         "--max-repair",
         type=_non_negative_int,
-        default=2,
-        help="Global cap on repair attempts per task.",
+        default=0,
+        help="Global cap on opt-in repair attempts per task (default: 0).",
     )
     resume_parser.add_argument(
         "--verbose",
@@ -349,7 +350,7 @@ def _parser() -> argparse.ArgumentParser:
     evaluation_replay.add_argument(
         "--reasoning-max-tokens",
         type=_positive_int,
-        default=1200,
+        default=DEFAULT_REASONING_MAX_TOKENS,
     )
     evaluation_replay.add_argument(
         "--adapted-plan-dir",

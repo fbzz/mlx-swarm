@@ -3,17 +3,21 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
 import re
 import uuid
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
 from .contracts import (
+    EXACT_EDIT_EXPECTED_MAX_TOKENS,
+    EXACT_EDIT_MAX_TOKENS,
     MAX_PROMPT_CHARS,
     MAX_REPAIR_ATTEMPTS,
     MAX_TASKS_PER_PLAN,
@@ -27,6 +31,11 @@ from .contracts import (
 
 COMMANDER_SCHEMA_VERSION = 1
 FRONTIER_REVIEW_SCHEMA_VERSION = 1
+FRONTIER_REVIEW_INPUT_SCHEMA_VERSION = 1
+FRONTIER_REVIEW_INPUT_NAME = "frontier-review-input.json"
+REVISION_INPUT_NAME = "revision-input.json"
+REVISION_INPUT_SCHEMA_VERSION = 1
+MAX_INCREMENTAL_REVISION_DEPTH = 1
 MAX_FRONTIER_RESPONSE_BYTES = 1_000_000
 MAX_OBJECTIVE_CHARS = 20_000
 MAX_CONSTRAINTS = 128
@@ -37,6 +46,10 @@ REVIEW_VERDICTS = {"approved", "changes_requested", "rejected"}
 REVIEW_SEVERITIES = {"critical", "high", "medium", "low"}
 USAGE_STATUSES = {"reported", "unavailable"}
 PHASE_STATUSES = {"open", "claimed", "accepted", "invalid"}
+REVIEW_DEFAULT_MAX_TOKENS = 768
+REVIEW_EXCEPTION_MAX_TOKENS = 1024
+REPORT_DEFAULT_MAX_TOKENS = 1536
+REPORT_EXCEPTION_MAX_TOKENS = 2048
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _SAFE_LINEAGE = re.compile(
@@ -356,12 +369,42 @@ def parse_json_response(text: str) -> Any:
 def build_plan_prompt(
     request: dict[str, Any],
     config: SwarmConfig,
+    revision_input: dict[str, Any] | None = None,
 ) -> str:
     """Build the deterministic planning instruction used by all adapters."""
     constraints = "\n".join(
         f"- {constraint}" for constraint in request["constraints"]
     ) or "- None supplied."
     worker_capability_contract = _worker_capability_contract(config)
+    inspection_root = request["workspaceRoot"]
+    revision_contract = ""
+    if revision_input is not None:
+        inspection_root = revision_input["inspectionRoot"]
+        carried_ids = [
+            str(task.get("taskId"))
+            for task in revision_input.get("carriedTasks", [])
+            if isinstance(task, dict)
+        ]
+        revision_contract = f"""
+INCREMENTAL REVISION AUTHORITY
+- This request continues {revision_input["revisionOf"]} from validated Git
+  head {revision_input["baseSha"]}.
+- Inspect the carried source state only at
+  {revision_input["inspectionRoot"]}; it is the clean retained worktree for
+  that exact head, not the potentially different main checkout.
+- The predecessor's completed commits are already present at that head. Do not
+  recreate, restate, or assign tasks with these carried IDs: \
+{", ".join(carried_ids) or "(none)"}.
+- Plan only the unfinished/remediation subgraph described below. A successor
+  task may depend conceptually on carried behavior, but carried tasks are not
+  members of the new DAG.
+- The new execution approval will bind revision input
+  {revision_input["revisionInputSha256"]} and the carried base head. Never
+  substitute the current checkout HEAD.
+
+COMPACT PREDECESSOR EVIDENCE
+{json.dumps(revision_input, ensure_ascii=False, indent=2, sort_keys=True)}
+"""
     workspace_contract = ""
     task_workspace_fields = ""
     integration_shape = ""
@@ -435,8 +478,9 @@ OPERATOR CONSTRAINTS
 {constraints}
 
 APPROVED WORKSPACE ROOT
-{request["workspaceRoot"]}
+{inspection_root}
 
+{revision_contract}
 Inspect only files below the approved workspace root. Put any material source
 text needed by workers into context.authoritativeSources as inline content.
 When a source comes from a workspace file, include its repository-relative
@@ -489,18 +533,33 @@ PLAN LIMITS
 - per-task maxRepairAttempts: 0 to 5; normal default {MAX_REPAIR_ATTEMPTS}.
 - maximum local batch workers: {min(config.batch.max_workers, MAX_WORKERS)}.
 - worker prompt budget: {min(config.batch.max_prompt_characters, MAX_PROMPT_CHARS)} characters.
+- aggregate rendered prompt budget per physical batch: \
+{config.batch.max_batch_prompt_tokens} tokens.
+- Model context belongs to each request; never divide it into fixed per-agent
+  slices. Keep only task-authoritative context and let the aggregate batch
+  budget decide whether two runnable agents share one physical call.
 - use deterministic gates wherever artifact shape can be checked.
 - no task generationOverride.max_tokens may exceed \
 {config.worker.capabilities.max_generation_tokens}.
-- For local-agent patch or test-suite tasks, target 350 to 500 expected output
+- Every local-agent task uses maxRepairAttempts 0. Do not plan blind repair
+  retries; split an oversized task before execution.
+- For local-agent patch or test-suite tasks, target 350 to \
+{EXACT_EDIT_EXPECTED_MAX_TOKENS} expected output
   tokens and set max_tokens to at most \
-{min(800, config.worker.capabilities.max_generation_tokens)}.
-- Reject or deterministically split a local task whose expected output would
-  exceed 70 percent of max_tokens.
-- For review tasks, set max_tokens to at most \
-{min(1000, config.worker.capabilities.max_generation_tokens)}.
-- For report tasks, set max_tokens to at most \
-{min(1800, config.worker.capabilities.max_generation_tokens)}.
+{min(EXACT_EDIT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
+- Reject or deterministically split a local patch or test-suite task whose
+  expected output would exceed 70 percent of max_tokens or \
+{EXACT_EDIT_EXPECTED_MAX_TOKENS} tokens.
+- For review tasks, normally set max_tokens to at most \
+{min(REVIEW_DEFAULT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
+  Use at most \
+{min(REVIEW_EXCEPTION_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}
+  only for an unusually evidence-heavy review.
+- For report tasks, normally set max_tokens to at most \
+{min(REPORT_DEFAULT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
+  Use at most \
+{min(REPORT_EXCEPTION_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}
+  only for a genuinely indivisible artifact.
 {workspace_contract}
 
 TOP-LEVEL SHAPE
@@ -542,7 +601,7 @@ TOP-LEVEL SHAPE
       "generationOverride": {{
         "temperature": 0.0,
         "top_p": 1.0,
-        "max_tokens": {min(800, config.worker.capabilities.max_generation_tokens)}
+        "max_tokens": {min(EXACT_EDIT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}
       }},
       "gate": {{
         "requiredPatterns": [{{"id": "rule-id", "pattern": "regex"}}],
@@ -626,8 +685,250 @@ Delegation policy:
 """
 
 
-def build_review_prompt(frontier_result: dict[str, Any]) -> str:
-    """Build the deterministic final-review prompt from one result packet."""
+def build_review_input(frontier_result: dict[str, Any]) -> dict[str, Any]:
+    """Project one full audit packet into the compact frontier review surface."""
+    tasks_raw = frontier_result.get("tasks")
+    tasks = tasks_raw if isinstance(tasks_raw, dict) else {}
+    workspace_raw = frontier_result.get("workspace")
+    workspace = workspace_raw if isinstance(workspace_raw, dict) else None
+    task_results: list[dict[str, Any]] = []
+    status_counts: dict[str, int] = {}
+    for task_id in sorted(tasks):
+        raw = tasks[task_id]
+        if not isinstance(raw, dict):
+            continue
+        status = str(raw.get("status", "unknown"))
+        status_counts[status] = status_counts.get(status, 0) + 1
+        artifact_type = str(raw.get("artifactType", "report"))
+        item: dict[str, Any] = {
+            "taskId": str(raw.get("id", task_id)),
+            "role": raw.get("role"),
+            "artifactType": artifact_type,
+            "executionMode": raw.get("executionMode"),
+            "status": status,
+            "gatePassed": raw.get("gatePassed"),
+            "violationIds": list(raw.get("violationIds", [])),
+            "repairAttempts": int(raw.get("repairAttempts", 0)),
+            "verificationRecoveryAttempts": int(
+                raw.get("verificationRecoveryAttempts", 0)
+            ),
+        }
+        artifact = raw.get("artifact")
+        if isinstance(artifact, dict):
+            digest = artifact.get("sha256")
+            item["artifactSha256"] = (
+                digest
+                if isinstance(digest, str)
+                else canonical_json_sha256(artifact)
+            )
+        apply_receipt = raw.get("applyReceipt")
+        if isinstance(apply_receipt, dict):
+            item["applyReceipt"] = {
+                "artifactSha256": apply_receipt.get("artifactSha256"),
+                "baseCommit": apply_receipt.get("baseCommit"),
+                "commitSha": apply_receipt.get("commitSha"),
+                "receiptSha256": canonical_json_sha256(apply_receipt),
+            }
+        verification = _compact_verification_receipts(
+            raw.get("verificationResults")
+        )
+        if verification:
+            item["verification"] = verification
+        output = raw.get("output")
+        if (
+            isinstance(output, str)
+            and (
+                workspace is None
+                or artifact_type in {"review", "report"}
+            )
+        ):
+            item["output"] = output
+            item["outputSha256"] = hashlib.sha256(
+                output.encode("utf-8")
+            ).hexdigest()
+        task_results.append(item)
+
+    approval = frontier_result.get("planApproval")
+    plan_evidence: dict[str, Any] = {
+        "planSha256": frontier_result.get("planSha256"),
+        "commanderRequestId": frontier_result.get("commanderRequestId"),
+    }
+    if isinstance(approval, dict):
+        plan_evidence["approval"] = {
+            key: approval.get(key)
+            for key in (
+                "requestId",
+                "planSha256",
+                "executionDigest",
+                "executionPolicySha256",
+                "approvedAt",
+                "source",
+            )
+            if key in approval
+        }
+        plan_evidence["planApprovalSha256"] = canonical_json_sha256(
+            approval
+        )
+    execution_approval = frontier_result.get("executionApproval")
+    if isinstance(execution_approval, dict):
+        plan_evidence["executionApprovalSha256"] = canonical_json_sha256(
+            execution_approval
+        )
+
+    review_input: dict[str, Any] = {
+        "schemaVersion": FRONTIER_REVIEW_INPUT_SCHEMA_VERSION,
+        "kind": "mlx-swarm-frontier-review-input",
+        "sourceArtifact": {
+            "name": "frontier-result.json",
+            "schemaVersion": frontier_result.get("schemaVersion"),
+            "sha256": canonical_json_sha256(frontier_result),
+        },
+        "sessionId": frontier_result.get("sessionId"),
+        "planId": frontier_result.get("planId"),
+        "objective": frontier_result.get("objective"),
+        "status": frontier_result.get("status"),
+        "revisionOf": frontier_result.get("revisionOf"),
+        "incrementalRevision": frontier_result.get(
+            "incrementalRevision"
+        ),
+        "summary": {
+            "totalTasks": len(task_results),
+            "taskStatusCounts": status_counts,
+        },
+        "planEvidence": plan_evidence,
+        "tasks": task_results,
+        "localUsage": frontier_result.get("localUsage"),
+    }
+
+    if workspace is not None:
+        changed_paths: set[str] = set()
+        applied_artifacts: list[dict[str, Any]] = []
+        raw_applied = workspace.get("appliedArtifacts")
+        if isinstance(raw_applied, list):
+            for raw in raw_applied:
+                if not isinstance(raw, dict):
+                    continue
+                manifest = raw.get("manifest")
+                apply_receipt = raw.get("applyReceipt")
+                affected_paths: list[str] = []
+                artifact_sha256 = None
+                if isinstance(manifest, dict):
+                    paths = manifest.get("affectedPaths")
+                    if isinstance(paths, list):
+                        affected_paths = [
+                            str(path)
+                            for path in paths
+                            if isinstance(path, str)
+                        ]
+                        changed_paths.update(affected_paths)
+                    digest = manifest.get("sha256")
+                    if isinstance(digest, str):
+                        artifact_sha256 = digest
+                applied_artifacts.append({
+                    "taskId": raw.get("taskId"),
+                    "artifactSha256": artifact_sha256,
+                    "manifestSha256": (
+                        canonical_json_sha256(manifest)
+                        if isinstance(manifest, dict)
+                        else None
+                    ),
+                    "affectedPaths": affected_paths,
+                    "commitSha": (
+                        apply_receipt.get("commitSha")
+                        if isinstance(apply_receipt, dict)
+                        else None
+                    ),
+                    "applyReceiptSha256": raw.get(
+                        "applyReceiptSha256"
+                    ),
+                    "verificationReceiptSha256": raw.get(
+                        "verificationReceiptSha256",
+                        [],
+                    ),
+                })
+        review_input["workspace"] = {
+            "baseSha": workspace.get("baseSha"),
+            "headSha": workspace.get("headSha"),
+            "branch": workspace.get("branch"),
+            "executionPolicySha256": workspace.get(
+                "executionPolicySha256"
+            ),
+            "changedPaths": sorted(changed_paths),
+            "finalDiff": workspace.get("finalDiff"),
+            "finalDiffSha256": workspace.get("finalDiffSha256"),
+            "appliedArtifacts": applied_artifacts,
+            "integrationVerification": _compact_verification_receipts(
+                frontier_result.get("integrationVerificationResults")
+            ),
+        }
+    return review_input
+
+
+def _compact_verification_receipts(raw: Any) -> list[dict[str, Any]]:
+    """Keep verification outcomes and digests without copying bounded logs."""
+    if not isinstance(raw, list):
+        return []
+    results: list[dict[str, Any]] = []
+    for value in raw:
+        if not isinstance(value, dict):
+            continue
+        results.append({
+            "taskId": value.get("taskId"),
+            "profileId": value.get("profileId"),
+            "attempt": value.get("attempt"),
+            "argv": value.get("argv"),
+            "passed": value.get("passed"),
+            "exitCode": value.get("exitCode"),
+            "timedOut": value.get("timedOut"),
+            "outputSha256": value.get("outputSha256"),
+            "outputBytes": value.get("outputBytes"),
+            "outputTruncated": value.get("outputTruncated"),
+            "receiptSha256": canonical_json_sha256(value),
+        })
+    return results
+
+
+def build_review_prompt(review_input: dict[str, Any]) -> str:
+    """Build the deterministic final-review prompt from compact evidence."""
+    packet = json.dumps(
+        review_input,
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=True,
+    )
+    return f"""You are the final frontier reviewer for MLX Swarm.
+
+Review only the compact frontier-review-input.json packet below. Its
+sourceArtifact.sha256 binds the complete frontier-result.json retained in the
+session audit trail. Do not request another agent wave and do not propose
+mutating this completed session.
+Return exactly one JSON object with this strict shape:
+
+{{
+  "schemaVersion": 1,
+  "sessionId": "{review_input.get("sessionId", "")}",
+  "planId": "{review_input.get("planId", "")}",
+  "verdict": "approved|changes_requested|rejected",
+  "summary": "concise final assessment",
+  "findings": [
+    {{
+      "id": "lowercase-id",
+      "severity": "critical|high|medium|low",
+      "taskId": "optional-task-id",
+      "title": "short title",
+      "evidence": "specific packet evidence",
+      "recommendation": "action for a separately approved follow-up"
+    }}
+  ]
+}}
+
+COMPACT FRONTIER REVIEW INPUT
+{packet}
+"""
+
+
+def _build_legacy_review_prompt(frontier_result: dict[str, Any]) -> str:
+    """Reproduce the pre-compact prompt for unclaimed legacy sessions."""
     packet = json.dumps(
         frontier_result,
         ensure_ascii=False,
@@ -661,6 +962,47 @@ Return exactly one JSON object with this strict shape:
 FRONTIER RESULT
 {packet}
 """
+
+
+def _review_input_payload(
+    session_dir: Path,
+    frontier_result: dict[str, Any],
+    *,
+    create: bool,
+) -> tuple[Path, dict[str, Any]]:
+    """Load a compact review input, or use the full packet for legacy claims."""
+    path = session_dir / FRONTIER_REVIEW_INPUT_NAME
+    expected = build_review_input(frontier_result)
+    if path.is_file():
+        payload = _required_json(path)
+        if payload != expected:
+            raise CommanderError(
+                "frontier-review-input.json differs from "
+                "frontier-result.json."
+            )
+        return path, payload
+    if create:
+        _atomic_json(path, expected)
+        return path, expected
+    return session_dir / "frontier-result.json", frontier_result
+
+
+@contextmanager
+def _locked_revision_predecessor(session_dir: Path):
+    """Refuse to snapshot revision evidence while its runner is active."""
+    lock_path = session_dir / "runner.lock"
+    handle = lock_path.open("a+b")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise CommanderError(
+                "Incremental revision predecessor is still running."
+            ) from exc
+        yield
+    finally:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
 
 
 class CommanderStore:
@@ -710,48 +1052,267 @@ class CommanderStore:
             if revision_of is not None
             else None
         )
-        if predecessor is not None:
-            existing_successor = predecessor[1].get(
-                "supersededByRequestId"
-            )
-            if (
-                isinstance(existing_successor, str)
-                and existing_successor != request_id
-            ):
-                raise CommanderError(
-                    "Revision predecessor is already superseded by request "
-                    f"{existing_successor}."
-                )
-        request_dir = self._request_dir(request_id)
-        try:
-            request_dir.mkdir(parents=True, exist_ok=False)
-        except FileExistsError as exc:
-            raise CommanderError(f"Commander request already exists: {request_id}") from exc
-        now = utc_now()
-        request: dict[str, Any] = {
-            "schemaVersion": COMMANDER_SCHEMA_VERSION,
-            "requestId": request_id,
-            "objective": objective,
-            "constraints": normalized_constraints,
-            "workspaceRoot": str(self.workspace_root),
-            "status": "awaiting_plan",
-            "createdAt": now,
-            "updatedAt": now,
-            "planPhase": {"status": "open"},
-        }
-        if revision_of is not None:
-            request["revisionOf"] = revision_of
-        _atomic_json(request_dir / "request.json", request)
-        _atomic_text(
-            request_dir / "plan-prompt.txt",
-            build_plan_prompt(request, self.config),
+        lock = (
+            _locked_revision_predecessor(predecessor[0])
+            if predecessor is not None
+            else nullcontext()
         )
-        if predecessor is not None:
-            self._supersede_revision_predecessor(
-                predecessor,
-                successor_request_id=request_id,
+        with lock:
+            revision_input = None
+            if predecessor is not None:
+                predecessor = (
+                    predecessor[0],
+                    _required_json(predecessor[0] / "session.json"),
+                )
+                existing_successor = predecessor[1].get(
+                    "supersededByRequestId"
+                )
+                if (
+                    isinstance(existing_successor, str)
+                    and existing_successor != request_id
+                ):
+                    raise CommanderError(
+                        "Revision predecessor is already superseded by request "
+                        f"{existing_successor}."
+                    )
+                revision_input = self._build_revision_input(
+                    predecessor,
+                    revision_of=str(revision_of),
+                )
+            request_dir = self._request_dir(request_id)
+            try:
+                request_dir.mkdir(parents=True, exist_ok=False)
+            except FileExistsError as exc:
+                raise CommanderError(
+                    f"Commander request already exists: {request_id}"
+                ) from exc
+            now = utc_now()
+            request: dict[str, Any] = {
+                "schemaVersion": COMMANDER_SCHEMA_VERSION,
+                "requestId": request_id,
+                "objective": objective,
+                "constraints": normalized_constraints,
+                "workspaceRoot": str(self.workspace_root),
+                "status": "awaiting_plan",
+                "createdAt": now,
+                "updatedAt": now,
+                "planPhase": {"status": "open"},
+            }
+            if revision_of is not None:
+                request["revisionOf"] = revision_of
+            prompt_revision_input = None
+            if revision_input is not None:
+                revision_digest = canonical_json_sha256(revision_input)
+                request.update({
+                    "revisionInputSha256": revision_digest,
+                    "revisionDepth": revision_input["depth"],
+                    "inheritedBaseSha": revision_input["baseSha"],
+                })
+                _atomic_json(
+                    request_dir / REVISION_INPUT_NAME,
+                    revision_input,
+                )
+                prompt_revision_input = {
+                    **revision_input,
+                    "revisionInputSha256": revision_digest,
+                }
+            _atomic_json(request_dir / "request.json", request)
+            _atomic_text(
+                request_dir / "plan-prompt.txt",
+                build_plan_prompt(
+                    request,
+                    self.config,
+                    revision_input=prompt_revision_input,
+                ),
             )
+            if predecessor is not None:
+                self._supersede_revision_predecessor(
+                    predecessor,
+                    successor_request_id=request_id,
+                )
         return self.request_detail(request_id)
+
+    def _build_revision_input(
+        self,
+        predecessor: tuple[Path, dict[str, Any]],
+        *,
+        revision_of: str,
+    ) -> dict[str, Any] | None:
+        """Freeze verified carried work and only unfinished predecessor state."""
+        session_dir, state = predecessor
+        snapshot_path = session_dir / "workspace.snapshot.json"
+        if not snapshot_path.is_file():
+            return None
+        snapshot = _required_json(snapshot_path)
+        policy = snapshot.get("executionPolicy")
+        if (
+            isinstance(policy, dict)
+            and policy.get("workspaceTarget") == "checkout"
+        ):
+            # Preserve legacy linked-revision behavior for main-checkout runs.
+            return None
+        from .session import Session
+        from .workspace import WorkspaceError, revision_base_evidence
+
+        predecessor_session = Session.load(session_dir, self.config)
+        previous_depth = predecessor_session.state.get("revisionDepth", 0)
+        if (
+            not isinstance(previous_depth, int)
+            or isinstance(previous_depth, bool)
+            or previous_depth < 0
+        ):
+            raise CommanderError(
+                "Predecessor incremental revision depth is invalid."
+            )
+        depth = previous_depth + 1
+        if depth > MAX_INCREMENTAL_REVISION_DEPTH:
+            raise CommanderError(
+                "Incremental revisions are limited to one carried-forward "
+                "successor."
+            )
+        try:
+            evidence = revision_base_evidence(
+                session_dir,
+                predecessor_session.plan,
+                predecessor_session.state,
+            )
+        except WorkspaceError as exc:
+            raise CommanderError(str(exc)) from exc
+
+        integration_failures = []
+        raw_integration = predecessor_session.state.get(
+            "integrationVerificationResults",
+            [],
+        )
+        if isinstance(raw_integration, list):
+            for value in raw_integration:
+                if not isinstance(value, dict) or value.get("passed") is True:
+                    continue
+                integration_failures.append({
+                    "taskId": value.get("taskId"),
+                    "profileId": value.get("profileId"),
+                    "passed": value.get("passed"),
+                    "exitCode": value.get("exitCode"),
+                    "timedOut": value.get("timedOut"),
+                    "outputSha256": value.get("outputSha256"),
+                    "receiptSha256": canonical_json_sha256(value),
+                })
+        review_evidence = self._revision_review_evidence(
+            session_dir,
+            predecessor_session.state,
+        )
+        return {
+            "schemaVersion": REVISION_INPUT_SCHEMA_VERSION,
+            "revisionOf": revision_of,
+            "depth": depth,
+            "predecessorStatus": predecessor_session.state.get("status"),
+            "predecessorPlanSha256": canonical_json_sha256(
+                predecessor_session.plan.raw
+            ),
+            "predecessorWorkspaceSnapshotSha256": evidence[
+                "workspaceSnapshotSha256"
+            ],
+            "predecessorExecutionDigest": evidence[
+                "predecessorExecutionDigest"
+            ],
+            "predecessorBranch": evidence["predecessorBranch"],
+            "baseSha": evidence["baseSha"],
+            "inspectionRoot": evidence["inspectionRoot"],
+            "carriedTasks": evidence["carriedTasks"],
+            "unfinishedSubgraph": evidence["unfinishedSubgraph"],
+            "integrationFailures": integration_failures,
+            "frontierReview": review_evidence,
+        }
+
+    def _revision_review_evidence(
+        self,
+        session_dir: Path,
+        state: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        review = _optional_json(session_dir / "frontier-review.json")
+        receipt = _optional_json(
+            session_dir / "frontier-review-receipt.json"
+        )
+        review_status = state.get("reviewStatus")
+        if review_status == "review_claimed":
+            raise CommanderError(
+                "Incremental revision creation is refused while frontier "
+                "review is claimed."
+            )
+        if (review is None) != (receipt is None):
+            raise CommanderError(
+                "Frontier review evidence is only partially durable."
+            )
+        if review is None:
+            if review_status == "review_error":
+                error = _optional_json(
+                    session_dir / "frontier-review.error.json"
+                )
+                attempt = _optional_json(
+                    session_dir
+                    / "frontier-review-attempt-receipt.json"
+                )
+                if error is None or attempt is None:
+                    raise CommanderError(
+                        "Frontier review error evidence is incomplete."
+                    )
+                return {
+                    "verdict": "review_error",
+                    "summary": str(error.get("error", ""))[
+                        :MAX_REVIEW_TEXT_CHARS
+                    ],
+                    "findings": [],
+                    "attemptReceiptSha256": canonical_json_sha256(
+                        attempt
+                    ),
+                }
+            claim_exists = (
+                session_dir / "frontier-review.claim.json"
+            ).is_file()
+            if claim_exists:
+                raise CommanderError(
+                    "Frontier review claim has no terminal evidence."
+                )
+            return None
+        result = _required_json(session_dir / "frontier-result.json")
+        _review_path, review_input = _review_input_payload(
+            session_dir,
+            result,
+            create=False,
+        )
+        validated = validate_frontier_receipt(
+            receipt,
+            expected_phase="review",
+            expected_artifact_sha256=canonical_json_sha256(review),
+            expected_input_artifact_sha256=canonical_json_sha256(
+                review_input
+            ),
+        )
+        parsed = parse_frontier_review(
+            review,
+            expected_plan_id=str(result.get("planId", "")),
+            expected_session_id=str(result.get("sessionId", "")),
+        )
+        if review_status != parsed.verdict:
+            raise CommanderError(
+                "Frontier review artifacts and session state disagree."
+            )
+        return {
+            "verdict": parsed.verdict,
+            "summary": parsed.summary,
+            "findings": [
+                {
+                    "id": finding.id,
+                    "severity": finding.severity,
+                    "taskId": finding.task_id,
+                    "title": finding.title,
+                    "evidence": finding.evidence,
+                    "recommendation": finding.recommendation,
+                }
+                for finding in parsed.findings
+            ],
+            "receiptSha256": canonical_json_sha256(validated),
+        }
 
     def _revision_predecessor(
         self,
@@ -773,6 +1334,153 @@ class CommanderStore:
         ):
             raise CommanderError("Revision predecessor identity mismatch.")
         return session_dir, state
+
+    def _revision_input_for_request(
+        self,
+        request_dir: Path,
+        request: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        expected_digest = request.get("revisionInputSha256")
+        if expected_digest is None:
+            return None
+        path = request_dir / REVISION_INPUT_NAME
+        value = _required_json(path)
+        _exact_keys(
+            value,
+            "revisionInput",
+            {
+                "schemaVersion",
+                "revisionOf",
+                "depth",
+                "predecessorStatus",
+                "predecessorPlanSha256",
+                "predecessorWorkspaceSnapshotSha256",
+                "predecessorExecutionDigest",
+                "predecessorBranch",
+                "baseSha",
+                "inspectionRoot",
+                "carriedTasks",
+                "unfinishedSubgraph",
+                "integrationFailures",
+                "frontierReview",
+            },
+        )
+        if value.get("schemaVersion") != REVISION_INPUT_SCHEMA_VERSION:
+            raise CommanderError("Unsupported revision input version.")
+        if value.get("revisionOf") != request.get("revisionOf"):
+            raise CommanderError(
+                "Revision input lineage differs from its request."
+            )
+        depth = value.get("depth")
+        if depth != request.get("revisionDepth") or not isinstance(
+            depth,
+            int,
+        ):
+            raise CommanderError(
+                "Revision input depth differs from its request."
+            )
+        if value.get("baseSha") != request.get("inheritedBaseSha"):
+            raise CommanderError(
+                "Revision input base differs from its request."
+            )
+        _git_oid(value.get("baseSha"), "revisionInput.baseSha")
+        for key in (
+            "predecessorPlanSha256",
+            "predecessorWorkspaceSnapshotSha256",
+            "predecessorExecutionDigest",
+        ):
+            _sha256(value.get(key), f"revisionInput.{key}")
+        if not isinstance(value.get("predecessorBranch"), str):
+            raise CommanderError(
+                "Revision input predecessor branch is invalid."
+            )
+        inspection_root = Path(
+            _text(
+                value.get("inspectionRoot"),
+                "revisionInput.inspectionRoot",
+                10_000,
+            )
+        ).resolve()
+        worktrees_root = (self.artifacts_root / "_worktrees").resolve()
+        if (
+            not _is_within(inspection_root, worktrees_root)
+            or (
+                request.get("status") == "awaiting_plan"
+                and not inspection_root.is_dir()
+            )
+        ):
+            raise CommanderError(
+                "Revision input inspection root is unavailable or outside "
+                "the worktree runtime."
+            )
+        if str(inspection_root) != value["inspectionRoot"]:
+            raise CommanderError(
+                "Revision input inspection root is not canonical."
+            )
+        for key in (
+            "carriedTasks",
+            "unfinishedSubgraph",
+            "integrationFailures",
+        ):
+            if not isinstance(value.get(key), list):
+                raise CommanderError(f"revisionInput.{key} must be an array.")
+        actual_digest = canonical_json_sha256(value)
+        if actual_digest != expected_digest:
+            raise CommanderError(
+                "Revision input digest differs from its request."
+            )
+        return value
+
+    def _validate_revision_inspection(
+        self,
+        revision_input: dict[str, Any],
+    ) -> Path:
+        from .workspace import (
+            WorkspaceError,
+            validate_revision_inspection_root,
+        )
+
+        try:
+            return validate_revision_inspection_root(
+                Path(revision_input["inspectionRoot"]),
+                predecessor_branch=revision_input[
+                    "predecessorBranch"
+                ],
+                base_sha=revision_input["baseSha"],
+            )
+        except WorkspaceError as exc:
+            raise CommanderError(str(exc)) from exc
+
+    def revision_authority(
+        self,
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the frozen internal base authority for one successor."""
+        request_dir, request = self._load_request(request_id)
+        revision_input = self._revision_input_for_request(
+            request_dir,
+            request,
+        )
+        if revision_input is None:
+            return None
+        return {
+            "schemaVersion": 1,
+            "revisionOf": revision_input["revisionOf"],
+            "revisionInputSha256": request["revisionInputSha256"],
+            "predecessorExecutionDigest": revision_input[
+                "predecessorExecutionDigest"
+            ],
+            "predecessorBranch": revision_input["predecessorBranch"],
+            "baseSha": revision_input["baseSha"],
+        }
+
+    def revision_input(
+        self,
+        request_id: str,
+    ) -> dict[str, Any] | None:
+        """Return the validated carry-forward packet for session attachment."""
+        request_dir, request = self._load_request(request_id)
+        return self._revision_input_for_request(request_dir, request)
 
     def _supersede_revision_predecessor(
         self,
@@ -869,6 +1577,11 @@ class CommanderStore:
 
     def request_detail(self, request_id: str) -> dict[str, Any]:
         request_dir, request = self._load_request(request_id)
+        revision_input = self._revision_input_for_request(
+            request_dir,
+            request,
+        )
+        revision_authority = self.revision_authority(request_id)
         plan_payload = None
         plan_path = request_dir / "plan.validated.json"
         if plan_path.is_file():
@@ -919,8 +1632,16 @@ class CommanderStore:
                 }
             else:
                 try:
-                    execution_preview = preview(self.config, plan)
-                    execution_previews = previews(self.config, plan)
+                    execution_preview = preview(
+                        self.config,
+                        plan,
+                        revision_authority=revision_authority,
+                    )
+                    execution_previews = previews(
+                        self.config,
+                        plan,
+                        revision_authority=revision_authority,
+                    )
                 except WorkspaceError as exc:
                     execution_error = str(exc)
         return {
@@ -933,6 +1654,7 @@ class CommanderStore:
                 request_dir / "frontier-plan-attempt-receipt.json"
             ),
             "validationError": _optional_json(request_dir / "plan.error.json"),
+            "revisionInput": revision_input,
             "executionPreview": execution_preview,
             "executionPreviews": execution_previews,
             "executionError": execution_error,
@@ -956,6 +1678,15 @@ class CommanderStore:
             raise CommanderError(
                 f"Planning phase is already {request['planPhase']['status']}."
             )
+        revision_input = self._revision_input_for_request(
+            request_dir,
+            request,
+        )
+        inspection_root = self.workspace_root
+        if revision_input is not None:
+            inspection_root = self._validate_revision_inspection(
+                revision_input
+            )
         claim = self._create_claim(
             request_dir / "frontier-plan.claim.json",
             phase="plan",
@@ -974,7 +1705,7 @@ class CommanderStore:
             **claim,
             "requestId": request_id,
             "promptPath": str(request_dir / "plan-prompt.txt"),
-            "workspaceRoot": str(self.workspace_root),
+            "workspaceRoot": str(inspection_root),
         }
 
     def release_plan_claim(self, request_id: str, claim_id: str) -> None:
@@ -1057,6 +1788,12 @@ class CommanderStore:
                 raw_response_path,
                 response_path,
             )
+            revision_input = self._revision_input_for_request(
+                request_dir,
+                request,
+            )
+            if revision_input is not None:
+                self._validate_revision_inspection(revision_input)
             raw_plan = parse_json_response(response)
             if not isinstance(raw_plan, dict):
                 raise CommanderError("Frontier plan response must be a JSON object.")
@@ -1087,6 +1824,28 @@ class CommanderStore:
                         "candidate edit, failing path, preserved control, and "
                         "minimality during the same planning call."
                     )
+                revision_input = self._revision_input_for_request(
+                    request_dir,
+                    request,
+                )
+                if revision_input is not None:
+                    carried_ids = {
+                        str(value.get("taskId"))
+                        for value in revision_input["carriedTasks"]
+                        if isinstance(value, dict)
+                        and isinstance(value.get("taskId"), str)
+                    }
+                    repeated_ids = sorted(
+                        carried_ids.intersection(
+                            task.id for task in plan.tasks
+                        )
+                    )
+                    if repeated_ids:
+                        raise CommanderError(
+                            "Incremental revision plan repeats carried task "
+                            "IDs: "
+                            + ", ".join(repeated_ids)
+                        )
             finally:
                 if candidate.exists() and candidate.name.endswith(".tmp"):
                     candidate.unlink()
@@ -1187,12 +1946,14 @@ class CommanderStore:
         if plan.workspace_execution:
             from .workspace import WorkspaceError, execution_preview
 
+            revision_authority = self.revision_authority(request_id)
             try:
                 preview = execution_preview(
                     self.config,
                     plan,
                     approval_mode=approval_mode,
                     workspace_target=workspace_target,
+                    revision_authority=revision_authority,
                 )
             except WorkspaceError as exc:
                 raise CommanderError(str(exc)) from exc
@@ -1250,10 +2011,28 @@ class CommanderStore:
         *,
         adapter: str = "codex-skill",
     ) -> dict[str, Any]:
+        session_dir, _state = self._load_session(session_dir)
+        with _locked_revision_predecessor(session_dir):
+            return self._claim_review_locked(
+                session_dir,
+                adapter=adapter,
+            )
+
+    def _claim_review_locked(
+        self,
+        session_dir: Path,
+        *,
+        adapter: str,
+    ) -> dict[str, Any]:
+        """Claim final review while excluding revision snapshot creation."""
         session_dir, state = self._load_session(session_dir)
         if state.get("status") != "completed":
             raise CommanderError(
                 "Only completed local runs are eligible for frontier review."
+            )
+        if state.get("supersededByRequestId") is not None:
+            raise CommanderError(
+                "A superseded session cannot start a new frontier review."
             )
         if (session_dir / "frontier-review.json").exists():
             raise CommanderError("Frontier review has already been accepted.")
@@ -1263,13 +2042,24 @@ class CommanderStore:
             )
         result_path = session_dir / "frontier-result.json"
         result = _required_json(result_path)
-        result_digest = canonical_json_sha256(result)
         prompt_path = session_dir / "frontier-review-prompt.txt"
-        expected_prompt = build_review_prompt(result)
+        compact_path = session_dir / FRONTIER_REVIEW_INPUT_NAME
+        use_legacy_input = prompt_path.exists() and not compact_path.exists()
+        review_input_path, review_input = _review_input_payload(
+            session_dir,
+            result,
+            create=not use_legacy_input,
+        )
+        review_input_digest = canonical_json_sha256(review_input)
+        expected_prompt = (
+            _build_legacy_review_prompt(result)
+            if use_legacy_input
+            else build_review_prompt(review_input)
+        )
         if prompt_path.exists():
             if prompt_path.read_text(encoding="utf-8") != expected_prompt:
                 raise CommanderError(
-                    "Existing review prompt differs from frontier-result.json."
+                    "Existing review prompt differs from its review input."
                 )
         else:
             _atomic_text(prompt_path, expected_prompt)
@@ -1278,7 +2068,7 @@ class CommanderStore:
             phase="review",
             owner_id=f"{state['planId']}/{state['sessionId']}",
             adapter=adapter,
-            input_artifact_sha256=result_digest,
+            input_artifact_sha256=review_input_digest,
         )
         state["reviewStatus"] = "review_claimed"
         state["reviewClaim"] = {
@@ -1293,7 +2083,9 @@ class CommanderStore:
             "sessionId": state["sessionId"],
             "promptPath": str(prompt_path),
             "frontierResult": str(result_path),
-            "inputArtifactSha256": result_digest,
+            "frontierReviewInput": str(review_input_path),
+            "sourceArtifactSha256": canonical_json_sha256(result),
+            "inputArtifactSha256": review_input_digest,
         }
 
     def release_review_claim(self, session_dir: Path, claim_id: str) -> None:
@@ -1339,8 +2131,13 @@ class CommanderStore:
                 raise CommanderError(
                     "Frontier review receipt exists without its artifact."
                 )
-            review_input = _required_json(
+            frontier_result = _required_json(
                 session_dir / "frontier-result.json"
+            )
+            _review_input_path, review_input = _review_input_payload(
+                session_dir,
+                frontier_result,
+                create=False,
             )
             input_digest = canonical_json_sha256(review_input)
             review_digest = canonical_json_sha256(existing_review)
@@ -1393,13 +2190,18 @@ class CommanderStore:
                 raw_response_path,
                 response_path,
             )
-            review_input = _required_json(
+            frontier_result = _required_json(
                 session_dir / "frontier-result.json"
+            )
+            _review_input_path, review_input = _review_input_payload(
+                session_dir,
+                frontier_result,
+                create=False,
             )
             review_input_digest = canonical_json_sha256(review_input)
             if claim.get("inputArtifactSha256") != review_input_digest:
                 raise CommanderError(
-                    "frontier-result.json changed after the review claim."
+                    "Frontier review input changed after the review claim."
                 )
             raw_review = parse_json_response(response)
             review = parse_frontier_review(
@@ -1561,6 +2363,9 @@ class CommanderStore:
             },
             {
                 "revisionOf",
+                "revisionInputSha256",
+                "revisionDepth",
+                "inheritedBaseSha",
                 "planDigest",
                 "approval",
                 "sessionRef",
@@ -1630,12 +2435,58 @@ class CommanderStore:
             _sha256(phase["artifactSha256"], "request.planPhase.artifactSha256")
         if "revisionOf" in request:
             _lineage(request["revisionOf"], "request.revisionOf")
+            predecessor = self._revision_predecessor(
+                request["revisionOf"]
+            )
+            if (
+                predecessor is not None
+                and predecessor[1].get("supersededByRequestId")
+                != request["requestId"]
+            ):
+                raise CommanderError(
+                    "Revision request is not durably bound as the "
+                    "predecessor's successor."
+                )
+        revision_fields = {
+            "revisionInputSha256",
+            "revisionDepth",
+            "inheritedBaseSha",
+        }
+        present_revision_fields = revision_fields.intersection(request)
+        if present_revision_fields and present_revision_fields != revision_fields:
+            raise CommanderError(
+                "Incremental revision request fields are incomplete."
+            )
+        if present_revision_fields:
+            if "revisionOf" not in request:
+                raise CommanderError(
+                    "Incremental revision authority requires revisionOf."
+                )
+            _sha256(
+                request["revisionInputSha256"],
+                "request.revisionInputSha256",
+            )
+            depth = request["revisionDepth"]
+            if (
+                not isinstance(depth, int)
+                or isinstance(depth, bool)
+                or not 1 <= depth <= MAX_INCREMENTAL_REVISION_DEPTH
+            ):
+                raise CommanderError(
+                    "request.revisionDepth is outside the supported range."
+                )
+            _git_oid(
+                request["inheritedBaseSha"],
+                "request.inheritedBaseSha",
+            )
         if request["status"] in {"plan_ready", "launched"}:
             _sha256(request.get("planDigest"), "request.planDigest")
         if request["status"] == "launched":
             approval = _object(request.get("approval"), "request.approval")
             _parse_approval(approval)
             _lineage(request.get("sessionRef"), "request.sessionRef")
+        if present_revision_fields:
+            self._revision_input_for_request(path.parent, request)
         return request
 
     def _load_session(
@@ -1747,8 +2598,14 @@ def write_frontier_usage(session_dir: Path) -> dict[str, Any]:
             ).hexdigest()
         else:
             result_path = session_dir / "frontier-result.json"
+            frontier_result = _required_json(result_path)
+            _review_input_path, review_input = _review_input_payload(
+                session_dir,
+                frontier_result,
+                create=False,
+            )
             expected_input_digest = canonical_json_sha256(
-                _required_json(result_path)
+                review_input
             )
         review_receipt = validate_frontier_receipt(
             review_receipt,

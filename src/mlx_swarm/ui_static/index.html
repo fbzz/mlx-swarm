@@ -49,6 +49,8 @@
           <textarea id="commander-objective" rows="3" maxlength="12000" required placeholder="Describe the bounded result local workers should produce."></textarea>
           <label for="commander-constraints">Constraints <span class="muted">(one per line)</span></label>
           <textarea id="commander-constraints" rows="2" maxlength="8000" placeholder="No network access&#10;Return auditable artifacts"></textarea>
+          <label for="commander-revision">Continue run <span class="muted">(optional plan/session)</span></label>
+          <input id="commander-revision" maxlength="193" placeholder="plan-id/session-id">
           <button id="commander-create" class="button primary wide" type="submit">Create planning request</button>
         </form>
         <label for="commander-select">Commander requests</label>
@@ -94,8 +96,8 @@
             <div>
               <label for="max-repair">Repair cap</label>
               <select id="max-repair">
-                <option value="0">0</option><option value="1">1</option>
-                <option value="2" selected>2</option><option value="3">3</option>
+                <option value="0" selected>0</option><option value="1">1</option>
+                <option value="2">2</option><option value="3">3</option>
                 <option value="4">4</option><option value="5">5</option>
               </select>
             </div>

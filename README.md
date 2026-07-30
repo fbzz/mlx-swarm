@@ -25,7 +25,7 @@ most leverage: planning the work and judging the final packet.
 
 | Plan once | Do the work locally | Review once |
 | --- | --- | --- |
-| A frontier model defines the DAG, constraints, and acceptance rules | A cached 4B MLX model powers bounded agents on your Mac | One compact `frontier-result.json` carries the evidence for final judgment |
+| A frontier model defines the DAG, constraints, and acceptance rules | A cached 4B MLX model powers bounded agents on your Mac | One compact `frontier-review-input.json` carries the evidence for final judgment |
 
 **Local inference is the engine, not a fallback.** During execution there is no
 frontier coordinator between waves. Agent prompts, dependency outputs, repair
@@ -61,23 +61,35 @@ team in one prompt. MLX Swarm gives it a tighter job:
 That division of labor is the product thesis: spend local tokens on execution
 and scarce frontier attention on decisions.
 
+### When not to invoke Swarm
+
+The Codex skill routes a genuinely simple change directly instead of creating
+a commander request. If the request is limited to one or two files, is
+cosmetic, copy/layout-only, or a literal mechanical replacement, and does not
+cross a behavioral, security, data, concurrency, public-API, or migration
+boundary, Codex should make the change and run one direct verification without
+invoking Swarm. Swarm is for work that benefits from decomposition, isolation,
+parallel local execution, or its approval and audit boundaries. An explicitly
+requested governed Swarm run still takes precedence.
+
 ## Operating contract
 
 | Phase | Frontier boundary | Local activity | Human control |
 | --- | --- | --- | --- |
 | Plan | One accepted, validated DAG artifact | Canonical validation and digest generation | Preview the whole DAG; approve the plan and execution digests |
 | Execute | **No frontier coordination between waves** | MLX agents, deterministic gates, bounded repairs, and allowlisted verification | Choose supervised decisions, or pre-authorize digest-bound YOLO in an isolated worktree or clean main checkout |
-| Review | One accepted structured verdict for a completed run | Assemble the self-contained `frontier-result.json` | Decide whether a requested revision becomes a new linked plan |
+| Review | One accepted structured verdict for a completed run | Retain the full `frontier-result.json` audit packet and derive a compact `frontier-review-input.json` | Decide whether a requested revision becomes a new linked plan |
 
 Local agent usage and frontier planning/review usage are recorded separately.
 “One accepted artifact” describes MLX Swarm's auditable phase boundary; it does
 not claim visibility into provider-internal or Codex-internal model calls.
 When an adapter reports usage, `frontier-usage.json` preserves planning and
 final-review prompt, completion, and total tokens as separate phases. The
-review receipt is also bound to the exact `frontier-result.json` digest. Codex
-skill usage that is not exposed remains `unavailable`, never zero or estimated;
-a later frontier-alone comparison belongs in separate evidence. When Codex is
-run through its JSONL CLI surface, pass the clean event log to
+review claim and receipt bind the exact compact review-input digest, while that
+input's `sourceArtifact.sha256` binds the retained full
+`frontier-result.json`. Codex skill usage that is not exposed remains
+`unavailable`, never zero or estimated; a later frontier-alone comparison
+belongs in separate evidence. When Codex is run through its JSONL CLI surface, pass the clean event log to
 `commander import-plan` or `commander import-review` with `--usage-jsonl`.
 MLX Swarm aggregates every `turn.completed` event and rejects malformed or
 missing usage instead of presenting an undercount as exact.
@@ -224,11 +236,27 @@ are stored as unavailable rather than estimated.
    the operator can rerun the same allowlisted checks or reject it with an
    explicit revert commit.
 
-7. **Review the completed run.** A successful workspace run produces
+7. **Review the completed run.** A successful workspace run retains
    `frontier-result.json` v3 with outputs, gates, commits, diffs, verification
-   receipts, lineage, and local usage. Copy **Review with Codex** for the one
-   final structured verdict. Requested changes begin a new linked commander
-   request; the completed run is never rewritten.
+   receipts, lineage, and local usage. It also emits the smaller
+   `frontier-review-input.json` used by **Review with Codex**. The compact
+   packet contains the evidence needed for one final structured verdict and
+   binds the full result by SHA-256; any mismatch seals the review instead of
+   silently changing its input. For an incremental successor it also carries
+   the predecessor's unfinished-task summary, failed integration receipts, and
+   prior frontier findings so the final reviewer can check the actual reason
+   for the follow-up.
+
+   Requested changes begin a new linked commander request; the completed run
+   is never rewritten. One incremental successor may carry forward validated
+   completed work only from a terminal, clean, retained isolated worktree. Its
+   execution starts from the validated predecessor head, its plan contains
+   only unfinished or remediation tasks, and its planning claim exposes that
+   clean retained predecessor worktree for source inspection instead of the
+   possibly stale main checkout. It requires fresh plan and execution-digest
+   approval. Generation-only and main-checkout predecessors keep lineage-only
+   revision behavior; cleaned or nonterminal worktrees and a second
+   carry-forward successor are refused.
 
    If the frontier run exposes Codex JSONL usage, import the response and exact
    totals together:
@@ -299,7 +327,7 @@ mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
   --phase pilot --profile benchmarks/bugsinpy-v1/profile.json --preliminary
 
 mlx-swarm --config LOCAL_MODEL_CONFIG eval replay-local EVALUATION_ID \
-  --worker-mode reasoning-edit --reasoning-max-tokens 1200
+  --worker-mode reasoning-edit --reasoning-max-tokens 768
 
 mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
   --phase measured --profile benchmarks/bugsinpy-v1/profile.json --preliminary
@@ -333,11 +361,11 @@ fully local reasoning-to-editing pipeline:
 {
   "worker": {
     "mode": "reasoning-edit",
-    "reasoningMaxTokens": 1200,
+    "reasoningMaxTokens": 768,
     "capabilities": {
       "parameterScale": "4B",
       "contextWindowTokens": 262144,
-      "maxGenerationTokens": 1200,
+      "maxGenerationTokens": 2048,
       "specialization": "general",
       "delegationLevel": "exact-edit",
       "strengths": ["Renders bounded exact replacements."],
@@ -571,8 +599,9 @@ flowchart LR
     Y --> E
     F -->|"reject + budget remains"| R["Bounded repair prompt"]
     R --> E
-    I --> J["frontier-result.json v3"]
-    J --> K["One final frontier review"]
+    I --> J["Full frontier-result.json v3"]
+    J --> C1["Compact frontier-review-input.json"]
+    C1 --> K["One final frontier review"]
     K --> L["Persisted verdict"]
 ```
 
@@ -620,7 +649,7 @@ before model loading.
         "pythonSyntax": true,
         "maxCharacters": 5000
       },
-      "maxRepairAttempts": 2
+      "maxRepairAttempts": 0
     },
     {
       "id": "review",
@@ -659,18 +688,19 @@ parallel mutations, and final integration verification.
     "localPath": "~/models/qwen35-4b-opus-uncensored-6bit"
   },
   "batch": {
-    "maxWorkers": 4,
-    "prefillStepSize": 512,
-    "maxBatchPromptTokens": 32768
+    "maxWorkers": 2,
+    "prefillStepSize": 1024,
+    "maxPromptCharacters": 80000,
+    "maxBatchPromptTokens": 49152
   },
   "artifacts": ".swarm/runs",
   "worker": {
     "mode": "direct",
-    "reasoningMaxTokens": 512,
+    "reasoningMaxTokens": 768,
     "capabilities": {
       "parameterScale": "4B",
       "contextWindowTokens": 262144,
-      "maxGenerationTokens": 1800,
+      "maxGenerationTokens": 2048,
       "specialization": "code",
       "delegationLevel": "exact-edit"
     }
@@ -709,7 +739,7 @@ a command:
   "generationOverride": {
     "temperature": 0,
     "top_p": 1,
-    "max_tokens": 800
+    "max_tokens": 1024
   },
   "gate": {
     "requiredPatterns": [],
@@ -731,31 +761,30 @@ The evidence-backed personal-workstation defaults are:
 
 | Work shape | Recommended setting |
 | --- | ---: |
-| Interactive parallelism | `maxWorkers: 4` |
-| Optional throughput batch | `maxWorkers: 8` |
-| Exact edit manifest | target 350–500 output tokens and at most 70% of the task ceiling |
-| Structured review JSON | 700–1,000 output tokens |
-| Report/research output | 1,200–1,800 output tokens |
-| 4B reasoning pass | disabled by default |
+| Interactive parallelism | `maxWorkers: 2` |
+| Prefill step | `prefillStepSize: 1024` |
+| Aggregate prompt budget | `maxBatchPromptTokens: 49152` |
+| Exact edit manifest | expected output ≤700; generation ceiling 1,024 |
+| Structured review JSON | 768 normally; 1,024 only when evidence-heavy |
+| Report/research output | 1,536 normally; 2,048 only when indivisible |
+| Blind generation repair | disabled (`maxRepairAttempts: 0`) |
+| 4B reasoning pass | disabled globally; 768-token selective fallback |
 
-Four workers are the measured latency/throughput elbow for the current 6-bit
-4B checkpoint. A local short-prompt probe on the development M4 Pro produced:
+These values come from a 22-session downstream audit plus a two-agent probe on
+the development M4 Pro. Historical prompt-pair sums had a 40,059-token p95 and
+a 45,162-token maximum, so 49,152 keeps every observed pair in one physical
+batch. At 16,574 aggregate rendered prompt tokens, prefill 1,024 completed in
+34.05 seconds versus 34.55 seconds for a warm 512 pass and 39.00 seconds for
+2,048. A true-width-two 45,164-token batch completed in 70.67 seconds at
+7.99 GB peak memory.
 
-| True batch width | Wall time | Aggregate generation rate | Peak memory |
-| ---: | ---: | ---: | ---: |
-| 1 | 0.658 s | 40.3 tok/s | 3.606 GB |
-| 2 | 0.644 s | 79.0 tok/s | 3.776 GB |
-| 4 | 0.815 s | 138.7 tok/s | 4.071 GB |
-| 8 | 1.462 s | 153.9 tok/s | 4.538 GB |
-| 16 | 3.116 s | 173.9 tok/s | 5.216 GB |
-
-This is a tuning probe, not a quality benchmark or a cross-machine promise.
-Width four gives most of the throughput gain while keeping interactive
-latency and memory modest. Width eight is an opt-in throughput setting;
-sixteen improves aggregate throughput but more than triples latency versus
-four. `maxBatchPromptTokens` is a hard ceiling on the sum of rendered input
-tokens in one physical MLX batch; completion budgets remain independently
-bounded per task and by the declared context window.
+`maxBatchPromptTokens` bounds the sum of rendered inputs in one physical MLX
+batch. It does not divide the checkpoint's 262,144-token context into fixed
+per-agent slices. Completion budgets remain independently bounded per task.
+Across the audited calls, 16 of 17 token-limit hits failed, while blind repairs
+passed 0 of 20 and consumed 31% of prompt tokens. The runtime therefore fails
+fast on `hitTokenLimit`; split the task or deliberately raise its bounded
+ceiling in a new plan.
 
 Capability calibration is equally important. The shipped profile is explicitly
 `unmeasured`: its batching behavior is known, but a production-shaped,
@@ -765,7 +794,7 @@ not a benchmark claim. The frontier must supply the diagnosis, source anchors,
 interface contract, and literal transformation until a stronger role is
 supported by reproducible evidence.
 
-Strict JSON tasks default to deterministic sampling and 800 output tokens so
+Strict JSON tasks default to deterministic sampling and 1,024 output tokens so
 compatible exact edits share a real MLX batch. Explicit plan overrides remain
 possible up to the checkpoint capability for measured experiments. Batch
 records expose sampler-group count, planned and actual physical calls,
@@ -871,7 +900,7 @@ mlx-swarm --config CONFIG workspace preview PLAN [--approval-mode supervised|yol
 mlx-swarm --config CONFIG workspace status SESSION_DIR
 mlx-swarm --config CONFIG workspace cleanup SESSION_DIR
 mlx-swarm --config CONFIG ui [--plans-dir DIR] [--host 127.0.0.1] [--port 8765]
-mlx-swarm --config CONFIG commander create --objective TEXT [--constraint TEXT]
+mlx-swarm --config CONFIG commander create --objective TEXT [--constraint TEXT] [--revision-of PLAN_ID/SESSION_ID]
 mlx-swarm --config CONFIG commander show REQUEST_ID
 mlx-swarm --config CONFIG commander claim-plan REQUEST_ID
 mlx-swarm --config CONFIG commander import-plan REQUEST_ID RESPONSE --claim-id ID [--usage-jsonl CODEX.jsonl]
@@ -908,6 +937,7 @@ former `swarm_agents` Python namespace also forwards to `mlx_swarm` temporarily.
 ├── plan.snapshot.json    # immutable validated plan used by this run
 ├── frontier-plan-receipt.json
 ├── frontier-usage.json   # separate planning/review usage, never mixed with local
+├── revision-input.json   # optional validated predecessor carry-forward evidence
 ├── runner.log            # subprocess diagnostics for UI-launched runs
 ├── workspace.snapshot.json # immutable policy, target, paths, base SHA, profiles, and branch
 ├── artifacts/<task-id>/
@@ -916,6 +946,7 @@ former `swarm_agents` Python namespace also forwards to `mlx_swarm` temporarily.
 │   ├── decision.json     # immutable initial Apply or Reject receipt
 │   └── verification/    # bounded logs and attempt receipts
 ├── frontier-result.json  # v2 generation packet or v3 workspace packet
+├── frontier-review-input.json # completed-only compact review surface bound to the full result
 ├── frontier-review.json  # optional persisted final verdict
 └── frontier-review-receipt.json
 ```
@@ -925,6 +956,7 @@ Commander request evidence lives under:
 ```text
 .swarm/runs/_commander/requests/<request-id>/
 ├── request.json
+├── revision-input.json   # optional one-successor carry-forward authority
 ├── plan-prompt.txt
 ├── frontier-plan.raw.txt
 ├── plan.validated.json

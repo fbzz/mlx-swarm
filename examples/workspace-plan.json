@@ -44,11 +44,11 @@
         "examples/workspace_demo/is_palindrome_module.py"
       ],
       "verification": [],
-      "maxRepairAttempts": 1,
+      "maxRepairAttempts": 0,
       "generationOverride": {
         "temperature": 0.0,
         "top_p": 1.0,
-        "max_tokens": 800
+        "max_tokens": 1024
       },
       "gate": {
         "requiredPatterns": [],
@@ -84,11 +84,11 @@
       "verification": [
         "pytest-workspace-demo"
       ],
-      "maxRepairAttempts": 1,
+      "maxRepairAttempts": 0,
       "generationOverride": {
         "temperature": 0.0,
         "top_p": 1.0,
-        "max_tokens": 800
+        "max_tokens": 1024
       },
       "gate": {
         "requiredPatterns": [],
@@ -124,11 +124,11 @@
         "implementation",
         "tests"
       ],
-      "maxRepairAttempts": 1,
+      "maxRepairAttempts": 0,
       "generationOverride": {
         "temperature": 0.0,
         "top_p": 1.0,
-        "max_tokens": 800
+        "max_tokens": 768
       },
       "gate": {
         "requiredPatterns": [],

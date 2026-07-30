@@ -65,7 +65,7 @@ Each task has an id, role, prompt, optional gate, and optional dependsOn.
     "pythonSyntax": true
   },
   "dependsOn": ["other-task-id"],
-  "maxRepairAttempts": 2,
+  "maxRepairAttempts": 0,
   "generationOverride": { "temperature": 0.1, "max_tokens": 600 }
 }
 ```
@@ -74,10 +74,10 @@ Each task has an id, role, prompt, optional gate, and optional dependsOn.
 
 Available task roles and their default generation parameters.
 
-- **implementation**: Code generation (temp 0.15, top_p 0.9, max_tokens 1800)
-- **test**: Test writing (temp 0.10, top_p 0.95, max_tokens 1600)
-- **review**: Code review (temp 0.0, top_p 1.0, max_tokens 700)
-- **general**: General purpose (temp 0.2, top_p 0.9, max_tokens 1200)
+- **implementation**: Code generation (temp 0.15, top_p 0.9, max_tokens 1024)
+- **test**: Test writing (temp 0.10, top_p 0.95, max_tokens 1024)
+- **review**: Code review (temp 0.0, top_p 1.0, max_tokens 768)
+- **general**: General purpose (temp 0.2, top_p 0.9, max_tokens 1536)
 
 ### Dependency Ordering
 
@@ -137,7 +137,8 @@ prompt. `interfaceContract` freezes the boundary the worker must preserve.
 When the exact transformation is already known, `executionMode:
 "deterministic-edit"` embeds `deterministicEdits`, permits no generation
 override or repair, and consumes zero local generation calls. Local-agent
-tasks retain bounded repair.
+tasks use no repair by default; a positive task and CLI repair budget must opt
+in to bounded repair.
 
 Independent patch/test-suite tasks may occur in one topological level only
 when their `allowedPaths` are pairwise disjoint, including directory-prefix

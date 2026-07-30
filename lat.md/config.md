@@ -18,21 +18,21 @@ JSON structure for the config file.
     "localPath": "/path/to/local/model"
   },
   "batch": {
-    "maxWorkers": 4,
-    "prefillStepSize": 512,
-    "maxPromptCharacters": 120000,
-    "maxBatchPromptTokens": 32768
+    "maxWorkers": 2,
+    "prefillStepSize": 1024,
+    "maxPromptCharacters": 80000,
+    "maxBatchPromptTokens": 49152
   },
   "artifacts": ".swarm/runs",
   "enableThinking": false,
   "seed": 20260727,
   "worker": {
-    "mode": "reasoning-edit",
-    "reasoningMaxTokens": 1200,
+    "mode": "direct",
+    "reasoningMaxTokens": 768,
     "capabilities": {
       "parameterScale": "4B",
       "contextWindowTokens": 262144,
-      "maxGenerationTokens": 1200,
+      "maxGenerationTokens": 2048,
       "specialization": "general",
       "delegationLevel": "exact-edit",
       "strengths": [],
@@ -69,12 +69,12 @@ All config fields with types, defaults, and constraints.
 - **model.repository** (required, string): HuggingFace repo ID for the MLX model.
 - **model.revision** (optional, string): Git revision/tag. Empty string means latest.
 - **model.localPath** (optional, string): Local filesystem path. Takes priority over repository.
-- **batch.maxWorkers** (optional, int, default 4): Maximum tasks in one bounded
-  dependency-level chunk. 1–32. Four is the calibrated interactive default for
-  the local 4B profile; eight is an explicit throughput trade-off.
-- **batch.prefillStepSize** (optional, int, default 512): Prefill chunk size. 64–8192.
-- **batch.maxPromptCharacters** (optional, int, default 120000): Max prompt length. 1024–500000.
-- **batch.maxBatchPromptTokens** (optional, int, default 32768): Hard ceiling
+- **batch.maxWorkers** (optional, int, default 2): Maximum tasks in one bounded
+  dependency-level chunk. 1–32. Two is the measured default for the local 4B
+  profile.
+- **batch.prefillStepSize** (optional, int, default 1024): Prefill chunk size. 64–8192.
+- **batch.maxPromptCharacters** (optional, int, default 80000): Max prompt length. 1024–500000.
+- **batch.maxBatchPromptTokens** (optional, int, default 49152): Hard ceiling
   for aggregate rendered input tokens in one physical MLX batch. A larger
   compatible wave is split deterministically; one prompt above the ceiling is
   rejected. Per-task completion budgets are separate.
@@ -84,7 +84,7 @@ All config fields with types, defaults, and constraints.
 - **worker.mode** (optional, default `direct`): `direct` performs one local
   artifact generation. `reasoning-edit` performs a local reasoning pass and a
   separate strict editing pass for mutating tasks only.
-- **worker.reasoningMaxTokens** (optional, int, default 1200): Local reasoning
+- **worker.reasoningMaxTokens** (optional, int, default 768): Local reasoning
   pass limit, 64–8192. These tokens remain in `localUsage`.
 - **worker.capabilities** (optional, strict object): Auditable local-model
   envelope copied into commander prompts, evaluation configs, environment
@@ -94,8 +94,9 @@ All config fields with types, defaults, and constraints.
 - **worker.capabilities.contextWindowTokens** (default 0/unreported): Declared
   model context window. When reported, the backend rejects any rendered prompt
   plus requested generation that exceeds it.
-- **worker.capabilities.maxGenerationTokens** (default 8192): Hard per-task
-  generation ceiling. A plan exceeding it is rejected.
+- **worker.capabilities.maxGenerationTokens** (default 2048): Hard per-task
+  generation ceiling for the bundled profile. Values through 8192 are
+  accepted by the contract; a plan exceeding the configured value is rejected.
 - **worker.capabilities.specialization**: `unknown`, `general`, `code`, or
   `mixed`.
 - **worker.capabilities.delegationLevel**: `exact-edit`,

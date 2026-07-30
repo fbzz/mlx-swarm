@@ -19,10 +19,17 @@ MANIFEST_SCHEMA_VERSION = 2
 SUPPORTED_CONFIG_SCHEMA_VERSIONS = {1, 2}
 SUPPORTED_PLAN_SCHEMA_VERSIONS = {1, 2, 3}
 MAX_WORKERS = 32
-DEFAULT_MAX_WORKERS = 4
+DEFAULT_MAX_WORKERS = 2
+DEFAULT_PREFILL_STEP_SIZE = 1024
+DEFAULT_MAX_PROMPT_CHARS = 80_000
+DEFAULT_MAX_BATCH_PROMPT_TOKENS = 49_152
+DEFAULT_REASONING_MAX_TOKENS = 768
+DEFAULT_MAX_GENERATION_TOKENS = 2048
+EXACT_EDIT_MAX_TOKENS = 1024
+EXACT_EDIT_EXPECTED_MAX_TOKENS = 700
 MAX_PROMPT_CHARS = 120_000
 MAX_TASKS_PER_PLAN = 128
-MAX_REPAIR_ATTEMPTS = 2
+MAX_REPAIR_ATTEMPTS = 0
 MAX_VERIFICATION_PROFILES = 64
 MAX_COMMAND_ARGUMENTS = 128
 MAX_COMMAND_OUTPUT_BYTES = 1_000_000
@@ -45,10 +52,10 @@ WORKER_CALIBRATION_STATUSES = {"unmeasured", "passed", "failed"}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
-    "implementation": {"temperature": 0.15, "top_p": 0.9, "max_tokens": 1800},
-    "test": {"temperature": 0.10, "top_p": 0.95, "max_tokens": 1600},
-    "review": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 700},
-    "general": {"temperature": 0.2, "top_p": 0.9, "max_tokens": 1200},
+    "implementation": {"temperature": 0.15, "top_p": 0.9, "max_tokens": 1024},
+    "test": {"temperature": 0.10, "top_p": 0.95, "max_tokens": 1024},
+    "review": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 768},
+    "general": {"temperature": 0.2, "top_p": 0.9, "max_tokens": 1536},
 }
 
 
@@ -71,9 +78,9 @@ class ModelConfig:
 @dataclass(frozen=True)
 class BatchConfig:
     max_workers: int = DEFAULT_MAX_WORKERS
-    prefill_step_size: int = 512
-    max_prompt_characters: int = MAX_PROMPT_CHARS
-    max_batch_prompt_tokens: int = 32_768
+    prefill_step_size: int = DEFAULT_PREFILL_STEP_SIZE
+    max_prompt_characters: int = DEFAULT_MAX_PROMPT_CHARS
+    max_batch_prompt_tokens: int = DEFAULT_MAX_BATCH_PROMPT_TOKENS
 
 
 @dataclass(frozen=True)
@@ -88,7 +95,7 @@ class WorkerCalibration:
 class WorkerCapabilityProfile:
     parameter_scale: str = "unknown"
     context_window_tokens: int = 0
-    max_generation_tokens: int = 8192
+    max_generation_tokens: int = DEFAULT_MAX_GENERATION_TOKENS
     specialization: str = "unknown"
     delegation_level: str = "exact-edit"
     strengths: tuple[str, ...] = ()
@@ -101,7 +108,7 @@ class WorkerCapabilityProfile:
 @dataclass(frozen=True)
 class WorkerConfig:
     mode: str = "direct"
-    reasoning_max_tokens: int = 1200
+    reasoning_max_tokens: int = DEFAULT_REASONING_MAX_TOKENS
     capabilities: WorkerCapabilityProfile = field(
         default_factory=WorkerCapabilityProfile
     )
@@ -182,15 +189,29 @@ def load_config(path: Path) -> SwarmConfig:
             1,
             MAX_WORKERS,
         ),
-        prefill_step_size=_integer(batch_raw.get("prefillStepSize", 512), "config.batch.prefillStepSize", 64, 8192),
+        prefill_step_size=_integer(
+            batch_raw.get(
+                "prefillStepSize",
+                DEFAULT_PREFILL_STEP_SIZE,
+            ),
+            "config.batch.prefillStepSize",
+            64,
+            8192,
+        ),
         max_prompt_characters=_integer(
-            batch_raw.get("maxPromptCharacters", MAX_PROMPT_CHARS),
+            batch_raw.get(
+                "maxPromptCharacters",
+                DEFAULT_MAX_PROMPT_CHARS,
+            ),
             "config.batch.maxPromptCharacters",
             1024,
             500_000,
         ),
         max_batch_prompt_tokens=_integer(
-            batch_raw.get("maxBatchPromptTokens", 32_768),
+            batch_raw.get(
+                "maxBatchPromptTokens",
+                DEFAULT_MAX_BATCH_PROMPT_TOKENS,
+            ),
             "config.batch.maxBatchPromptTokens",
             1024,
             10_000_000,
@@ -223,7 +244,10 @@ def load_config(path: Path) -> SwarmConfig:
             + ", ".join(sorted(WORKER_MODES))
         )
     reasoning_max_tokens = _integer(
-        worker_raw.get("reasoningMaxTokens", 1200),
+        worker_raw.get(
+            "reasoningMaxTokens",
+            DEFAULT_REASONING_MAX_TOKENS,
+        ),
         "config.worker.reasoningMaxTokens",
         64,
         8192,
@@ -373,7 +397,10 @@ def _parse_worker_capabilities(raw: Any) -> WorkerCapabilityProfile:
             10_000_000,
         ),
         max_generation_tokens=_integer(
-            value.get("maxGenerationTokens", 8192),
+            value.get(
+                "maxGenerationTokens",
+                DEFAULT_MAX_GENERATION_TOKENS,
+            ),
             "config.worker.capabilities.maxGenerationTokens",
             1,
             8192,
@@ -677,7 +704,8 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
         if strict_structured_output:
             default_generation_tokens = min(
                 default_generation_tokens,
-                800,
+                EXACT_EDIT_MAX_TOKENS,
+                config.worker.capabilities.max_generation_tokens,
             )
         generation_tokens = int(
             gen_override.get(
@@ -880,9 +908,12 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                 if execution_mode == "local-agent":
                     budget_limit = generation_tokens
                     if artifact_type in MUTATING_ARTIFACT_TYPES:
-                        budget_limit = max(
-                            1,
-                            int(generation_tokens * 0.7),
+                        budget_limit = min(
+                            EXACT_EDIT_EXPECTED_MAX_TOKENS,
+                            max(
+                                1,
+                                int(generation_tokens * 0.7),
+                            ),
                         )
                     if expected_output_tokens < 1:
                         raise ContractError(

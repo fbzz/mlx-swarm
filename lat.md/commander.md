@@ -57,22 +57,60 @@ An accepted plan receives a canonical JSON SHA-256. A requested correction is
 created as a linked revision: the predecessor is marked superseded, but its
 plan, claims, artifacts, receipts, and logs remain immutable. A main-checkout
 lease is released only when doing so cannot strand an in-flight apply,
-verification, or unresolved commit. The cockpit submits that digest when the
-operator chooses **Approve and run**. A workspace plan also
-requires the displayed [[workspace-execution|execution digest]], binding its
-Git root, base HEAD, paths, and verification profiles. The session snapshots
-the validated plan, approval, planning receipt, execution contract, and any
-`revisionOf` lineage.
+verification, or unresolved commit.
+
+An incremental carry-forward is narrower than ordinary revision lineage. It is
+available for exactly one successor of a terminal `completed`, `partial`, or
+`failed` session whose retained isolated worktree is clean and whose branch
+still points to the validated predecessor head. MLX Swarm revalidates the
+predecessor execution snapshot, completed artifact manifests, apply and
+verification receipts, commit ancestry, and non-mutating artifact digests. It
+then freezes `revision-input.json` with that head, the completed task evidence,
+and the unfinished/remediation subgraph. The planning claim exposes that clean
+retained predecessor worktree as its inspection root, rather than the possibly
+different main checkout, and revalidates its branch, head, and cleanliness at
+claim and import. Carried mutating tasks include a bounded digest-bound diff
+excerpt, while carried review/report tasks include a bounded output excerpt, so
+both the successor planner and final reviewer can inspect the semantics rather
+than hashes alone. A successor plan must use new task IDs and may contain only
+that unfinished or remediation work; importing a plan that repeats a carried
+task ID seals the request as invalid. Generation-only and main-checkout
+predecessors retain lineage-only revision behavior. A
+nonterminal or cleaned worktree, unresolved applied commit, dirty retained
+worktree, changed predecessor branch, invalid evidence, or second
+carry-forward successor is refused.
+
+The cockpit submits the canonical plan digest when the operator chooses
+**Approve and run**. A workspace plan also requires the displayed
+[[workspace-execution|execution digest]], binding its Git root, base HEAD,
+paths, verification profiles, and any incremental revision authority. The
+successor receives fresh plan and execution approvals; predecessor approval is
+never replayed. Its session snapshots the validated plan, approvals, planning
+receipt, execution contract, `revisionOf` lineage, and compact carried-task
+evidence.
 
 ## Final Review
 
-Only a locally `completed` session may enter `awaiting_review`. The review
-surface is its `frontier-result.json` v2 generation packet or v3
-completed-workspace packet.
+Only a locally `completed` session may enter `awaiting_review`. Its compact
+`frontier-review-input.json` is the final-review surface; the full
+`frontier-result.json` remains the audit artifact.
 
-The packet contains the plan contract, completed outputs, gate/verification
-evidence, Git lineage where applicable, and local usage required by the
-reviewer.
+The retained full result is a v2 generation packet or v3 completed-workspace
+packet. The review input is a separate deterministic schema-v1 projection.
+
+The compact projection keeps session and plan identity, task status and
+artifact evidence, applicable review/report outputs, concise apply and
+verification receipts, workspace base/head/diff evidence, approvals, revision
+evidence, and local usage. A successor's revision evidence retains the bounded
+unfinished subgraph, predecessor integration failures, and prior frontier
+findings so the final reviewer can assess whether the reason for revision was
+resolved. It omits the full plan contract, repeated mutating payloads, and
+verification logs. Its `sourceArtifact.sha256` binds the exact full result.
+Claim and import rederive the projection and require exact structural equality;
+the claim and review receipt bind the compact input's canonical digest.
+Evidence-changing tampering with either artifact is therefore detected before a
+verdict is accepted. Unclaimed historical sessions without the compact artifact
+keep the legacy full-packet review path.
 
 Review transitions through `awaiting_review → review_claimed →
 approved|changes_requested|rejected|review_error`. The strict review contract
@@ -96,6 +134,13 @@ model calls or token accounting inside the Codex host.
 The bundled `mlx-swarm-commander` skill is installed explicitly by
 `mlx-swarm skill install`.
 
-It remains thin: the skill claims a phase, reads the deterministic prompt,
-inspects only the approved root, writes one strict JSON response, and imports
-it through the CLI. Persistence and validation remain in the Python core.
+Before claiming a phase, the skill routes a one- or two-file cosmetic,
+copy/layout-only, or literal mechanical change directly when it crosses no
+behavioral, security, data, concurrency, public-API, or migration boundary.
+That direct path performs the edit and one relevant verification without
+invoking Swarm. Explicitly governed Swarm requests still use the commander.
+
+For eligible work the skill remains thin: it claims a phase, reads the
+deterministic prompt, inspects only the approved root, writes one strict JSON
+response, and imports it through the CLI. Persistence and validation remain in
+the Python core.

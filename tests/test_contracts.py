@@ -54,15 +54,19 @@ def test_load_config_minimal(tmp_path: Path) -> None:
     assert config.seed == 20260727
 
 
-def test_default_parallelism_is_interactive_four_workers(
+def test_default_batch_profile_is_two_agents(
     tmp_path: Path,
 ) -> None:
     raw = json.loads(_write_config(tmp_path).read_text())
-    raw["batch"].pop("maxWorkers")
+    raw["batch"] = {}
     path = tmp_path / "default-workers.json"
     path.write_text(json.dumps(raw))
 
-    assert load_config(path).batch.max_workers == 4
+    config = load_config(path)
+    assert config.batch.max_workers == 2
+    assert config.batch.prefill_step_size == 1024
+    assert config.batch.max_prompt_characters == 80_000
+    assert config.batch.max_batch_prompt_tokens == 49_152
 
 
 def test_load_config_with_local_path(tmp_path: Path) -> None:
@@ -238,12 +242,16 @@ def test_exact_edit_default_fits_eight_hundred_token_cap(
     assert plan.tasks[0].generation_override == {}
 
 
-def _schema_v3_config(tmp_path: Path) -> SwarmConfig:
+def _schema_v3_config(
+    tmp_path: Path,
+    *,
+    max_generation_tokens: int = 800,
+) -> SwarmConfig:
     return load_config(_write_config(tmp_path, {
         "schemaVersion": 2,
         "worker": {
             "capabilities": {
-                "maxGenerationTokens": 800,
+                "maxGenerationTokens": max_generation_tokens,
             },
         },
         "workspace": {
@@ -359,6 +367,39 @@ def test_schema_v3_rejects_overlapping_paths_and_oversized_output(
             "integrationVerification": ["unit"],
             "context": context,
             "tasks": [left, right],
+        }), config)
+
+
+def test_schema_v3_rejects_expected_output_above_exact_edit_ceiling(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(
+        tmp_path,
+        max_generation_tokens=2048,
+    )
+    task = _schema_v3_task(
+        "bounded-edit",
+        "src/value.py",
+        context_ref="source",
+    )
+    task["expectedOutputTokens"] = 701
+    task["generationOverride"]["max_tokens"] = 1024
+
+    with pytest.raises(ContractError, match="preflight budget of 700 tokens"):
+        load_plan(_write_plan(tmp_path, {
+            "schemaVersion": 3,
+            "integrationVerification": ["unit"],
+            "context": {
+                "objective": "Update one bounded module.",
+                "authoritativeSources": [{
+                    "label": "source",
+                    "content": "src/value.py has VALUE = 1.",
+                }],
+                "constraints": [],
+                "rejectionCriteria": ["The output exceeds its envelope."],
+                "outputProtocol": "Return only JSON.",
+            },
+            "tasks": [task],
         }), config)
 
 

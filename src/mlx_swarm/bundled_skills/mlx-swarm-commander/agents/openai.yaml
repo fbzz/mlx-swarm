@@ -1,4 +1,4 @@
 interface:
   display_name: "MLX Swarm Commander"
-  short_description: "Plan and review local MLX swarm runs"
-  default_prompt: "Use $mlx-swarm-commander to prepare a validated local worker plan for this objective."
+  short_description: "Route, plan, and review local MLX Swarm work"
+  default_prompt: "Use $mlx-swarm-commander to decide whether this objective needs Swarm; route simple changes to direct implementation, otherwise prepare a validated two-agent local plan."

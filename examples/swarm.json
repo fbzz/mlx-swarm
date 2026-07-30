@@ -6,10 +6,10 @@
     "localPath": "~/models/qwen35-4b-opus-uncensored-6bit"
   },
   "batch": {
-    "maxWorkers": 4,
-    "prefillStepSize": 512,
-    "maxPromptCharacters": 120000,
-    "maxBatchPromptTokens": 32768
+    "maxWorkers": 2,
+    "prefillStepSize": 1024,
+    "maxPromptCharacters": 80000,
+    "maxBatchPromptTokens": 49152
   },
   "artifacts": ".swarm/runs",
   "workspace": {
@@ -47,21 +47,22 @@
   },
   "worker": {
     "mode": "direct",
-    "reasoningMaxTokens": 512,
+    "reasoningMaxTokens": 768,
     "capabilities": {
       "parameterScale": "4B",
       "contextWindowTokens": 262144,
-      "maxGenerationTokens": 1800,
+      "maxGenerationTokens": 2048,
       "specialization": "code",
       "delegationLevel": "exact-edit",
       "strengths": [
-        "True MLX batching at four compatible tasks per worker wave."
+        "Measured true-width-two MLX batching up to 45164 aggregate rendered prompt tokens at 7.99 GB peak memory.",
+        "A 49152-token aggregate prompt ceiling fits every observed two-agent prompt pair."
       ],
       "limitations": [
         "Failed both frozen autonomous-diagnosis calibration cases.",
         "Production-shaped calibration for new files, multi-hunk edits, malformed fences, and near-limit output is not yet sealed.",
         "Must not be asked to discover APIs, choose a causal fix, or inspect missing source.",
-        "Use 350-500 expected output tokens for exact edits and preflight them below 70 percent of the generation ceiling."
+        "Use at most 700 expected output tokens and a 1024-token ceiling for exact edits; split on truncation instead of retrying."
       ],
       "calibration": {
         "status": "unmeasured",

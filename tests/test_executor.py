@@ -23,6 +23,7 @@ from mlx_swarm.contracts import (
 from mlx_swarm.executor import (
     _generate_with_worker_strategy,
     _local_execution_profile,
+    _task_output_hit_token_limit,
     _worker_strategy_compatible,
     execute_plan,
 )
@@ -49,6 +50,27 @@ class FakeBackend:
 
     def close(self) -> None:
         self.closed = True
+
+
+class TokenLimitBackend(FakeBackend):
+    def generate(
+        self,
+        tasks: list[TaskDef],
+        prompts: list[str],
+    ) -> tuple[list[str], dict[str, Any]]:
+        self.calls.append((tasks, prompts))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response, {
+            "batchSize": len(tasks),
+            "groups": [{
+                "taskIds": [task.id for task in tasks],
+                "hitTokenLimit": {
+                    task.id: True for task in tasks
+                },
+            }],
+        }
 
 
 def test_legacy_worker_strategy_snapshot_remains_compatible() -> None:
@@ -285,6 +307,7 @@ def test_generation_attempts_stop_after_repeated_rejected_output(
     session = execute_plan(
         _config(tmp_path),
         _plan(tmp_path, (task,), "attempt-audit"),
+        max_repair=2,
         backend=backend,
     )
 
@@ -309,6 +332,55 @@ def test_generation_attempts_stop_after_repeated_rejected_output(
         "bad output",
     ]
     assert records[1]["promptSha256"] == attempts[1]["promptSha256"]
+
+
+def test_generation_stops_without_repair_after_output_token_limit(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=2,
+    )
+    backend = TokenLimitBackend([
+        ["truncated output"],
+        ["unused repair"],
+    ])
+
+    session = execute_plan(
+        _config(tmp_path),
+        _plan(tmp_path, (task,), "token-limit-stop"),
+        max_repair=2,
+        backend=backend,
+    )
+
+    assert len(backend.calls) == 1
+    assert session.get_task_status("task") == "failed"
+    task_state = session.state["tasks"]["task"]
+    assert task_state["repairAttempts"] == 0
+    assert "split the task" in task_state["error"].lower()
+    assert task_state["gateResult"]["violations"][-1]["id"] == (
+        "output-token-limit"
+    )
+
+
+def test_token_limit_detection_uses_final_reasoning_edit_stage() -> None:
+    assert _task_output_hit_token_limit({
+        "groups": [
+            {"hitTokenLimit": {"task": True}},
+            {"hitTokenLimit": {"task": False}},
+        ],
+    }, "task") is False
+    assert _task_output_hit_token_limit({
+        "groups": [
+            {"hitTokenLimit": {"task": False}},
+            {"hitTokenLimit": {"task": True}},
+        ],
+    }, "task") is True
 
 
 def test_wide_level_is_chunked_to_max_workers(tmp_path: Path) -> None:
