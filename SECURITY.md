@@ -2,7 +2,7 @@
 
 ## Supported version
 
-Security fixes currently target the latest `0.2.x` release.
+Security fixes currently target the latest `0.4.x` release.
 
 ## Operating boundary
 
@@ -16,17 +16,20 @@ MLX Swarm is designed for local execution:
 - frontier response slots are immutable and protected by exclusive claims;
 - workspace launch approval is bound to both the canonical plan SHA-256 and an
   execution digest covering Git root, base HEAD, write roots, and referenced
-  verification profiles;
+  verification profiles, approval mode, and execution target;
 - mutating HTTP requests require same-origin browser requests;
-- worker output is treated as untrusted and rendered as text;
+- local-agent output is treated as untrusted and rendered as text;
 - subprocesses receive argument arrays and never invoke a shell.
 
-Schema-v2 mutations occur only in a retained session worktree. Unified diffs
-reject absolute/traversal paths, `.git`, runtime roots, symlink traversal,
-binary data, rename/copy metadata, special Git modes, and paths outside both
-configured and task allowlists. Apply rechecks the artifact digest, worktree
-HEAD, and cleanliness before creating a hook-free, unsigned commit. The
-original checkout is never changed by MLX Swarm.
+Schema-v3 mutations use a retained session worktree by default. Explicit
+main-checkout YOLO is available only for a completely clean repository and
+only after approval of an execution digest that names that checkout target.
+Unified diffs reject absolute/traversal paths, `.git`, runtime roots, symlink
+traversal, binary data, rename/copy metadata, special Git modes, and paths
+outside both configured and task allowlists. Apply rechecks the artifact
+digest, target HEAD, and cleanliness before creating a hook-free, unsigned
+commit. The original checkout is unchanged in worktree modes; checkout YOLO
+changes it by explicit operator choice.
 
 Verification commands come only from operator-authored config profiles. The
 approved snapshot fixes argv, cwd, timeout, inherited environment names, and
@@ -38,9 +41,13 @@ diff commands, or text conversion commands remaining in repository-local
 config—and unignored in-repository worktree roots—make workspace readiness
 fail.
 
+Verification subprocesses are not network-sandboxed. An operator-authored test
+or tool may communicate externally, so verification profiles must be reviewed
+as trusted execution authority before approval.
+
 Do not expose the cockpit through a reverse proxy or bind it to a public
-interface. Do not place secrets in plan context or worker prompts: session
-artifacts persist prompts, model output, full diffs, decision receipts,
+interface. Do not place secrets in plan context or local-agent prompts:
+session artifacts persist prompts, model output, full diffs, decision receipts,
 verification logs, validation evidence, and runtime metadata to disk.
 
 ## Reporting a vulnerability

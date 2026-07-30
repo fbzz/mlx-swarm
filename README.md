@@ -2,140 +2,140 @@
 
 # MLX Swarm
 
-**Make a small 4B LLM do the heavy lifting — locally.**
+**Codex plans. Small local agents do the heavy lifting. Codex reviews.**
 
-Plan once with frontier intelligence. Run the repeated implementation, test,
-and review work on your Mac. Return one compact result for final judgment.
+Run controlled coding-agent workflows on Apple silicon with one resident MLX
+model. The shipped profile defaults to two local agents working at the same
+time.
 
+[![Release](https://img.shields.io/github/v/release/fbzz/mlx-swarm?label=release)](https://github.com/fbzz/mlx-swarm/releases/latest)
+[![CI](https://github.com/fbzz/mlx-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/fbzz/mlx-swarm/actions/workflows/ci.yml)
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Apple silicon](https://img.shields.io/badge/Apple%20silicon-MLX-111111?logo=apple)](https://github.com/ml-explore/mlx)
-[![Local model: 4B](https://img.shields.io/badge/local%20model-4B-7C3AED)](https://huggingface.co/mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit)
-[![CI](https://github.com/fbzz/mlx-swarm/actions/workflows/ci.yml/badge.svg)](https://github.com/fbzz/mlx-swarm/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Status: alpha](https://img.shields.io/badge/status-alpha-F59E0B)](#current-scope)
+[![License: MIT](https://img.shields.io/badge/license-MIT-yellow.svg)](LICENSE)
+
+[Quick start](#quick-start) · [How it works](#how-it-works) ·
+[Safety](#safe-by-construction) · [Evidence](#measured-evidence)
 
 </div>
 
-MLX Swarm is a local-first coding-agent runtime for Apple silicon. It turns one
-high-quality plan into a bounded DAG of small, specialized jobs and runs them
-with one resident MLX model. The local 4B model powers the agent swarm through
-the token-heavy middle: writing artifacts, producing tests, checking
-dependencies, reviewing outputs, and repairing deterministic failures. A
-frontier model, when used, is reserved for the two decisions where it has the
-most leverage: planning the work and judging the final packet.
+MLX Swarm is a local-first coding-agent runtime for Mac. A strong planning
+model turns an objective into exact, dependency-aware tasks. A small local
+model implements those tasks, writes tests, checks outputs, and produces
+reports. The strong model returns only for one final review.
 
-| Plan once | Do the work locally | Review once |
+The Python runtime does not call a remote model between local-agent waves.
+Prompts, intermediate outputs, retries, and generated artifacts remain on your
+machine during execution.
+
+| Plan once | Execute locally | Review once |
 | --- | --- | --- |
-| A frontier model defines the DAG, constraints, and acceptance rules | A cached 4B MLX model powers bounded agents on your Mac | One compact `frontier-review-input.json` carries the evidence for final judgment |
+| Codex defines the files, interfaces, dependencies, and acceptance rules | The default profile runs up to two local agents at a time on one loaded 4B MLX model | Codex receives one compact evidence packet and returns a structured verdict |
 
-**Local inference is the engine, not a fallback.** During execution there is no
-frontier coordinator between waves. Agent prompts, dependency outputs, repair
-loops, and generated artifacts stay on the machine. The MLX backend resolves
-models cache-only, keeps the model loaded across the run, and batches compatible
-jobs. Use the included
-[`mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit`](https://huggingface.co/mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit)
-configuration or point MLX Swarm at another compatible cached MLX model.
+This is not an attempt to make a 4B model discover an architecture by itself.
+The strong model keeps diagnosis and design authority; the local model receives
+small, explicit jobs within its declared capability.
 
-![MLX Swarm Cockpit showing a completed implementation, test, and review DAG](docs/swarm-work-cockpit.jpg)
+## Why MLX Swarm
 
-## How MLX Swarm makes a 4B model useful
+Sending every implementation step through a frontier model can be expensive
+and unnecessary. Asking one small model to solve an entire repository task in
+one prompt is usually unreliable. MLX Swarm deliberately separates those jobs:
 
-A small model should not have to behave like an entire autonomous engineering
-team in one prompt. MLX Swarm gives it a tighter job:
+- **Strong reasoning where it matters.** Codex owns diagnosis, decomposition,
+  source anchors, interface contracts, and acceptance criteria.
+- **Local tokens for repeated work.** The 4B model handles bounded edits, test
+  artifacts, structured reviews, and reports on Apple silicon.
+- **A model loaded once.** Compatible agent tasks share one resident MLX
+  backend instead of loading a checkpoint for every call.
+- **Deterministic rejection.** JSON shape, regex, syntax, path, size, and Git
+  checks reject malformed output before it reaches the workspace.
+- **Visible autonomy.** Every plan, approval, patch, test receipt, commit, and
+  final verdict is persisted.
+- **No remote coordinator loop.** The frontier model is not called between
+  local execution waves.
 
-- **Decompose before inference.** The complete DAG, task-owned source slices,
-  frozen interface contracts, dependencies, output protocol, and acceptance
-  rules exist before the local model starts.
-- **Specialize every call.** Each agent produces one bounded artifact such as
-  a patch, test suite, JSON review, or Markdown report.
-- **Share one resident model.** Independent jobs are batched by compatible
-  sampling settings instead of repeatedly loading the model.
-- **Reject bad shape deterministically.** Regex, JSON, enum, size, and Python
-  syntax gates catch malformed output without spending a frontier call.
-- **Preflight the delegation.** Expected output must fit safely below the
-  worker's generation ceiling before model loading.
-- **Repair with exact feedback.** A failed agent sees the specific gate
-  violations and gets only the plan's limited retry budget.
-- **Escalate a result, not a transcript.** The final reviewer receives a compact
-  evidence packet instead of coordinating every local step.
+The result is a practical middle ground: more self-driving than copying model
+responses by hand, but much more bounded than giving an autonomous agent an
+open shell.
 
-That division of labor is the product thesis: spend local tokens on execution
-and scarce frontier attention on decisions.
+## How it works
 
-### When not to invoke Swarm
+```mermaid
+flowchart LR
+    A["Your objective"] --> R{"Simple change?"}
+    R -->|"Yes"| D["Codex edits and tests directly"]
+    R -->|"No"| P["Codex creates a fixed task graph"]
+    P --> H["You approve the plan and execution scope"]
+    H --> L["Default: two local agents at a time"]
+    L --> G["Deterministic gates and preconfigured tests"]
+    G --> W["Git worktree with durable evidence"]
+    W --> C["Compact final-review packet"]
+    C --> F["One Codex review"]
+    F -->|"Changes requested"| I["One linked incremental revision"]
+```
 
-The Codex skill routes a genuinely simple change directly instead of creating
-a commander request. If the request is limited to one or two files, is
-cosmetic, copy/layout-only, or a literal mechanical replacement, and does not
-cross a behavioral, security, data, concurrency, public-API, or migration
-boundary, Codex should make the change and run one direct verification without
-invoking Swarm. Swarm is for work that benefits from decomposition, isolation,
-parallel local execution, or its approval and audit boundaries. An explicitly
-requested governed Swarm run still takes precedence.
+### 1. Plan
 
-## Operating contract
+The bundled Codex skill decides whether Swarm is warranted. If it is, Codex
+returns one strict plan containing:
 
-| Phase | Frontier boundary | Local activity | Human control |
-| --- | --- | --- | --- |
-| Plan | One accepted, validated DAG artifact | Canonical validation and digest generation | Preview the whole DAG; approve the plan and execution digests |
-| Execute | **No frontier coordination between waves** | MLX agents, deterministic gates, bounded repairs, and allowlisted verification | Choose supervised decisions, or pre-authorize digest-bound YOLO in an isolated worktree or clean main checkout |
-| Review | One accepted structured verdict for a completed run | Retain the full `frontier-result.json` audit packet and derive a compact `frontier-review-input.json` | Decide whether a requested revision becomes a new linked plan |
+- a fixed dependency graph;
+- exact task ownership and allowed paths;
+- relevant source context;
+- frozen interface contracts;
+- expected output sizes;
+- deterministic output gates;
+- preconfigured verification profiles.
 
-Local agent usage and frontier planning/review usage are recorded separately.
-“One accepted artifact” describes MLX Swarm's auditable phase boundary; it does
-not claim visibility into provider-internal or Codex-internal model calls.
-When an adapter reports usage, `frontier-usage.json` preserves planning and
-final-review prompt, completion, and total tokens as separate phases. The
-review claim and receipt bind the exact compact review-input digest, while that
-input's `sourceArtifact.sha256` binds the retained full
-`frontier-result.json`. Codex skill usage that is not exposed remains
-`unavailable`, never zero or estimated; a later frontier-alone comparison
-belongs in separate evidence. When Codex is run through its JSONL CLI surface, pass the clean event log to
-`commander import-plan` or `commander import-review` with `--usage-jsonl`.
-MLX Swarm aggregates every `turn.completed` event and rejects malformed or
-missing usage instead of presenting an undercount as exact.
+The complete graph exists before the local model starts. There is no frontier
+model improvising between waves.
 
-## Built for controlled local work
+### 2. Execute
 
-Multi-agent demos often hide the expensive part in repeated coordinator calls
-or treat every model response as trusted. MLX Swarm keeps the execution
-boundary explicit:
+MLX Swarm topologically schedules ready tasks. The shipped profile runs up to
+two compatible local agents at a time, validates every response, applies
+approved changes in Git, and runs only the test commands configured by the
+operator.
 
-- **Plan once.** The complete task DAG and its acceptance rules are explicit
-  before local inference starts.
-- **Batch compatible work.** Independent tasks in the same wave share a
-  resident MLX model while preserving per-task sampling and token limits.
-- **Gate artifacts locally.** Regex, JSON shape, enum, size, and Python syntax
-  checks are deterministic and auditable.
-- **Repair with a budget.** Rejected output receives exact gate feedback, never
-  an open-ended retry loop.
-- **Persist every transition.** Sessions survive interruption and retain the
-  original validated plan.
-- **Keep isolation as the default.** Supervised runs pause on typed diffs and
-  commit only to a retained session worktree.
-- **Make YOLO explicit.** The operator may pre-authorize automatic,
-  digest-bound Apply + verification in that worktree, or deliberately select a
-  completely clean main checkout. The selected policy and target are part of
-  the execution digest.
-- **Run only configured checks.** Plans reference profile IDs; agents cannot
-  provide an executable command.
-- **Review once at the boundary.** Only completed artifacts enter the compact
-  final-review packet.
-- **Count honestly.** Local generation and frontier receipts are stored
-  separately; adapters that cannot report tokens remain explicitly
-  `unavailable`.
+Completed dependency output can inform downstream agents, but it is explicitly
+treated as untrusted candidate material. Rejected output never propagates.
 
-The framework never runs agent-supplied commands. Workspace plans may execute
-only operator-defined verification profiles. Isolated worktrees
-remain the recommended default; main-checkout execution exists only behind an
-explicit YOLO selection and clean-repository gate.
+### 3. Review
+
+A completed run retains the full `frontier-result.json` audit record and builds
+a smaller `frontier-review-input.json`. The compact packet contains the
+relevant patches, reports, failures, tests, and lineage; its SHA-256 binding
+also protects the full result from silent replacement.
+
+Codex reviews that packet once. If it requests changes, MLX Swarm can create
+one linked successor that carries validated completed work forward and plans
+only the unfinished or corrective tasks.
+
+## Use Swarm when it helps
+
+Swarm is intentionally not the answer to every edit.
+
+| Use direct Codex | Use MLX Swarm |
+| --- | --- |
+| One or two files | Several dependent tasks or files |
+| Copy, color, layout, or literal replacement | Implementation plus tests and review |
+| No behavioral or data-contract change | Persistence, migration, concurrency, security, or public API work |
+| One obvious verification command | Isolation, approvals, audit evidence, or resumability matter |
+
+A request for an explicitly governed Swarm run still takes precedence. The
+default policy simply avoids orchestration overhead when the change is
+genuinely simple.
 
 ## Quick start
 
 ### Requirements
 
 - Apple silicon Mac
-- Python 3.11+
-- roughly 4 GB of free disk for the example 6-bit model
+- Python 3.11 or newer
+- A compatible MLX checkpoint available locally
+- Roughly 4 GB of disk for the included 6-bit example checkpoint
 
 Clone and install:
 
@@ -146,926 +146,291 @@ cd mlx-swarm
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+python -m pip install -e .
 ```
 
-Pre-download the example
-[`mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit`](https://huggingface.co/mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit)
-model. MLX Swarm intentionally performs cache-only model resolution at
-runtime:
+Download the checkpoint used for the v0.4 capacity profile:
 
 ```bash
 hf download \
   mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit \
   --local-dir ~/models/qwen35-4b-opus-uncensored-6bit
+```
+
+MLX Swarm resolves models cache-only at runtime. It will not silently download
+a model during an agent run.
+
+Check the model, context metadata, batch profile, Git workspace, and configured
+verification commands without loading Metal:
+
+```bash
 mlx-swarm --config examples/swarm.json doctor
 ```
 
-Run the implementation → test/review example:
-
-```bash
-mlx-swarm --config examples/swarm.json run examples/plan.json --verbose
-```
-
-Or launch the local work cockpit:
-
-```bash
-mlx-swarm --config examples/swarm.json ui
-```
-
-The dashboard opens at `http://127.0.0.1:8765`. It exposes approved plans,
-immutable run history, the live task DAG, gate evidence, normalized output,
-batch metrics, typed diff approval, allowlisted verification evidence, resume,
-lineage-preserving retry, and Frontier Commander.
-
-Install the zero-extra-key Codex bridge:
-
-```bash
-mlx-swarm skill install
-```
-
-The skill uses existing Codex access and requires no separate provider key. The
-Python process cannot observe Codex-internal token counts, so those receipts
-are stored as unavailable rather than estimated.
-
-## How to use
-
-### Recommended: cockpit and Codex
-
-1. **Check readiness.**
-
-   ```bash
-   mlx-swarm --config examples/swarm.json doctor
-   ```
-
-   `doctor` validates the config, resolves the cached model, and reports the
-   detected Git workspace boundary without loading the model into memory.
-
-2. **Install the skill once and start the cockpit.**
-
-   ```bash
-   mlx-swarm skill install
-   mlx-swarm --config examples/swarm.json ui
-   ```
-
-3. **Request a plan.** In **Frontier Commander**, enter the objective and any
-   constraints, create the request, and copy the displayed **Plan with Codex**
-   handoff into Codex. The skill returns one strict Plan JSON artifact to MLX
-   Swarm; it does not start local execution.
-
-4. **Inspect before approving.** Review the complete DAG, task prompts,
-   dependencies, gates, artifact types, allowed paths, verification profiles,
-   detected Git root, base commit, plan digest, and execution digest. Select:
-
-   - **Supervised + isolated worktree** for review-before-Apply;
-   - **YOLO + isolated worktree** for the recommended hands-off mode;
-   - **YOLO + main checkout** only when you deliberately want successful
-     artifact commits on the current clean branch.
-
-   Mode and target are hashed into the execution digest, so a worktree approval
-   cannot be replayed against the main checkout.
-
-5. **Run local execution.** Local MLX agents execute the DAG without frontier
-   coordination between waves. In supervised mode, every `patch` or
-   `test-suite` pauses with its full escaped diff and SHA-256. In YOLO, MLX
-   Swarm seals the same immutable digest-bound decision automatically, applies
-   it, and runs only the configured verification profiles.
-
-6. **Handle failures explicitly.** Verification failure always pauses. It never
-   triggers another worker or frontier call. The applied commit stays visible;
-   the operator can rerun the same allowlisted checks or reject it with an
-   explicit revert commit.
-
-7. **Review the completed run.** A successful workspace run retains
-   `frontier-result.json` v3 with outputs, gates, commits, diffs, verification
-   receipts, lineage, and local usage. It also emits the smaller
-   `frontier-review-input.json` used by **Review with Codex**. The compact
-   packet contains the evidence needed for one final structured verdict and
-   binds the full result by SHA-256; any mismatch seals the review instead of
-   silently changing its input. For an incremental successor it also carries
-   the predecessor's unfinished-task summary, failed integration receipts, and
-   prior frontier findings so the final reviewer can check the actual reason
-   for the follow-up.
-
-   Requested changes begin a new linked commander request; the completed run
-   is never rewritten. One incremental successor may carry forward validated
-   completed work only from a terminal, clean, retained isolated worktree. Its
-   execution starts from the validated predecessor head, its plan contains
-   only unfinished or remediation tasks, and its planning claim exposes that
-   clean retained predecessor worktree for source inspection instead of the
-   possibly stale main checkout. It requires fresh plan and execution-digest
-   approval. Generation-only and main-checkout predecessors keep lineage-only
-   revision behavior; cleaned or nonterminal worktrees and a second
-   carry-forward successor are refused.
-
-   If the frontier run exposes Codex JSONL usage, import the response and exact
-   totals together:
-
-   ```bash
-   mlx-swarm --config CONFIG commander import-review \
-     SESSION_DIR REVIEW.json --claim-id CLAIM_ID \
-     --adapter codex-cli --usage-jsonl codex-review-events.jsonl
-   ```
-
-   The resulting `frontier-usage.json` keeps planning and review totals
-   separate from `localUsage`. If either frontier phase lacks reported usage,
-   the combined frontier total remains `unavailable`; individual reported
-   phase totals are still retained for the later frontier-alone comparison.
-
-The browser and executor never contact a frontier provider directly. The
-operator controls both Codex handoffs and either each mutation (supervised) or
-the complete digest-bound automatic policy (YOLO).
-
-### Optional: frontier-token economics (paused for product-building)
-
-The benchmark tooling remains available, but it is not part of the current
-product-building loop. When measurement resumes, start with the preliminary
-decision gate:
-two calibration cases followed by six measured cases, one per project and
-balanced across two small, two medium, and two large reference patches. This
-is 16 arm executions. Only move to the full six-calibration / 30-measured
-profile after local-agent acceptance is competitive.
-
-Both modes use GPT-5.6 Sol with high reasoning for the paired frontier work,
-the configured local MLX model with at most two repairs, a 45-minute ceiling
-per arm, seed `20260728`, a 20 GiB storage ceiling, and a 15 GiB free-space
-reserve.
-
-Fair-protocol evaluations additionally freeze one shared task packet and one
-shared set of production write roots for both arms. The packet contains the
-objective, failing evidence, acceptance argv, repository tree, and exact
-relevant test/traceback source. Frontier plans may not narrow the local arm’s
-path authority, and every workspace excerpt given to a local agent must match
-one contiguous region of the buggy checkout. Git may safely recount incorrect
-hunk line metadata, but it never changes the proposed additions or removals.
-Every local prompt and raw response is retained in an immutable attempt record.
-The exact shared authority and packet digest are retained as
-`pair-contract.json` beside the frozen case.
-
-The profile pins `codex-cli 0.145.0`. Install that exact official CLI in the
-ignored benchmark tooling directory and put it first on `PATH` for every
-prepare, run, status, and report command:
-
-```bash
-npm install --prefix .swarm/tooling/codex-0.145.0 \
-  @openai/codex@0.145.0
-export PATH="$PWD/.swarm/tooling/codex-0.145.0/node_modules/.bin:$PATH"
-codex --version  # codex-cli 0.145.0
-```
-
-Preparation and execution fail closed if the CLI version or profile digest
-differs from the frozen environment.
-
-Prepare the preliminary immutable suite, pass its two-case calibration gate,
-then run the six measured pairs:
-
-```bash
-mlx-swarm --config examples/swarm.json eval prepare \
-  benchmarks/bugsinpy-v1/profile.json --preliminary
-
-mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
-  --phase pilot --profile benchmarks/bugsinpy-v1/profile.json --preliminary
-
-mlx-swarm --config LOCAL_MODEL_CONFIG eval replay-local EVALUATION_ID \
-  --worker-mode reasoning-edit --reasoning-max-tokens 768
-
-mlx-swarm --config examples/swarm.json eval run EVALUATION_ID \
-  --phase measured --profile benchmarks/bugsinpy-v1/profile.json --preliminary
-```
-
-`eval replay-local` performs no frontier planning or review. It copies each
-calibration task's exact saved initial prompt into a fresh isolated worktree,
-checks the saved prompt digest, reuses the accepted plan, and evaluates the
-new local candidate with the independent oracle. The measured phase unlocks
-only when every frozen calibration case scores `1`. A failed or invalid replay
-keeps it locked, so a weak 4B worker cannot trigger six new frontier pairs.
-
-To test a newly constrained delegation strategy without changing that frozen
-gate, supply capability-adapted plans:
-
-```bash
-mlx-swarm --config LOCAL_MODEL_CONFIG eval replay-local EVALUATION_ID \
-  --worker-mode direct --adapted-plan-dir .swarm/capability-test-plans
-```
-
-This mode still records `frontierCalls: 0`, but marks the evidence
-`diagnosticOnly: true` and always leaves `measuredEligible: false`. Passing it
-shows that the local model can execute the adapted task shape; a new frozen
-evaluation is still required before measured work can unlock.
-
-The default `direct` worker makes one local generation per attempt. For small
-models that identify a repair but struggle to emit an exact artifact, enable a
-fully local reasoning-to-editing pipeline:
-
-```json
-{
-  "worker": {
-    "mode": "reasoning-edit",
-    "reasoningMaxTokens": 768,
-    "capabilities": {
-      "parameterScale": "4B",
-      "contextWindowTokens": 262144,
-      "maxGenerationTokens": 2048,
-      "specialization": "general",
-      "delegationLevel": "exact-edit",
-      "strengths": ["Renders bounded exact replacements."],
-      "limitations": ["Unreliable independent diagnosis."],
-      "calibration": {
-        "status": "failed",
-        "passedCases": 0,
-        "totalCases": 2,
-        "evidenceSha256": "lowercase-sha256-of-replay-evidence"
-      }
-    }
-  }
-}
-```
-
-The deterministic Frontier Commander prompt always includes this worker
-capability contract. It separates model scale from worker concurrency and
-states the context window, prompt-character ceiling, generation ceiling,
-specialization, execution mode, calibration, and safe delegation level. With
-`exact-edit`, the frontier must retain diagnosis and design responsibility and
-delegate only mechanical transformations with exact files, symbols, source
-anchors, and old-to-new instructions. Plans cannot request more generation
-tokens than `maxGenerationTokens`.
-
-Commander plans also carry a mandatory candidate-change specificity record.
-The frontier must simulate its proposed edit through the observed failing path
-and at least one named passing or non-target control path, then explain why its
-predicate is the narrowest evidence-backed discriminator. For exact-edit
-workers, that candidate must match the literal old-to-new task instructions.
-This catches the important case where a small worker faithfully renders a
-mechanical edit but the frontier selected an overly broad behavioral proxy.
-Standalone historical plans remain readable, but a new commander response
-without this evidence is rejected before approval or local inference.
-
-Only mutating `patch` and `test-suite` tasks use two stages. The first pass
-reasons over the frozen artifact prompt; the second receives that reasoning as
-untrusted JSON-string-encoded evidence and must emit only the strict artifact.
-Both stages count toward `localUsage`; neither is a frontier call. The replay
-ledger records `frontierCalls: 0`, the model fingerprint, worker strategy,
-saved-plan digest, saved-prompt digest, oracle result, time, and local tokens.
-
-If preparation is interrupted before `evaluation.json` seals the suite, resume
-the same evaluation and reuse its completed case runtimes:
-
-```bash
-mlx-swarm --config examples/swarm.json eval prepare \
-  benchmarks/bugsinpy-v1/profile.json --preliminary \
-  --resume EVALUATION_ID
-```
-
-Execution is one case at a time, pass@1, and resumable. The measured phase
-remains locked until the calibration pairs prove preparation, isolation,
-Codex usage capture, storage enforcement, immutable result serialization, and
-the separate zero-frontier local replay gate.
-Preparation also requires a clean MLX Swarm source checkout so the recorded
-commit identifies the exact harness. The metadata checkout, upstream project
-mirrors, and fixed-validation tree are removed before either model arm starts.
-Every selected case is oracle-preflighted during preparation; a case that does
-not prove buggy-fails/fixed-passes is recorded, excluded, and deterministically
-replaced before the suite is frozen.
-Historical compiled projects use a bounded four-job ccache during unscored
-preparation; fixed-revision objects are not admitted to that shared cache.
-Inspect progress or export sanitized evidence and the generated tables:
-
-```bash
-mlx-swarm --config examples/swarm.json eval status EVALUATION_ID
-
-mlx-swarm --config examples/swarm.json eval report EVALUATION_ID \
-  --export benchmarks/results/EVALUATION_ID \
-  --readme README.md
-
-mlx-swarm --config examples/swarm.json eval report EVALUATION_ID \
-  --export benchmarks/results/EVALUATION_ID \
-  --readme README.md --check
-```
-
-An interrupted full-study ledger that already contains the balanced first six
-measured pairs can be published without more inference:
-
-```bash
-mlx-swarm --config examples/swarm.json eval report EVALUATION_ID \
-  --preliminary --readme README.md
-
-mlx-swarm --config examples/swarm.json eval report EVALUATION_ID \
-  --preliminary --readme README.md --check
-```
-
-`--preliminary` deterministically selects two valid calibration pairs and the
-first valid six-project 2/2/2 measured subset. It never selects by score and
-can never enable the 30-pair product claim.
-
-Raw evidence remains under `.swarm/evaluations/<evaluationId>/`; the public
-export omits prompts, raw model responses, fixed patches, and local absolute
-paths. A missing `turn.completed` usage event invalidates that measurement
-instead of becoming zero. Frontier and local tokens are never combined.
-The active Docker endpoint is resolved from the operator's Docker context and
-frozen into each sanitized verification profile because verifier processes use
-an isolated `HOME`. Docker/context/container failures are classified as
-`invalid` measurements; ordinary candidate test, import, and assertion
-failures remain executable score `0`.
-
-### Use an existing plan
-
-Place a validated plan below the cockpit's approved plans directory, select it
-from the left rail, inspect its complete preview, and launch it. Schema-v1 plans
-are generation-only. Schema-v2 plans additionally require the displayed
-execution digest and use typed workspace artifacts.
-
-The included examples demonstrate both modes:
-
-- [`examples/plan.json`](examples/plan.json): generation-only
-  implementation → test/review DAG.
-- [`examples/workspace-plan.json`](examples/workspace-plan.json): typed
-  workspace patch → test-suite → review DAG.
-
-### CLI-only workspace flow
-
-First preview and record the two displayed digests:
-
-```bash
-mlx-swarm --config examples/swarm.json workspace preview \
-  examples/workspace-plan.json
-```
-
-Launch using those exact values. Supplying a known session directory makes the
-approval commands easy to run from another terminal:
+Run the included generation-only example:
 
 ```bash
 mlx-swarm --config examples/swarm.json run \
-  examples/workspace-plan.json \
-  --session-dir .swarm/runs/manual-workspace-run \
-  --approve-plan-digest PLAN_SHA256 \
-  --approve-execution-digest EXECUTION_SHA256 \
-  --verbose
+  examples/plan.json --verbose
 ```
 
-When the executor pauses, inspect the artifact and submit its displayed digest:
+The example runs three gated agent tasks without modifying the repository and
+writes a durable session plus final result below `examples/.swarm/runs/`.
+
+Or install the Codex bridge and open the local cockpit:
 
 ```bash
-mlx-swarm --config examples/swarm.json artifact show \
-  .swarm/runs/manual-workspace-run TASK_ID
-
-mlx-swarm --config examples/swarm.json artifact apply \
-  .swarm/runs/manual-workspace-run TASK_ID --digest ARTIFACT_SHA256
+mlx-swarm skill install
+mlx-swarm --config examples/swarm.json ui
 ```
 
-`artifact apply` automatically runs the snapshotted verification profiles.
-After a failed check, `artifact verify` reruns those same profiles; it never
-accepts a command:
+Open `http://127.0.0.1:8765`. The cockpit shows the plan, task graph, local
+usage, artifacts, gates, approvals, verification receipts, run history, and
+final-review handoff.
 
-```bash
-mlx-swarm --config examples/swarm.json artifact verify \
-  .swarm/runs/manual-workspace-run TASK_ID --digest ARTIFACT_SHA256
+The skill uses your existing Codex access; MLX Swarm does not require a second
+frontier-provider key.
 
-mlx-swarm --config examples/swarm.json artifact reject \
-  .swarm/runs/manual-workspace-run TASK_ID --digest ARTIFACT_SHA256
-```
+## Your first governed workflow
 
-Inspect retained lineage or remove only a terminal run's worktree:
+1. Enter the objective and constraints in **Frontier Commander**.
+2. Copy the displayed **Plan with Codex** handoff into Codex.
+3. Inspect the returned graph, paths, tests, and two SHA-256 approval digests.
+4. Choose supervised execution or approved YOLO in an isolated worktree.
+5. Let the local agents execute without frontier coordination.
+6. Inspect the completed evidence and use **Review with Codex** once.
+7. If needed, start one incremental successor from the retained worktree.
 
-```bash
-mlx-swarm --config examples/swarm.json workspace status \
-  .swarm/runs/manual-workspace-run
+The two approval digests serve different purposes:
 
-mlx-swarm --config examples/swarm.json workspace cleanup \
-  .swarm/runs/manual-workspace-run
-```
+- the **plan digest** protects the exact task graph;
+- the **execution digest** protects the plan plus repository root, base commit,
+  write paths, verification profiles, approval mode, and execution target.
 
-Cleanup retains the session branch. Promotion into the original checkout is an
-explicit manual Git operation outside MLX Swarm.
+Approval for an isolated worktree therefore cannot be replayed against your
+main checkout.
 
-### CLI-only YOLO flow
+## Two agents, explained
 
-YOLO uses the same plan digest, path boundary, immutable artifact ledger, and
-allowlisted verification profiles as supervised execution. The difference is
-that every valid mutating artifact receives an automatic `source: "yolo"`
-Apply decision.
+The default is two concurrent local agents—not two permanent roles and not a
+two-task limit. A plan may contain many implementation, test, review, and
+report tasks. MLX Swarm runs at most two ready tasks together when their
+sampling settings and mutation paths are compatible.
 
-Recommended isolated mode:
+Context is not split into two fixed 128K shares:
 
-```bash
-mlx-swarm --config CONFIG workspace preview PLAN \
-  --approval-mode yolo --workspace-target worktree
+| Limit | v0.4 default | Meaning |
+| --- | ---: | --- |
+| Checkpoint context | 262,144 tokens | Advertised maximum for an individual model request |
+| Prompt characters | 80,000 | Conservative pre-tokenization ceiling per task |
+| Physical batch input | 49,152 tokens | Maximum combined rendered input for one local batch |
+| Task generation | 2,048 tokens | Hard per-task output ceiling |
+| Exact edit recommendation | ≤1,024 tokens | Preferred ceiling for small deterministic edits |
 
-mlx-swarm --config CONFIG run PLAN \
-  --approval-mode yolo --workspace-target worktree \
-  --approve-plan-digest PLAN_SHA256 \
-  --approve-execution-digest EXECUTION_SHA256
-```
+The aggregate batch ceiling is deliberately lower than the model's advertised
+context window. It comes from observed two-agent workloads and keeps memory and
+latency predictable. If one task needs more output, split it or explicitly
+raise its bounded plan allowance; do not rely on blind retries.
 
-Direct current-branch mode:
+## Safe by construction
 
-```bash
-mlx-swarm --config CONFIG workspace preview PLAN \
-  --approval-mode yolo --workspace-target checkout
+### Choose the autonomy level
 
-mlx-swarm --config CONFIG run PLAN \
-  --approval-mode yolo --workspace-target checkout \
-  --approve-plan-digest PLAN_SHA256 \
-  --approve-execution-digest EXECUTION_SHA256
-```
+| Mode | Where changes happen | Behavior |
+| --- | --- | --- |
+| Supervised | Isolated worktree | Pause before every patch or test-suite Apply |
+| YOLO, recommended | Isolated worktree | Apply and verify automatically inside the approved scope |
+| YOLO, explicit | Current checkout | Allowed only from a completely clean repository |
 
-Checkout YOLO refuses staged, unstaged, and untracked files; records the current
-branch and HEAD; holds a repository-wide execution lock; and rechecks
-cleanliness before every Apply. Successful artifacts become commits on that
-branch. Cleanup is unavailable because the target is the real checkout.
-Verification-created changes are reported and left visible instead of being
-silently restored. Verification failure stops the run as partial and remains
-ineligible for frontier review.
+YOLO is self-driving inside a frozen contract. It is not unrestricted:
 
-## How it works
+- agents never provide executable shell commands;
+- tests are preconfigured argument arrays, executed without a shell;
+- every task has an allowed path ceiling;
+- overlapping parallel mutations are rejected;
+- patches pass path, mode, symlink, and `git apply --check` validation;
+- every accepted mutation becomes a dedicated Git commit on the selected
+  target;
+- failed verification never becomes success: supervised and checkout runs
+  pause, while isolated-worktree YOLO may revert, archive, and requeue its
+  first failure only when the approved plan still has repair budget;
+- blind generation repair is disabled by default;
+- isolated worktrees are never merged or promoted automatically.
 
-```mermaid
-flowchart LR
-    A["Frontier planning response"] --> B["Strict plan validation"]
-    B --> C["Cockpit DAG preview"]
-    C -->|"plan + policy-bound execution digests"| T{"Execution target"}
-    T -->|"recommended"| D["Isolated Git worktree"]
-    T -->|"explicit YOLO + clean tree"| M["Current checkout"]
-    D --> E["Resident MLX backend"]
-    M --> E
-    E --> F["Deterministic gates"]
-    F -->|"typed diff"| G{"Decision policy"}
-    G -->|"supervised"| A1["Human Apply or Reject"]
-    G -->|"YOLO"| A2["Automatic digest-bound Apply"]
-    A1 -->|"Apply"| H["Allowlisted verification"]
-    A2 --> H
-    F -->|"non-mutating"| I["Durable session"]
-    H -->|"pass"| I
-    H -->|"worktree YOLO: first failure"| Y["Revert, archive, and requeue once"]
-    Y --> E
-    F -->|"reject + budget remains"| R["Bounded repair prompt"]
-    R --> E
-    I --> J["Full frontier-result.json v3"]
-    J --> C1["Compact frontier-review-input.json"]
-    C1 --> K["One final frontier review"]
-    K --> L["Persisted verdict"]
-```
+The recommended flow is YOLO in an isolated worktree: approve the full scope
+once, let the agents work, then inspect a retained branch and complete evidence
+record.
 
-For each topological wave, the executor:
+### Durable sessions
 
-1. blocks descendants of rejected, failed, or blocked dependencies;
-2. chunks runnable tasks by `maxWorkers`;
-3. groups compatible temperature, top-p, and seed settings;
-4. generates with one resident MLX model;
-5. normalizes and gates every artifact;
-6. retries only rejected tasks with remaining repair budget;
-7. for workspace mutating artifacts, either pauses for the operator or seals
-   an automatic YOLO decision according to the approved policy digest;
-8. runs only the referenced, snapshotted verification profiles;
-9. in isolated-worktree YOLO, reverts, archives, and repairs one failed
-   verification attempt when the plan's budget permits;
-10. runs the plan-level integration profiles after all task artifacts complete;
-11. atomically persists task, artifact, decision, verification, and batch state.
+Every transition is written atomically. Interrupted work can resume without
+re-running completed tasks. A retry creates a new linked session rather than
+rewriting history.
 
-Completed dependency output is injected into downstream prompts as explicitly
-untrusted candidate material. Rejected output never propagates.
+Important session evidence includes:
 
-## Plan contract
+| Artifact | Purpose |
+| --- | --- |
+| `plan.snapshot.json` | Exact validated plan used for execution |
+| `workspace.snapshot.json` | Repository, base commit, paths, profiles, mode, and target |
+| `session.json` | Task, batch, gate, decision, repair, and failure state |
+| `frontier-usage.json` | Planning and final-review usage, separate from local usage |
+| `frontier-result.json` | Complete final audit packet |
+| `frontier-review-input.json` | Compact completed-only review surface |
+| `revision-input.json` | Optional validated predecessor carry-forward evidence |
 
-Plans are strict JSON: unknown fields, duplicate task IDs, bad dependencies,
-cycles, invalid regexes, unsupported roles, and incorrectly typed settings fail
-before model loading.
+Session files can contain sensitive source and output. Keep `.swarm/` private.
+
+## What stays local
+
+During execution, the model checkpoint, agent prompts, dependency outputs,
+candidate patches, test logs, repairs, and session evidence remain local.
+
+Only the explicit handoffs you copy to Codex leave the model-orchestration
+boundary:
+
+- planning: objective, constraints, capability envelope, and the repository
+  context included in the commander prompt;
+- review: the compact completed-run evidence packet.
+
+Inspect those handoffs before sending them when working with sensitive code.
+Operator-configured verification commands are local subprocesses, but MLX
+Swarm does not network-sandbox them; a test command may communicate externally
+if the operator configured it to do so. When Codex does not expose exact usage,
+MLX Swarm records it as `unavailable` rather than inventing a number. Local and
+frontier token totals are never combined.
+
+## Measured evidence
+
+The project separates runtime-capacity evidence from model-quality claims.
+
+| Evidence | Current result |
+| --- | --- |
+| Release | [`v0.4.0`](https://github.com/fbzz/mlx-swarm/releases/tag/v0.4.0) |
+| Regression suite | 280 collected locally: 274 passed, 6 environment-dependent skips |
+| CI | Green on Python 3.11, 3.12, and 3.13 |
+| Example cockpit run | Three agent tasks, three local calls, one model load, 1,848 local tokens, 12 seconds |
+| Largest recorded two-agent probe | 45,164 aggregate rendered prompt tokens, 70.67 seconds, 7.99 GB peak memory |
+| Default physical batch ceiling | 49,152 aggregate prompt tokens |
+| Runtime model policy | Cache-only resolution; one resident MLX model |
+
+The capacity probe was recorded on the development M4 Pro with 48 GiB memory.
+It demonstrates that the two-agent execution envelope fits that machine; it
+does not establish coding quality on other tasks or hardware.
+
+The shipped 4B profile has a conservative `exact-edit` authority. Production-
+shaped quality calibration remains `unmeasured`, and the earlier autonomous-
+diagnosis calibration failed both frozen cases. Codex must therefore retain
+diagnosis, API discovery, and causal-fix selection.
+
+The published preliminary BugsInPy economics run is also marked
+`protocol_invalid`; its 0/6 Swarm result must not be used to claim token savings
+or task quality. The diagnostic evidence remains available in the
+[`benchmark report`](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/report.md)
+so the next fair protocol can improve on it rather than hide it.
+
+That is the honest state of v0.4: the orchestration, isolation, batching, audit,
+and revision machinery is verified; broader task-quality and economics claims
+still require a new sealed evaluation.
+
+## Configure your own project
+
+Start from [`examples/swarm.json`](examples/swarm.json) and change:
+
+- `model.repository` and `model.localPath`;
+- the checkpoint's real context and generation capabilities;
+- `workspace.writeRoots`;
+- fixed `workspace.verificationProfiles`;
+- artifact storage location.
+
+Use [`examples/workspace-plan.json`](examples/workspace-plan.json) to understand
+the workspace contract. In normal operation, Frontier Commander generates the
+plan for you.
+
+The local agents should receive exact work:
 
 ```json
 {
-  "schemaVersion": 1,
-  "planId": "implement-test-review",
-  "objective": "Build and review a small Python module",
-  "tasks": [
-    {
-      "id": "implement",
-      "role": "implementation",
-      "prompt": "Return complete Python source only.",
-      "gate": {
-        "requiredPatterns": [
-          {"id": "has-def", "pattern": "def result\\("}
-        ],
-        "forbiddenPatterns": [],
-        "format": "text",
-        "pythonSyntax": true,
-        "maxCharacters": 5000
-      },
-      "maxRepairAttempts": 0
-    },
-    {
-      "id": "review",
-      "role": "review",
-      "prompt": "Return a JSON verdict.",
-      "dependsOn": ["implement"],
-      "gate": {
-        "requiredPatterns": [],
-        "forbiddenPatterns": [],
-        "format": "json",
-        "jsonRequiredKeys": ["verdict"],
-        "jsonAllowedKeys": ["verdict"],
-        "jsonFieldEnums": {"verdict": ["approve", "reject"]}
-      }
-    }
-  ]
-}
-```
-
-See [`examples/plan.json`](examples/plan.json) for a complete example and
-[`lat.md/plans.md`](lat.md/plans.md) for the field reference.
-
-## Workspace execution boundary
-
-Schema-v1 configs and plans remain generation-only. Config schema v2 adds
-operator authority for paths and fixed verification commands. Plan schema v3
-adds the self-driving delegation contract: task-minimal context references,
-frozen interfaces, output-budget preflight, deterministic edits, disjoint
-parallel mutations, and final integration verification.
-
-```json
-{
-  "schemaVersion": 2,
-  "model": {
-    "repository": "mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit",
-    "localPath": "~/models/qwen35-4b-opus-uncensored-6bit"
-  },
-  "batch": {
-    "maxWorkers": 2,
-    "prefillStepSize": 1024,
-    "maxPromptCharacters": 80000,
-    "maxBatchPromptTokens": 49152
-  },
-  "artifacts": ".swarm/runs",
-  "worker": {
-    "mode": "direct",
-    "reasoningMaxTokens": 768,
-    "capabilities": {
-      "parameterScale": "4B",
-      "contextWindowTokens": 262144,
-      "maxGenerationTokens": 2048,
-      "specialization": "code",
-      "delegationLevel": "exact-edit"
-    }
-  },
-  "workspace": {
-    "writeRoots": ["src", "tests"],
-    "verificationProfiles": {
-      "pytest": {
-        "argv": ["python", "-m", "pytest", "-q"],
-        "cwd": ".",
-        "timeoutSeconds": 300,
-        "inheritEnv": ["PATH", "LANG"],
-        "environment": {"PYTHONDONTWRITEBYTECODE": "1"}
-      }
-    }
-  }
-}
-```
-
-A workspace task declares a typed artifact, path ceiling, and profile IDs—not
-a command:
-
-```json
-{
-  "id": "implement",
+  "id": "implement-parser",
   "role": "implementation",
-  "prompt": "Return the smallest exact search/replace edits.",
+  "prompt": "Apply the specified parser change and return only the edit manifest.",
   "artifactType": "patch",
   "workerOutputProtocol": "edit-manifest-v1",
   "executionMode": "local-agent",
-  "contextRefs": ["implementation-source"],
-  "interfaceContract": "Preserve the public function signature and return type.",
+  "contextRefs": ["parser-source"],
+  "interfaceContract": "Preserve parse(text: str) -> ParseResult.",
   "expectedOutputTokens": 450,
-  "allowedPaths": ["src/package"],
-  "verification": ["pytest"],
-  "generationOverride": {
-    "temperature": 0,
-    "top_p": 1,
-    "max_tokens": 1024
-  },
-  "gate": {
-    "requiredPatterns": [],
-    "forbiddenPatterns": [],
-    "maxCharacters": 4000,
-    "format": "json",
-    "jsonRequiredKeys": ["edits"],
-    "jsonAllowedKeys": ["edits"]
-  }
+  "allowedPaths": ["src/parser"],
+  "verification": ["pytest-parser"]
 }
 ```
 
-Set `contextWindowTokens` to the actual checkpoint capability. The currently
-tested local Qwen3.5 4B checkpoint declares 262,144; the runtime rejects a
-rendered prompt when prompt tokens plus requested output exceed the declared
-window.
+The prompt should not ask the 4B model to discover missing source, invent an
+API, choose among architectural strategies, or diagnose an unexplained
+failure. Those decisions belong in the plan.
 
-The evidence-backed personal-workstation defaults are:
-
-| Work shape | Recommended setting |
-| --- | ---: |
-| Interactive parallelism | `maxWorkers: 2` |
-| Prefill step | `prefillStepSize: 1024` |
-| Aggregate prompt budget | `maxBatchPromptTokens: 49152` |
-| Exact edit manifest | expected output ≤700; generation ceiling 1,024 |
-| Structured review JSON | 768 normally; 1,024 only when evidence-heavy |
-| Report/research output | 1,536 normally; 2,048 only when indivisible |
-| Blind generation repair | disabled (`maxRepairAttempts: 0`) |
-| 4B reasoning pass | disabled globally; 768-token selective fallback |
-
-These values come from a 22-session downstream audit plus a two-agent probe on
-the development M4 Pro. Historical prompt-pair sums had a 40,059-token p95 and
-a 45,162-token maximum, so 49,152 keeps every observed pair in one physical
-batch. At 16,574 aggregate rendered prompt tokens, prefill 1,024 completed in
-34.05 seconds versus 34.55 seconds for a warm 512 pass and 39.00 seconds for
-2,048. A true-width-two 45,164-token batch completed in 70.67 seconds at
-7.99 GB peak memory.
-
-`maxBatchPromptTokens` bounds the sum of rendered inputs in one physical MLX
-batch. It does not divide the checkpoint's 262,144-token context into fixed
-per-agent slices. Completion budgets remain independently bounded per task.
-Across the audited calls, 16 of 17 token-limit hits failed, while blind repairs
-passed 0 of 20 and consumed 31% of prompt tokens. The runtime therefore fails
-fast on `hitTokenLimit`; split the task or deliberately raise its bounded
-ceiling in a new plan.
-
-Capability calibration is equally important. The shipped profile is explicitly
-`unmeasured`: its batching behavior is known, but a production-shaped,
-sealed exact-edit suite has not yet established worker quality. Its
-`delegationLevel: "exact-edit"` is therefore a conservative authority ceiling,
-not a benchmark claim. The frontier must supply the diagnosis, source anchors,
-interface contract, and literal transformation until a stronger role is
-supported by reproducible evidence.
-
-Strict JSON tasks default to deterministic sampling and 1,024 output tokens so
-compatible exact edits share a real MLX batch. Explicit plan overrides remain
-possible up to the checkpoint capability for measured experiments. Batch
-records expose sampler-group count, planned and actual physical calls,
-maximum true width, per-task output tokens, token-limit hits, and partial
-usage if a later physical call fails; `batchSize` alone is not treated as
-proof of parallel generation.
-
-Plan-schema-v3 `patch` and `test-suite` workers return only
-`edit-manifest-v1`: strict exact-anchor JSON that MLX Swarm materializes and
-validates as a unified diff. Legacy schema-v2 plans may still use direct diffs.
-When the frontier already knows the exact bytes, `executionMode:
-"deterministic-edit"` applies the declared manifest with zero worker calls.
-Disjoint mutating path ceilings may share a DAG level and one physical MLX
-batch; overlapping directories are rejected before execution. `review` is
-structured JSON and `report` is non-mutating text or Markdown. The persisted
-mutation artifact remains a diff. Supervised execution pauses before Apply;
-YOLO seals an immutable automatic Apply decision only after the full
-policy-bound execution digest is approved.
-
-Before launch, MLX Swarm auto-detects the nearest Git top-level and displays two
-digests. The plan digest binds the canonical plan. The execution digest binds
-that plan, the resolved workspace root, base HEAD, write roots, referenced
-verification profiles, approval mode, and workspace target:
-
-```bash
-mlx-swarm --config examples/swarm.json workspace preview \
-  examples/workspace-plan.json
-```
-
-The default target creates `mlx-swarm/<plan-id>/<session-id>` and a worktree
-below `<artifacts>/_worktrees/`. Dirty staged, unstaged, and untracked source
-changes are reported but excluded because the worktree starts from the
-displayed committed HEAD. Checkout YOLO instead requires a completely clean
-tree and commits on the displayed current branch.
-
-A mutating agent result passes through this lifecycle:
-
-1. validate paths, metadata, file modes, symlinks, and a fixed
-   `git apply --check`;
-2. persist the immutable artifact at `awaiting_approval`;
-3. in supervised mode, show the full escaped diff and require its SHA-256 for
-   Apply or Reject; in YOLO, write the equivalent immutable automatic decision;
-4. recheck HEAD and cleanliness, stage the diff, and create one hook-free,
-   unsigned commit on the selected target;
-5. run only snapshotted profile argument arrays with no shell, closed stdin,
-   bounded logs, timeouts, and a sanitized environment;
-6. unblock descendants only after every referenced profile passes.
-
-A failed supervised check leaves the applied commit visible so the operator can
-rerun the same profiles or reject the artifact with an explicit revert commit.
-In isolated-worktree YOLO, the first failed verification may automatically
-revert the commit, archive the complete attempt evidence, and requeue the task
-for its single bounded repair. A repeated failure pauses. Checkout YOLO always
-pauses instead of rewriting the operator's current branch. After every task
-completes, schema-v3 plans run the snapshotted `integrationVerification`
-profiles against the combined head. Cleanup removes only a terminal isolated
-worktree; its branch remains. Main-checkout cleanup is refused. MLX Swarm has
-no merge, cherry-pick, or promotion action.
-
-Verification receipt v2 binds the bounded merged log by SHA-256 and byte count,
-records timeout/process-group cleanup and workspace cleanliness explicitly,
-and cannot become a passing receipt unless exit status, lineage, cleanup, and
-clean-tree conditions all agree. Completed `review` and `report` artifacts are
-also reloaded from immutable manifests and payload digests before the v3
-frontier packet becomes review-eligible.
-
-See [`examples/workspace-plan.json`](examples/workspace-plan.json) and
-[`lat.md/workspace-execution.md`](lat.md/workspace-execution.md).
-
-## Deterministic gates
-
-Each task can combine:
-
-| Gate | What it checks |
-| --- | --- |
-| `requiredPatterns` | Every named multiline regex must match |
-| `forbiddenPatterns` | No named multiline regex may match |
-| `maxCharacters` | Normalized artifact stays within a hard size limit |
-| `format: "json"` | Output parses as exactly one JSON value |
-| `pythonSyntax` | Python output compiles without executing |
-| `jsonRequiredKeys` | Required top-level keys are present |
-| `jsonAllowedKeys` | Unexpected top-level keys are rejected |
-| `jsonFieldEnums` | Selected scalar fields use allowed values |
-| `stripSingleCodeFence` | One authorized outer code fence is removed |
-
-Completed thinking blocks, trailing model role tokens, common preambles, and an
-authorized single code fence can be normalized before validation. Every
-normalization and violation is recorded.
-
-## CLI
+## Essential commands
 
 ```text
 mlx-swarm --config CONFIG doctor
-mlx-swarm --config CONFIG run PLAN [--approval-mode supervised|yolo] [--workspace-target worktree|checkout] [--approve-plan-digest SHA256] [--approve-execution-digest SHA256]
-mlx-swarm --config CONFIG inspect SESSION_DIR [--task ID] [--output]
-mlx-swarm --config CONFIG resume SESSION_DIR [--max-repair N] [--verbose]
-mlx-swarm --config CONFIG list
+mlx-swarm --config CONFIG ui
+mlx-swarm --config CONFIG run PLAN
+mlx-swarm --config CONFIG inspect SESSION_DIR
+mlx-swarm --config CONFIG resume SESSION_DIR
+mlx-swarm --config CONFIG workspace preview PLAN
 mlx-swarm --config CONFIG artifact show SESSION_DIR TASK_ID
-mlx-swarm --config CONFIG artifact apply SESSION_DIR TASK_ID --digest SHA256
-mlx-swarm --config CONFIG artifact reject SESSION_DIR TASK_ID --digest SHA256
-mlx-swarm --config CONFIG artifact verify SESSION_DIR TASK_ID --digest SHA256
-mlx-swarm --config CONFIG workspace preview PLAN [--approval-mode supervised|yolo] [--workspace-target worktree|checkout]
-mlx-swarm --config CONFIG workspace status SESSION_DIR
-mlx-swarm --config CONFIG workspace cleanup SESSION_DIR
-mlx-swarm --config CONFIG ui [--plans-dir DIR] [--host 127.0.0.1] [--port 8765]
-mlx-swarm --config CONFIG commander create --objective TEXT [--constraint TEXT] [--revision-of PLAN_ID/SESSION_ID]
-mlx-swarm --config CONFIG commander show REQUEST_ID
-mlx-swarm --config CONFIG commander claim-plan REQUEST_ID
-mlx-swarm --config CONFIG commander import-plan REQUEST_ID RESPONSE --claim-id ID [--usage-jsonl CODEX.jsonl]
-mlx-swarm --config CONFIG commander claim-review SESSION_DIR
-mlx-swarm --config CONFIG commander import-review SESSION_DIR RESPONSE --claim-id ID [--usage-jsonl CODEX.jsonl]
-mlx-swarm --config CONFIG eval replay-local EVALUATION_ID \
-  [--worker-mode direct|reasoning-edit] [--reasoning-max-tokens N] \
-  [--adapted-plan-dir DIR]
-mlx-swarm skill install [--skills-dir DIR] [--force]
+mlx-swarm --config CONFIG commander create --objective TEXT
+mlx-swarm skill install
 ```
 
-| Command | Purpose |
+Run `mlx-swarm COMMAND --help` for the complete CLI.
+
+## Documentation
+
+| Topic | Guide |
 | --- | --- |
-| `doctor` | Validate config and confirm the model exists locally without loading Metal |
-| `run` | Execute a validated plan and write a durable session; workspace mode can be supervised or digest-bound YOLO |
-| `inspect` | Read session or task evidence from disk |
-| `resume` | Continue interrupted pending work without re-running completed tasks |
-| `list` | List sessions below the configured artifact directory |
-| `artifact` | Show a typed artifact or submit a digest-bound human decision |
-| `workspace` | Preview target- and policy-bound execution authority, inspect lineage, or remove a terminal isolated worktree |
-| `ui` | Launch the localhost-only operator cockpit |
-| `commander` | Create, inspect, claim, and import frontier planning/review handoffs |
-| `eval replay-local` | Reuse frozen calibration plans/prompts with zero frontier calls, or run explicitly diagnostic capability-adapted plans |
-| `skill install` | Install the bundled `mlx-swarm-commander` Codex skill |
+| System design | [`lat.md/architecture.md`](lat.md/architecture.md) |
+| Configuration | [`lat.md/config.md`](lat.md/config.md) |
+| Plan and task contracts | [`lat.md/plans.md`](lat.md/plans.md) |
+| Frontier Commander | [`lat.md/commander.md`](lat.md/commander.md) |
+| Local execution | [`lat.md/executor.md`](lat.md/executor.md) |
+| Worktrees, approvals, and YOLO | [`lat.md/workspace-execution.md`](lat.md/workspace-execution.md) |
+| MLX batching | [`lat.md/backend.md`](lat.md/backend.md) |
+| Sessions and review packets | [`lat.md/session.md`](lat.md/session.md) |
+| Test specification | [`lat.md/tests.md`](lat.md/tests.md) |
+| Release history | [`CHANGELOG.md`](CHANGELOG.md) |
 
-`swarm` remains a deprecated CLI alias for the 0.3 compatibility release. The
-former `swarm_agents` Python namespace also forwards to `mlx_swarm` temporarily.
+The [`lat.md/`](lat.md/) directory is the technical book. The README stays
+focused on deciding whether to use the project and getting the first run
+working.
 
-## Run artifacts
+## Current scope
 
-```text
-.swarm/runs/<plan-id>/<session-id>/
-├── session.json          # complete task, gate, repair, and batch state
-├── plan.snapshot.json    # immutable validated plan used by this run
-├── frontier-plan-receipt.json
-├── frontier-usage.json   # separate planning/review usage, never mixed with local
-├── revision-input.json   # optional validated predecessor carry-forward evidence
-├── runner.log            # subprocess diagnostics for UI-launched runs
-├── workspace.snapshot.json # immutable policy, target, paths, base SHA, profiles, and branch
-├── artifacts/<task-id>/
-│   ├── manifest.json     # immutable type, digest, base, affected/allowed paths
-│   ├── payload.diff      # or payload.json / payload.md
-│   ├── decision.json     # immutable initial Apply or Reject receipt
-│   └── verification/    # bounded logs and attempt receipts
-├── frontier-result.json  # v2 generation packet or v3 workspace packet
-├── frontier-review-input.json # completed-only compact review surface bound to the full result
-├── frontier-review.json  # optional persisted final verdict
-└── frontier-review-receipt.json
-```
-
-Commander request evidence lives under:
-
-```text
-.swarm/runs/_commander/requests/<request-id>/
-├── request.json
-├── revision-input.json   # optional one-successor carry-forward authority
-├── plan-prompt.txt
-├── frontier-plan.raw.txt
-├── plan.validated.json
-└── frontier-plan-receipt.json
-```
-
-True resume preserves the same session and completed artifacts. Retrying a
-partial or failed run creates a new immutable session with a `retryOf` pointer
-to its parent.
-
-## Architecture
-
-The runtime is intentionally small and dependency-light outside MLX:
-
-| Module | Responsibility |
-| --- | --- |
-| `contracts.py` | Strict config and plan parsing, limits, and DAG validation |
-| `commander.py` | Frontier requests, prompts, claims, approvals, review contracts, and usage receipts |
-| `backend.py` | Cache-only model resolution and grouped MLX batch generation |
-| `executor.py` | Topological execution, chunking, blocking, and repair loops |
-| `gates.py` | Output normalization and deterministic validation |
-| `prompting.py` | Authority, context, dependency, task, and repair prompts |
-| `session.py` | Atomic persistence and final packet export |
-| `workspace.py` | Git discovery, execution digests, worktrees, artifacts, decisions, verification, and cleanup |
-| `evaluation.py` | Frozen BugsInPy suites, isolated paired execution, usage capture, oracle scoring, economics, and publication |
-| `skill_install.py` | Safe installation of the bundled Codex orchestration skill |
-| `ui.py` | Localhost HTTP boundary and isolated CLI subprocess launch |
-| `ui_static/` | Packaged dependency-free operator cockpit |
-| `cli.py` | Runtime, commander, cockpit, and skill-install commands |
-
-The [`lat.md/`](lat.md/) knowledge base records the architecture, contracts,
-trade-offs, and test specifications next to `@lat:` source anchors.
-
-## Testing
-
-The test suite never loads a model. Backends and subprocesses are replaced with
-bounded fakes so contracts, orchestration, persistence, HTTP boundaries, and
-failure behavior remain fast and reproducible:
-
-```bash
-python -m pytest -q
-```
-
-Current release baseline is maintained by the test suite; live socket tests may
-skip in restricted sandboxes.
-
-The screenshot above is a real completed local run on an Apple M4 Pro: three
-agents across two DAG waves, one model load, three generation calls, 1,848
-local tokens, and a persisted final-review packet. It is an example, not a
-cross-machine benchmark.
-
-<!-- BEGIN MLX-SWARM-ECONOMICS -->
-## Preliminary measured economics
-
-**Study status:** `protocol_invalid` — The recorded rows are diagnostic history, not a fair paired economics comparison. A new evaluation must be prepared and run under the current protocol.
-
-**Protocol audit:** `invalid` — The tables below are retained to diagnose the old run, but they are not a valid paired comparison.
-
-**Preliminary 6-pair study.** This is a directional decision gate, not the planned 30-pair claim study. The strong “saves frontier tokens without reducing acceptance” claim is disabled regardless of the observed deltas.
-
-**Decision gate:** `rerun_fair_protocol` — Do not use this study to judge worker acceptance or token economics; rerun the preliminary suite under the current symmetric protocol.
-
-Pinned protocol: `BugsInPy@11c5f1eea954a42132cfd06bf257766a7963e0fd` · `gpt-5.6-sol` (high) · local `local/qwen35-4b-opus-uncensored-6bit@e017ecf449428c52171387b7dee317e4803708940b8f50ea1c1ef0d25529cd3d` · seed `20260728`.
-
-Recorded `2026-07-28T16:55:42.669391+00:00` on `arm64` / `arm` with 48.0 GiB memory. MLX Swarm commit `2f741c0f4f195272c65feef12939db1096c36717`; Codex `codex-cli 0.145.0`.
-
-One-time case preparation (excluded from task timing): 04:14 across 8 cases.
-
-Scores are binary executable-oracle results. Times are end-to-end wall time and exclude one-time benchmark preparation. Frontier and local tokens are intentionally separate. This pass@1 study is one suite on one machine; it does not establish monetary savings or generalize beyond the pinned protocol.
-
-| Metric | Frontier Alone | MLX Swarm | Delta |
-|---|---:|---:|---:|
-| Completed | 6/6 (100.0%) | 0/6 (0.0%) | -6 |
-| Score | 6/6 | 0/6 | -6 |
-| Median end-to-end time | 03:09 | 02:39 | -15.9% |
-| Frontier tokens (total / median) | 2,017,393 / 406,294 | 886,183 / 138,726 | 1,131,210 fewer (56.1%) |
-| Local tokens (total / median) | — | 70,304 / 8,730 | separate |
-| Repairs (total / median) | — | 12 / 2 | — |
-| Model loads | — | 6 | — |
-
-| Task | Project | Frontier score | Frontier time | Frontier tokens | Swarm score | Swarm time | Swarm frontier tokens | Local tokens | Repairs | Loads | Review | Token delta | Time delta |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|---:|
-| [black-7](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/cases/black-7.json) | black | 1 | 04:19 | 485,254 | 0 | 08:31 | 264,546 | 25,362 | 2 | 1 | not eligible | 220,708 | -04:11 |
-| [fastapi-14](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/cases/fastapi-14.json) | fastapi | 1 | 03:11 | 429,543 | 0 | 04:19 | 192,032 | 14,645 | 2 | 1 | not eligible | 237,511 | -01:09 |
-| [luigi-20](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/cases/luigi-20.json) | luigi | 1 | 03:07 | 430,410 | 0 | 03:01 | 125,267 | 10,390 | 2 | 1 | not eligible | 305,143 | +00:05 |
-| [scrapy-19](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/cases/scrapy-19.json) | scrapy | 1 | 01:18 | 138,274 | 0 | 01:32 | 55,705 | 6,026 | 2 | 1 | not eligible | 82,569 | -00:14 |
-| [sanic-5](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/cases/sanic-5.json) | sanic | 1 | 01:24 | 150,867 | 0 | 02:02 | 96,447 | 7,070 | 2 | 1 | not eligible | 54,420 | -00:39 |
-| [tornado-8](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/cases/tornado-8.json) | tornado | 1 | 07:26 | 383,045 | 0 | 02:16 | 152,186 | 6,811 | 2 | 1 | not eligible | 230,859 | +05:10 |
-
-Study: `bugsinpy-v1-20260728t162359z-preliminary-6` · paired cases: 6/6 · 95% bootstrap token-saving interval: 117,341.3 to 256,145.8 tokens. Accepted-by-both savings: — tokens across 0 cases.
-<!-- END MLX-SWARM-ECONOMICS -->
-
-## Scope and limitations
+MLX Swarm is alpha software for developers experimenting with controlled local
+coding agents.
 
 - Apple silicon and MLX only.
-- Local agents are text generators and never supply commands. Workspace mode
-  can run trusted operator-defined verification profiles against an approved
-  diff in the selected target.
-- Local deterministic gates cannot prove semantic correctness.
-- A human must approve every frontier-authored plan and policy-bound execution
-  digest. Supervised mode also requires each artifact decision; YOLO
-  pre-authorizes automatic digest-bound Apply.
-- Worktrees are never promoted automatically. Main-checkout YOLO is a separate
-  explicit choice that commits directly to the current clean branch.
-- The Codex skill exposes one accepted artifact per phase, but MLX Swarm cannot
-  inspect Codex-internal call counts or token usage.
+- The included profile is specialized for bounded exact edits, not autonomous
+  repository diagnosis.
+- Deterministic gates prove shape and policy compliance, not semantic
+  correctness.
+- Main-checkout YOLO requires a completely clean repository.
+- The runtime does not merge or promote worktree branches automatically.
+- Incremental carry-forward is limited to one successor from a terminal, clean,
+  retained isolated worktree.
 - Runtime model downloads are disabled by design.
-- Session files may contain sensitive prompt and output data; protect the
-  artifact directory accordingly.
+
+If you need an unconstrained autonomous shell agent or a proven cross-model
+coding benchmark winner, this is not that project—yet.
+
+## Contributing
+
+Useful contributions include reproducible MLX model profiles, sealed exact-edit
+calibration cases, deterministic gates, Cockpit improvements, and clearer
+operator documentation.
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull request. Report
+security issues through [`SECURITY.md`](SECURITY.md).
 
 ## License
 
