@@ -52,7 +52,8 @@ from their claim; do not override it.
 ## Use the two-agent envelope
 
 Obey the claimed prompt's capability contract if it differs. For the shipped
-Qwen3.5 4B profile, plan at most two runnable local agents per wave, with a
+Qwen3.6 35B-A3B reference profile, plan at most two runnable local agents per
+wave, with a
 49,152-token aggregate rendered-prompt budget. The 262,144-token model context
 belongs to each request; never divide it into fixed per-agent slices. Give each
 task only its authoritative context and let the runtime serialize a wave when

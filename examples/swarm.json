@@ -1,9 +1,8 @@
 {
   "schemaVersion": 2,
   "model": {
-    "repository": "mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit",
-    "revision": "",
-    "localPath": "~/models/qwen35-4b-opus-uncensored-6bit"
+    "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "revision": ""
   },
   "batch": {
     "maxWorkers": 2,
@@ -49,20 +48,19 @@
     "mode": "direct",
     "reasoningMaxTokens": 768,
     "capabilities": {
-      "parameterScale": "4B",
+      "parameterScale": "35B-A3B",
       "contextWindowTokens": 262144,
       "maxGenerationTokens": 2048,
-      "specialization": "code",
+      "specialization": "general",
       "delegationLevel": "exact-edit",
       "strengths": [
-        "Measured true-width-two MLX batching up to 45164 aggregate rendered prompt tokens at 7.99 GB peak memory.",
-        "A 49152-token aggregate prompt ceiling fits every observed two-agent prompt pair."
+        "Maintainer-measured on an M4 Pro 48 GiB: 78.5 tok/s single worker, 126.5 tok/s aggregate at width two, 160 tok/s at width four, at or below 20.2 GB peak memory.",
+        "Maintainer calibration passed 4/4 first-pass cases, including two autonomous single-file bug diagnoses."
       ],
       "limitations": [
-        "Failed both frozen autonomous-diagnosis calibration cases.",
-        "Production-shaped calibration for new files, multi-hunk edits, malformed fences, and near-limit output is not yet sealed.",
-        "Must not be asked to discover APIs, choose a causal fix, or inspect missing source.",
-        "Use at most 700 expected output tokens and a 1024-token ceiling for exact edits; split on truncation instead of retrying."
+        "Calibration on this machine is unmeasured; reproduce a calibration run before raising delegationLevel above exact-edit.",
+        "Multi-file diagnosis, API discovery, and architecture choices remain with the frontier at every measured level.",
+        "Use at most 700 expected output tokens and a 1024-token ceiling for bounded edits; the runtime escalates a truncated task once before requiring a split."
       ],
       "calibration": {
         "status": "unmeasured",

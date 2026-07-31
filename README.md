@@ -33,9 +33,9 @@ machine during execution.
 
 | Plan once | Execute locally | Review once |
 | --- | --- | --- |
-| Your frontier agent defines the files, interfaces, dependencies, and acceptance rules | The default profile runs up to two local agents at a time on one loaded 4B MLX model | Your frontier agent receives one compact evidence packet and returns a structured verdict |
+| Your frontier agent defines the files, interfaces, dependencies, and acceptance rules | The default profile runs up to two local agents at a time on one resident MoE MLX model | Your frontier agent receives one compact evidence packet and returns a structured verdict |
 
-This is not an attempt to make a 4B model discover an architecture by itself.
+This is not an attempt to make a small local model discover an architecture by itself.
 The strong model keeps diagnosis and design authority; the local model receives
 small, explicit jobs within its declared capability.
 
@@ -47,8 +47,8 @@ one prompt is usually unreliable. MLX Swarm deliberately separates those jobs:
 
 - **Strong reasoning where it matters.** The frontier agent owns diagnosis,
   decomposition, source anchors, interface contracts, and acceptance criteria.
-- **Local tokens for repeated work.** The 4B model handles bounded edits, test
-  artifacts, structured reviews, and reports on Apple silicon.
+- **Local tokens for repeated work.** The local model handles bounded edits,
+  test artifacts, structured reviews, and reports on Apple silicon.
 - **A model loaded once.** Compatible agent tasks share one resident MLX
   backend instead of loading a checkpoint for every call.
 - **Deterministic rejection.** JSON shape, regex, syntax, path, size, and Git
@@ -137,7 +137,8 @@ genuinely simple.
 - Apple silicon Mac
 - Python 3.11 or newer
 - A compatible MLX checkpoint available locally
-- Roughly 4 GB of disk for the included 6-bit example checkpoint
+- Roughly 19 GB of disk and a 32 GB+ Mac for the reference checkpoint
+  (a 4-9B MLX checkpoint with adjusted capabilities fits 16 GB machines)
 
 Clone and install:
 
@@ -151,12 +152,10 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-Download the checkpoint used for the v0.5 capacity profile:
+Download the checkpoint used for the v0.5 reference profile:
 
 ```bash
-hf download \
-  mlx-community/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated-6bit \
-  --local-dir ~/models/qwen35-4b-opus-uncensored-6bit
+hf download mlx-community/Qwen3.6-35B-A3B-4bit
 ```
 
 MLX Swarm resolves models cache-only at runtime. It will not silently download
@@ -347,10 +346,15 @@ The capacity probe was recorded on the development M4 Pro with 48 GiB memory.
 It demonstrates that the two-agent execution envelope fits that machine; it
 does not establish coding quality on other tasks or hardware.
 
-The shipped 4B profile has a conservative `exact-edit` authority. Production-
-shaped quality calibration remains `unmeasured`, and the earlier autonomous-
-diagnosis calibration failed both frozen cases. The frontier agent must
-therefore retain diagnosis, API discovery, and causal-fix selection.
+The shipped example keeps a conservative `exact-edit` authority with
+`unmeasured` calibration for your machine. The reference checkpoint
+(Qwen3.6-35B-A3B-4bit) passed maintainer calibration 4/4 at first pass —
+including two autonomous single-file bug diagnoses — measured at 78.5 tok/s
+single-worker, 126.5 tok/s aggregate at width two, and 160 tok/s at width
+four, all at or below 20.2 GB peak memory. Reproducing a calibration run on
+your hardware is the gate for raising `delegationLevel` to
+`bounded-implementation`. Multi-file diagnosis, API discovery, and
+architecture choices stay with the frontier at every measured level.
 
 The published preliminary BugsInPy economics run is also marked
 `protocol_invalid`; its 0/6 Swarm result must not be used to claim token savings
@@ -394,9 +398,9 @@ The local agents should receive exact work:
 }
 ```
 
-The prompt should not ask the 4B model to discover missing source, invent an
-API, choose among architectural strategies, or diagnose an unexplained
-failure. Those decisions belong in the plan.
+The prompt should not ask the local model to discover missing source, invent
+an API, choose among architectural strategies, or diagnose a failure beyond
+its measured delegation level. Those decisions belong in the plan.
 
 ## Essential commands
 

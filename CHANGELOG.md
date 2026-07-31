@@ -30,6 +30,17 @@ All notable changes to MLX Swarm are documented in this file.
 - Skill guidance for DAG shape (wide and shallow, dependency blast radius),
   delegation upper bounds, content-based output sizing, and
   `gate.maxCharacters` selection, mirrored in the commander plan prompt.
+- Sharded safetensors checkpoints (`model-*-of-*.safetensors` with an index)
+  are accepted by model resolution, unblocking checkpoints above ~10 GB.
+- New reference worker profile: `mlx-community/Qwen3.6-35B-A3B-4bit`,
+  maintainer-calibrated 4/4 at first pass including two autonomous
+  single-file bug diagnoses, measured at 78.5 tok/s single-worker,
+  126.5 tok/s aggregate at width two, and 160 tok/s at width four within
+  20.2 GB peak memory. The shipped example stays `exact-edit` with
+  `unmeasured` calibration; reproducing calibration is the gate for
+  `bounded-implementation` delegation.
+- GLM 5.2 planner benchmark protocol under
+  `benchmarks/glm52-planner-benchmark.md`.
 
 ### Changed
 
