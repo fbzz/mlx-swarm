@@ -28,9 +28,12 @@ starts from a history-free repository containing only the buggy tree and the
 fixed revision's designated tests.
 
 Preparation requires a clean MLX Swarm checkout and records its source commit.
-The profile also pins the exact Codex CLI version. Preparation and every run
-phase fail before an arm starts if the resolved CLI version or canonical
-profile digest differs from the frozen environment.
+Profile schema v1 preserves the original Codex contract exactly. Profile
+schema v2 is adapter-neutral and pins adapter, command, command version,
+provider, model, context window, explicit response-only toolsets, and phase
+timeouts. Preparation and every run phase fail before an arm starts if the
+resolved command version or canonical profile digest differs from the frozen
+environment.
 Every selected case must prove buggy-fails and fixed-passes before freezing;
 failed candidates are recorded, excluded, and deterministically replaced.
 If preparation is interrupted before the suite is sealed,
@@ -45,16 +48,47 @@ retained for model execution.
 
 Each case runs sequentially with seeded arm order and an independent oracle.
 
-Frontier Alone receives one clean buggy repository and one end-to-end Codex
-turn. MLX Swarm receives one frontier plan, local worker execution with at
+Frontier Alone receives one clean buggy repository and one end-to-end frontier
+phase. MLX Swarm receives one frontier plan, local worker execution with at
 most two repairs, and one final frontier review only after a completed local
 run. The evaluation harness can approve typed artifacts only inside disposable
 case workspaces. Normal sessions retain their selected, digest-bound execution
 policy; the evaluation-only approval never changes supervised or YOLO behavior.
 
-Protocol version 4 constructs one deterministic task packet for both arms. It
+The `hermes-completion` adapter uses the pinned Hermes installation only to
+resolve provider credentials and its OpenAI-compatible endpoint. A packaged
+bridge bypasses the Hermes agent loop and makes exactly one completion request
+per phase, with no tool schema, no automatic model retry, JSON-object response
+mode, and the profile's explicit reasoning-effort and maximum
+completion-token ceilings. The prompt is passed by file instead of appearing
+in process arguments. The direct arm
+receives the same frozen task packet as planning and returns
+`edit-manifest-v1`; the harness materializes and validates the diff. Planning
+and review consume stdout as strict JSON, with at most one complete outer JSON
+fence removed. Each call must produce a complete, successful usage receipt
+whose provider/model and token arithmetic match the profile.
+The prepared environment also freezes the resolved Python executable, Python
+version, and installed MLX/MLX-LM/Hugging Face package versions. Execution
+fails closed if any local-runtime field drifts before a phase starts.
+
+Protocol version 9 constructs one deterministic task packet for both arms. It
 contains the objective, failing evidence, fixed acceptance argv, frozen
-repository tree, and exact relevant test/traceback source context. Both arms
+repository tree, requested test excerpts, and ranked line-numbered production
+windows. The ranking uses only buggy-revision test text, failure evidence, and
+an optional execution trace collected by rerunning the approved verifier argv.
+The trace includes a compact executed-line map collected by the standard
+library tracer under the same network-disabled verifier command, so the
+frontier can distinguish taken and skipped branches without worker commands.
+It also captures bounded, value-safe runtime-local samples only on production
+lines inside the sealed source windows. Strings are truncated, containers expose
+only bounded shape summaries, custom objects expose bounded public instance
+fields without invoking properties, and the task packet ranks samples against
+the frozen failure evidence. Samples cover the verifier's current thread and
+new standard-library threads; absence of a local sample is not treated as proof
+that a branch did not execute, because third-party pre-existing thread portals
+may be visible only in the executed-line map.
+Trace-ranked functions include bounded neighboring source so an adjacent causal
+branch is not clipped away; fixed-revision content never participates. Both arms
 receive the same production write roots. Every mutating plan task must preserve
 that complete root set instead of narrowing local authority.
 The harness writes this authority once as immutable `pair-contract.json`, then
@@ -65,7 +99,46 @@ source excerpt must be an exact contiguous substring, and a mutating task that
 names a file cannot rely on a rewritten or elided version of that file. This
 prevents source summaries from becoming non-applicable diff context.
 
-Protocol-v4 evaluation plans also require `edit-manifest-v1` mutating workers
+For the stateless Hermes adapter, protocol v12 asks the frontier for a compact
+delegation blueprint instead of making it reproduce the full Plan schema and
+large source excerpts. The strict blueprint cites only frozen `SOURCE` labels,
+contains the evidence-backed diagnosis and sealed complete-line edit ranges, and
+rejects unknown labels, non-unique anchors, unsafe paths, or a manifest larger
+than the local generation budget. The harness deterministically materializes
+the accepted blueprint into Plan v2 with typed artifacts, gates, path authority,
+verification profile, and authoritative excerpts.
+The one planning response must validate its hypothesis against the failing path
+and a preserved control, use the executed-line map to prefer the earliest local
+failing branch over unproven upstream state mutation, then re-read every old
+range from a cited source window before returning it. The harness extracts the
+exact old text from those ranges and materializes the bounded worker manifest.
+A cited subrange is accepted only when it is uniquely contained by one sealed
+SOURCE block and is canonicalized to that block. The parser also deterministically
+removes one literal `SOURCE ` display prefix from a cited label; the enclosed
+label must still resolve uniquely to sealed evidence.
+
+Protocol v12 additionally captures up to twelve distinct states at an executed
+location, promotes exact strings that also occur on verifier mismatch lines as
+failure-delta witnesses, and renders bounded same-location call contrasts
+before the raw runtime samples. The blueprint must copy every displayed witness
+identity exactly, so a similar control call cannot silently become the claimed
+failing input. Contrasts rank those witnesses ahead of earlier calls. The
+frontier can therefore compare observed scalar state at the earliest executed
+branch and account for multiple failing shapes instead of combining unrelated
+calls or validating only the first mismatch.
+Every proposed range edit declares exact `mustAdd` and `mustRemove` assertions;
+the parser proves those textual changes occurred and rejects newly introduced
+Python syntax errors and unresolved bare callable names before the plan becomes
+authoritative. A rejected planning response produces an explicit zero-token
+local replay failure instead of aborting the promotion ledger.
+
+The GLM profile disables provider-side reasoning for these strict JSON artifact
+calls and caps completion at 16,384 tokens. This prevents hidden reasoning from
+consuming the entire completion allowance without a final response; the
+frontier prompt independently requires a complete blueprint within 8,000
+output tokens.
+
+Protocol-v12 evaluation plans require `edit-manifest-v1` mutating workers
 with deterministic sampling, thinking disabled, and at most 800 generation
 tokens. The worker returns bounded exact old/new anchors; the runtime derives
 the candidate unified diff and runs the same workspace checks. This keeps the
@@ -86,6 +159,10 @@ plans and saved prompts without a frontier call.
 The replay copies the exact saved initial local prompts into fresh worktrees.
 Every prompt is SHA-256 checked before execution. The replay ledger records
 `frontierCalls: 0`; no planning or review adapter is reachable from this path.
+A sealed pilot with invalid frontier evidence remains replayable for diagnosis:
+each missing accepted plan becomes an explicit score-zero case. That diagnostic
+replay can never repair the invalid pilot or unlock measured frontier spend,
+even if every available local plan passes.
 
 The default replay strategy is `reasoning-edit`: a local reasoning pass is
 stored as non-authoritative evidence, then a local editing pass emits the
@@ -119,13 +196,16 @@ daemon, pinned-container, or verifier-root failures classify the arm as
 Raw evidence lives below `.swarm/evaluations/<evaluationId>/`. Per-arm results
 are immutable and retain the timing, usage, patch, and oracle record.
 
-Each result includes wall-clock phase timing, all `turn.completed` usage,
+Each result includes wall-clock phase timing, adapter-reported frontier usage,
 local tokens, repair and model-load counts, patch digest, changed-file count,
-and oracle evidence. Missing frontier usage makes an arm measurement invalid;
-it is never converted to zero. Protocol version 5 marks the introduction of
-executor smart repair (bounded truncation escalation and deterministic-replay
-skip); summaries produced under earlier protocol versions are flagged for
-rerun by the protocol audit rather than compared across the change.
+and oracle evidence. Codex aggregates every `turn.completed` event; Hermes
+validates its single JSON receipt and records `api_calls` as turns. Missing
+frontier usage makes an arm measurement invalid; it is never converted to
+zero. Protocol version 14 merges the runtime-witness protocol line with the
+0.5.0 executor's smart repair (bounded truncation escalation and
+deterministic-replay skip); summaries produced under earlier protocol
+versions are flagged for rerun by the protocol audit rather than compared
+across the change.
 
 Every local generation and repair also writes an immutable attempt record with
 the exact prompt, raw response, normalized response, gate result, statistics,

@@ -271,7 +271,10 @@ execution evidence, economics calculation, and deterministic publication.
 
 They cover portable BugsInPy metadata, safe command parsing and container
 timeouts, deterministic disjoint suite selection, patch-size balancing,
-leakage prevention, Codex JSONL usage capture, missing-usage invalidation,
+leakage prevention, Codex JSONL and strict one-call Hermes JSON usage capture,
+frontier identity/version pins, schema-v1/v2 profile compatibility,
+schema-v3 completion-adapter strictness, missing-usage invalidation,
+protocol-v12 failure-delta witness extraction and exact blueprint binding,
 symmetric oracle scoring, storage gates, immutable/resumable ledgers, seeded
 bootstrap intervals, the strict claim gate, sanitized exports, deterministic
 README rendering, and read-only cockpit API serialization.
