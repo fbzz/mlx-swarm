@@ -46,13 +46,16 @@ PROFILE=benchmarks/bugsinpy-glm52/profile.json
 mlx-swarm --config $CONFIG eval prepare $PROFILE --preliminary
 
 # 2. Pilot (calibration) phase — needs GLM reachable via hermes.
-mlx-swarm --config $CONFIG eval run EVALUATION_ID --phase pilot --profile $PROFILE
+#    --preliminary is REQUIRED: prepare sealed the derived 2+6 profile, and
+#    run must derive it the same way or it fails with "Evaluation profile
+#    differs from the prepared snapshot."
+mlx-swarm --config $CONFIG eval run EVALUATION_ID --phase pilot --profile $PROFILE --preliminary
 
 # 3. Zero-frontier local replay gate (no frontier calls; unlocks measured).
 mlx-swarm --config $CONFIG eval replay-local EVALUATION_ID
 
 # 4. Measured phase (6 paired cases).
-mlx-swarm --config $CONFIG eval run EVALUATION_ID --phase measured --profile $PROFILE
+mlx-swarm --config $CONFIG eval run EVALUATION_ID --phase measured --profile $PROFILE --preliminary
 
 # 5. Status / report (preliminary reports never emit the savings claim).
 mlx-swarm --config $CONFIG eval status EVALUATION_ID
