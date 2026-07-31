@@ -61,7 +61,10 @@ RESULT_SCHEMA_VERSION = 1
 # runtime-witness protocol (13) and the 0.5.0 executor's smart repair
 # (bounded truncation escalation and deterministic-replay skip), which
 # changes the mlx-swarm arm under identical profiles.
-FAIR_EVALUATION_PROTOCOL_VERSION = 14
+# Version 15 additionally accepts a prose-wrapped blueprint by extracting
+# the first complete embedded JSON object deterministically, and clamps the
+# materialized worker task to the 800-token paired-arm generation bound.
+FAIR_EVALUATION_PROTOCOL_VERSION = 15
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -7905,6 +7908,22 @@ def parse_frontier_agent_submission(
     return submission
 
 
+def _extract_embedded_json_object(payload: str) -> dict[str, Any] | None:
+    """Return the first complete JSON object embedded in prose, if any."""
+    decoder = json.JSONDecoder()
+    index = payload.find("{")
+    while index != -1:
+        try:
+            candidate, _ = decoder.raw_decode(payload, index)
+        except json.JSONDecodeError:
+            index = payload.find("{", index + 1)
+            continue
+        if isinstance(candidate, dict):
+            return candidate
+        index = payload.find("{", index + 1)
+    return None
+
+
 def parse_frontier_delegation_blueprint(
     response: str,
     *,
@@ -7920,10 +7939,16 @@ def parse_frontier_delegation_blueprint(
         raise EvaluationError("Frontier delegation blueprint exceeds size limit.")
     try:
         blueprint = json.loads(payload)
-    except json.JSONDecodeError as exc:
-        raise EvaluationError(
-            f"Frontier delegation blueprint is not valid JSON: {exc}"
-        ) from exc
+    except json.JSONDecodeError:
+        # Protocol v15: a frontier that wraps the blueprint in prose still
+        # yields exactly one deterministic candidate — the first complete
+        # JSON object in the response. Nothing is retried or reordered.
+        blueprint = _extract_embedded_json_object(payload)
+        if blueprint is None:
+            raise EvaluationError(
+                "Frontier delegation blueprint is not valid JSON and "
+                "contains no complete embedded JSON object."
+            ) from None
     if not isinstance(blueprint, dict) or set(blueprint) != {
         "schemaVersion",
         "planId",
@@ -8339,7 +8364,9 @@ def materialize_frontier_delegation_plan(
                 "temperature": 0.0,
                 "top_p": 1.0,
                 "enable_thinking": False,
-                "max_tokens": max_generation_tokens,
+                # The paired-arm contract bounds worker generation at 800
+                # regardless of the configured capability ceiling.
+                "max_tokens": min(800, max_generation_tokens),
             },
             "gate": {
                 "requiredPatterns": [],

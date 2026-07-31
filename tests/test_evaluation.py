@@ -2496,6 +2496,88 @@ def test_frontier_delegation_blueprint_materializes_strict_worker_plan(
     }
 
 
+def test_prose_wrapped_blueprint_extracts_embedded_json_object(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n\n",
+        encoding="utf-8",
+    )
+    task_packet = (
+        "SOURCE module.py:L1-L3\n"
+        "00001 | def value():\n"
+        "00002 |     return 1\n"
+        "00003 | \n"
+        "END SOURCE module.py:L1-L3\n"
+    )
+    raw = (
+        "Looking at this case, I need to trace the failure first.\n"
+        "The root cause is in value(). Here is the blueprint:\n\n"
+        + json.dumps(_delegation_blueprint())
+        + "\n\nThis fix is minimal."
+    )
+    blueprint = parse_frontier_delegation_blueprint(
+        raw,
+        objective="Repair the frozen failure.",
+        task_packet=task_packet,
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+        maximum_manifest_characters=3_200,
+    )
+
+    assert blueprint["planId"] == "repair-module"
+
+
+def test_pure_prose_blueprint_is_rejected(tmp_path: Path) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(EvaluationError, match="no complete embedded"):
+        parse_frontier_delegation_blueprint(
+            "I would fix value() by returning two instead of one.",
+            objective="Repair the frozen failure.",
+            task_packet="SOURCE module.py:L1-L2\nEND SOURCE module.py:L1-L2\n",
+            repository=tmp_path,
+            approved_write_roots=["module.py"],
+            maximum_manifest_characters=3_200,
+        )
+
+
+def test_materialized_worker_task_clamps_generation_to_protocol_bound(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "module.py").write_text(
+        "def value():\n    return 1\n\n",
+        encoding="utf-8",
+    )
+    task_packet = (
+        "SOURCE module.py:L1-L3\n"
+        "00001 | def value():\n"
+        "00002 |     return 1\n"
+        "00003 | \n"
+        "END SOURCE module.py:L1-L3\n"
+    )
+    blueprint = parse_frontier_delegation_blueprint(
+        json.dumps(_delegation_blueprint()),
+        objective="Repair the frozen failure.",
+        task_packet=task_packet,
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+        maximum_manifest_characters=3_200,
+    )
+    plan = materialize_frontier_delegation_plan(
+        blueprint,
+        task_packet=task_packet,
+        repository=tmp_path,
+        approved_write_roots=["module.py"],
+        max_repair=2,
+        max_generation_tokens=2048,
+    )
+
+    assert plan["tasks"][0]["generationOverride"]["max_tokens"] == 800
+
+
 def test_frontier_delegation_blueprint_rejects_unknown_source(
     tmp_path: Path,
 ) -> None:
