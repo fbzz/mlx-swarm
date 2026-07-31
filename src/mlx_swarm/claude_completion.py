@@ -184,6 +184,13 @@ def main() -> int:
         env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] = str(
             args.max_completion_tokens
         )
+        if "USER" not in env:
+            # The harness passes a minimal allowlisted environment; the
+            # Claude CLI's keychain credential lookup needs the invoking
+            # user's identity.
+            import pwd
+
+            env["USER"] = pwd.getpwuid(os.getuid()).pw_name
         calls = 1
         process = subprocess.run(
             argv,
