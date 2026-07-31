@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 2,
+  "model": {
+    "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "revision": ""
+  },
+  "batch": {
+    "maxWorkers": 2,
+    "prefillStepSize": 1024,
+    "maxPromptCharacters": 80000,
+    "maxBatchPromptTokens": 49152
+  },
+  "artifacts": ".swarm/runs",
+  "workspace": {
+    "writeRoots": ["src"],
+    "verificationProfiles": {}
+  },
+  "worker": {
+    "mode": "direct",
+    "reasoningMaxTokens": 768,
+    "capabilities": {
+      "parameterScale": "35B-A3B",
+      "contextWindowTokens": 262144,
+      "maxGenerationTokens": 2048,
+      "specialization": "general",
+      "delegationLevel": "bounded-implementation",
+      "strengths": [
+        "Maintainer calibration passed 4/4 first-pass cases with zero repairs, including two autonomous single-file bug diagnoses (off-by-one loop bound, inverted discount operator).",
+        "Measured 78.5 tok/s single worker, 126.5 tok/s aggregate at width two, at or below 20.2 GB peak memory."
+      ],
+      "limitations": [
+        "Diagnosis calibration covered single-file causal bugs with failing evidence supplied; multi-file diagnosis, API discovery, and architecture choices remain with the frontier.",
+        "Keep expected output at or below 700 tokens and max_tokens at or below 1024 for bounded edits."
+      ],
+      "calibration": {
+        "status": "passed",
+        "passedCases": 4,
+        "totalCases": 4,
+        "evidenceSha256": "1904d1646bba77beba42b79e68f79463ee11aa212e34b9920939aa8176049ab1"
+      }
+    }
+  },
+  "enableThinking": false,
+  "seed": 20260731
+}
