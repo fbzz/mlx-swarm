@@ -45,6 +45,47 @@ class FakeThinkingTokenizer:
         return list(range(len(value)))
 
 
+def test_local_model_path_accepts_sharded_checkpoints(tmp_path: Path) -> None:
+    from mlx_swarm.backend import _resolve_model_path
+    from mlx_swarm.contracts import ModelConfig
+
+    model_dir = tmp_path / "sharded-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}")
+    (model_dir / "tokenizer.json").write_text("{}")
+    (model_dir / "model.safetensors.index.json").write_text("{}")
+    (model_dir / "model-00001-of-00002.safetensors").write_text("")
+    (model_dir / "model-00002-of-00002.safetensors").write_text("")
+    config = SwarmConfig(
+        source=tmp_path / "swarm.json",
+        model=ModelConfig("unused", "", str(model_dir)),
+        batch=BatchConfig(),
+        artifacts_dir=tmp_path / "runs",
+    )
+
+    assert _resolve_model_path(config) == model_dir.resolve()
+
+
+def test_local_model_path_rejects_missing_weights(tmp_path: Path) -> None:
+    from mlx_swarm.backend import _resolve_model_path
+    from mlx_swarm.contracts import ModelConfig
+
+    model_dir = tmp_path / "weightless-model"
+    model_dir.mkdir()
+    (model_dir / "config.json").write_text("{}")
+    (model_dir / "tokenizer.json").write_text("{}")
+    (model_dir / "model.safetensors.index.json").write_text("{}")
+    config = SwarmConfig(
+        source=tmp_path / "swarm.json",
+        model=ModelConfig("unused", "", str(model_dir)),
+        batch=BatchConfig(),
+        artifacts_dir=tmp_path / "runs",
+    )
+
+    with pytest.raises(RuntimeError, match="sharded"):
+        _resolve_model_path(config)
+
+
 def test_suspected_token_limit_catches_re_tokenization_drift() -> None:
     assert suspected_token_limit(794, 800)
     assert suspected_token_limit(800, 800)

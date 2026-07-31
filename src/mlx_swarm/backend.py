@@ -43,15 +43,30 @@ class BatchBackend(Protocol):
         ...
 
 
+def _missing_model_files(path: Path) -> list[str]:
+    """Validate a checkpoint dir, accepting single-file or sharded weights."""
+    missing = [
+        name
+        for name in ("config.json", "tokenizer.json")
+        if not (path / name).is_file()
+    ]
+    has_weights = (
+        (path / "model.safetensors").is_file()
+        or (
+            (path / "model.safetensors.index.json").is_file()
+            and any(path.glob("model-*-of-*.safetensors"))
+        )
+    )
+    if not has_weights:
+        missing.append("model.safetensors or sharded model-*.safetensors")
+    return missing
+
+
 def _resolve_model_path(config: SwarmConfig) -> Path:
     """Resolve the model path: explicit local_path > pinned revision > repo lookup."""
     if config.model.local_path:
         p = Path(config.model.local_path).expanduser().resolve()
-        missing = [
-            name
-            for name in ("config.json", "model.safetensors", "tokenizer.json")
-            if not (p / name).is_file()
-        ]
+        missing = _missing_model_files(p)
         if missing:
             raise RuntimeError(f"Model path {p} missing: {', '.join(missing)}")
         return p
@@ -70,11 +85,7 @@ def _resolve_model_path(config: SwarmConfig) -> Path:
                 + (f" --revision {config.model.revision}" if config.model.revision else "")
             ) from exc
         p = Path(snapshot).resolve()
-        missing = [
-            name
-            for name in ("config.json", "model.safetensors", "tokenizer.json")
-            if not (p / name).is_file()
-        ]
+        missing = _missing_model_files(p)
         if missing:
             raise RuntimeError(f"Model snapshot {p} missing: {', '.join(missing)}")
         return p
