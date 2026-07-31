@@ -75,7 +75,9 @@ selective fallback.
 Size every `gate.maxCharacters` to the full expected artifact: for a
 deterministic-edit task at least the length of the compact serialized
 `{"edits": [...]}` payload — plan import rejects a smaller gate — and for a
-local-agent task roughly four characters per expected output token.
+local-agent task at least five characters per expected output token —
+size the gate with real headroom above the estimate, or a correct
+artifact fails by a few percent.
 
 ## Shape the DAG
 

@@ -52,8 +52,9 @@ REVIEW_DEFAULT_MAX_TOKENS = 768
 REVIEW_EXCEPTION_MAX_TOKENS = 1024
 REPORT_DEFAULT_MAX_TOKENS = 1536
 REPORT_EXCEPTION_MAX_TOKENS = 2048
-# Roughly four characters per expected output token for a local-agent gate.
-LOCAL_GATE_MAX_CHARACTERS_EXAMPLE = EXACT_EDIT_EXPECTED_MAX_TOKENS * 4
+# Five characters per expected output token for a local-agent gate: the
+# estimate needs headroom, or a correct artifact fails by a few percent.
+LOCAL_GATE_MAX_CHARACTERS_EXAMPLE = EXACT_EDIT_EXPECTED_MAX_TOKENS * 5
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _SAFE_LINEAGE = re.compile(
@@ -571,8 +572,9 @@ PLAN LIMITS
 - gate.maxCharacters must cover the full expected artifact: for a
   deterministic-edit task it must be at least the length of the compact
   serialized {{"edits": [...]}} payload (plan import rejects a smaller
-  gate), and for a local-agent task roughly four characters per expected
-  output token.
+  gate), and for a local-agent task at least five characters per expected
+  output token — size the gate with real headroom above the estimate, or
+  a correct artifact fails by a few percent.
 - For review tasks, normally set max_tokens to at most \
 {min(REVIEW_DEFAULT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
   Use at most \

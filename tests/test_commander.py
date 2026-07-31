@@ -504,7 +504,7 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     assert "propagates failure" in prompt
     assert "gate.maxCharacters must cover the full expected artifact" in prompt
     assert "3.5 characters per" in prompt
-    assert '"maxCharacters": 2800' in prompt
+    assert '"maxCharacters": 3500' in prompt
     assert "20000" not in prompt
     assert "aggregate rendered prompt budget per physical batch: 49152" in prompt
     assert "never divide it into fixed per-agent" in prompt
