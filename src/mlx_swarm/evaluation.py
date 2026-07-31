@@ -4176,15 +4176,11 @@ class EvaluationRunner:
         session._save()
         session.attach_workspace(
             snapshot,
-            execution_approval={
-                "schemaVersion": 1,
-                "planSha256": plan_digest,
-                "executionDigest": execution["executionDigest"],
-                "workspaceRoot": execution["workspaceRoot"],
-                "baseSha": execution["baseSha"],
-                "approvedAt": utc_now(),
-                "source": "evaluation-harness",
-            },
+            execution_approval=_evaluation_execution_approval(
+                snapshot,
+                plan_sha256=plan_digest,
+                source="evaluation-harness",
+            ),
         )
         session.attach_commander(
             request_id=request["request"]["requestId"],
@@ -4704,15 +4700,11 @@ def run_local_replay_calibration(
             install_frozen_prompt_replay(session, source_prompts)
         session.attach_workspace(
             snapshot,
-            execution_approval={
-                "schemaVersion": 1,
-                "planSha256": canonical_json_sha256(plan.raw),
-                "executionDigest": preview["executionDigest"],
-                "workspaceRoot": preview["workspaceRoot"],
-                "baseSha": preview["baseSha"],
-                "approvedAt": utc_now(),
-                "source": "evaluation-local-replay",
-            },
+            execution_approval=_evaluation_execution_approval(
+                snapshot,
+                plan_sha256=canonical_json_sha256(plan.raw),
+                source="evaluation-local-replay",
+            ),
         )
 
         started = time.perf_counter()
@@ -5202,6 +5194,28 @@ def validate_pilot_evidence(
             10**9,
         )
     store._check_storage(profile)
+
+
+def _evaluation_execution_approval(
+    snapshot: dict[str, Any],
+    *,
+    plan_sha256: str,
+    source: str,
+) -> dict[str, Any]:
+    """Bind the synthetic approval to the snapshot's sealed execution policy."""
+    policy = snapshot.get("executionPolicy") or {}
+    return {
+        "schemaVersion": 1,
+        "planSha256": plan_sha256,
+        "executionDigest": snapshot["executionDigest"],
+        "workspaceRoot": snapshot["workspaceRoot"],
+        "baseSha": snapshot["baseSha"],
+        "approvalMode": policy.get("approvalMode"),
+        "workspaceTarget": policy.get("workspaceTarget"),
+        "executionPolicySha256": snapshot.get("executionPolicySha256"),
+        "approvedAt": utc_now(),
+        "source": source,
+    }
 
 
 def run_swarm_with_synthetic_operator(
