@@ -363,7 +363,11 @@ _FRONTIER_ADAPTERS = (
     "hermes-oneshot",
     "hermes-completion",
     "hermes-agent",
+    "claude-cli",
 )
+# Adapters sharing the one-call completion contract: prompt by file,
+# response on stdout, one strict usage receipt.
+_COMPLETION_ADAPTERS = frozenset({"hermes-completion", "claude-cli"})
 _FRONTIER_TOOLSETS = ("todo", "read-source", "submit-plan")
 _MAX_FRONTIER_RESPONSE_BYTES = 1_000_000
 
@@ -792,14 +796,14 @@ def load_evaluation_profile(path: Path) -> EvaluationProfile:
             raise EvaluationError(
                 "hermes-oneshot adapter requires exactly the todo toolset."
             )
-    elif adapter == "hermes-completion":
+    elif adapter in _COMPLETION_ADAPTERS:
         if schema_version != 3:
             raise EvaluationError(
-                "hermes-completion requires evaluation profile schema version 3."
+                f"{adapter} requires evaluation profile schema version 3."
             )
         if toolsets:
             raise EvaluationError(
-                "hermes-completion adapter does not permit toolsets."
+                f"{adapter} adapter does not permit toolsets."
             )
     elif adapter == "hermes-agent":
         if schema_version != 4:
@@ -3617,7 +3621,9 @@ class EvaluationRunner:
         evidence_root = arm_root / "evidence"
         evidence_root.mkdir(parents=True, exist_ok=True)
         started = time.perf_counter()
-        is_hermes = self.profile.frontier.adapter == "hermes-completion"
+        is_hermes = (
+            self.profile.frontier.adapter in _COMPLETION_ADAPTERS
+        )
         if is_hermes:
             usage_file = evidence_root / "usage.json"
             response_file = evidence_root / "response.txt"
@@ -3880,7 +3886,9 @@ class EvaluationRunner:
         plan_blueprint_response = evidence_root / "plan-blueprint.raw.json"
         started = time.perf_counter()
         deadline = started + self.profile.frontier.arm_timeout_seconds
-        is_hermes = self.profile.frontier.adapter == "hermes-completion"
+        is_hermes = (
+            self.profile.frontier.adapter in _COMPLETION_ADAPTERS
+        )
         plan_prompt_text = Path(claim["promptPath"]).read_text(
             encoding="utf-8"
         )
@@ -8876,6 +8884,40 @@ def hermes_command(
     return argv
 
 
+def claude_command(
+    profile: EvaluationProfile,
+    *,
+    usage_file: Path,
+    prompt_file: Path,
+    request_timeout_seconds: int,
+) -> list[str]:
+    """Build the one-call Claude Code CLI bridge invocation."""
+    executable = shutil.which(profile.frontier.command)
+    if executable is None:
+        raise EvaluationError("Configured Claude command is unavailable.")
+    bridge = Path(__file__).with_name("claude_completion.py")
+    if not bridge.is_file():
+        raise EvaluationError("Packaged Claude completion bridge is missing.")
+    return [
+        sys.executable,
+        str(bridge),
+        "--command",
+        executable,
+        "--provider",
+        profile.frontier.provider,
+        "--model",
+        profile.frontier.model,
+        "--prompt-file",
+        str(prompt_file),
+        "--usage-file",
+        str(usage_file),
+        "--max-completion-tokens",
+        str(profile.frontier.max_completion_tokens),
+        "--request-timeout-seconds",
+        str(request_timeout_seconds),
+    ]
+
+
 def frontier_command(
     profile: EvaluationProfile,
     *,
@@ -8894,15 +8936,22 @@ def frontier_command(
             sandbox=sandbox,
             output_last_message=output_last_message,
         )
-    if profile.frontier.adapter == "hermes-completion":
+    if profile.frontier.adapter in _COMPLETION_ADAPTERS:
         if (
             usage_file is None
             or prompt_file is None
             or request_timeout_seconds is None
         ):
             raise EvaluationError(
-                "hermes-completion adapter requires usage_file, prompt_file, "
-                "and request_timeout_seconds."
+                f"{profile.frontier.adapter} adapter requires usage_file, "
+                "prompt_file, and request_timeout_seconds."
+            )
+        if profile.frontier.adapter == "claude-cli":
+            return claude_command(
+                profile,
+                usage_file=usage_file,
+                prompt_file=prompt_file,
+                request_timeout_seconds=request_timeout_seconds,
             )
         return hermes_command(
             profile,
@@ -10048,6 +10097,7 @@ def inspect_frontier_version(profile: EvaluationProfile) -> str:
     if profile.frontier.adapter in {
         "hermes-oneshot",
         "hermes-completion",
+        "claude-cli",
     }:
         actual = _best_effort_version(
             [profile.frontier.command, "--version"]

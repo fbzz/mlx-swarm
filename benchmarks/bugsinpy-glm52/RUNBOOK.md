@@ -1,5 +1,11 @@
 # GLM 5.2 Economics Evaluation — Runbook
 
+> Variant: a Claude Sonnet frontier is available via the `claude-cli`
+> adapter and `benchmarks/bugsinpy-sonnet/profile.json` (one-call bridge
+> over the authenticated Claude Code CLI, subscription-backed, usage
+> receipts from the headless JSON envelope). Substitute that profile path
+> in every command below; the sequence is identical.
+
 Self-contained operating instructions for the preliminary BugsInPy economics
 study: GLM 5.2 frontier (hermes-completion adapter) vs MLX Swarm with the
 calibrated Qwen3.6-35B-A3B-4bit local worker, under fair-evaluation

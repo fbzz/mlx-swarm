@@ -1,0 +1,132 @@
+{
+  "schemaVersion": 3,
+  "profileId": "bugsinpy-sonnet",
+  "benchmark": {
+    "repository": "https://github.com/soarsmu/BugsInPy.git",
+    "revision": "11c5f1eea954a42132cfd06bf257766a7963e0fd"
+  },
+  "seed": 20260728,
+  "selection": {
+    "pilotSize": 6,
+    "measuredSize": 30,
+    "minProjects": 6,
+    "maxPerProject": 5,
+    "maxChangedFiles": 4,
+    "maxChangedLines": 200,
+    "maxContextCharacters": 120000,
+    "minimumPython": "3.7",
+    "projects": [
+      "black",
+      "fastapi",
+      "luigi",
+      "scrapy",
+      "sanic",
+      "tornado",
+      "PySnooper",
+      "youtube-dl"
+    ]
+  },
+  "storage": {
+    "maxBytes": 21474836480,
+    "minFreeBytes": 16106127360
+  },
+  "container": {
+    "image": "mlx-swarm-bugsinpy-amd64:11c5f1eea954-py37",
+    "digest": "sha256:f577bdd087333bbc04de8641a2523cd47860dea704aee62339283a40030ee1cb",
+    "platform": "linux/amd64"
+  },
+  "frontier": {
+    "adapter": "claude-cli",
+    "command": "claude",
+    "commandVersion": "2.1.220 (Claude Code)",
+    "provider": "claude-code",
+    "model": "claude-sonnet-5",
+    "contextWindowTokens": 200000,
+    "maxCompletionTokens": 16384,
+    "reasoningEffort": "none",
+    "toolsets": [],
+    "armTimeoutSeconds": 2700,
+    "planningTimeoutSeconds": 600,
+    "localTimeoutSeconds": 1500,
+    "reviewTimeoutSeconds": 600
+  },
+  "pythonBootstrap": [
+    "pip==23.3.2",
+    "setuptools==57.5.0",
+    "wheel==0.41.3",
+    "Cython==0.29.36"
+  ],
+  "dependencyRoots": {
+    "black": [
+      "Click",
+      "attrs",
+      "appdirs",
+      "pathspec",
+      "regex",
+      "toml",
+      "typed-ast",
+      "mypy-extensions"
+    ],
+    "fastapi": [
+      "pydantic",
+      "starlette",
+      "requests",
+      "python-multipart",
+      "pytest"
+    ],
+    "luigi": [
+      "mock",
+      "python-dateutil",
+      "tornado",
+      "pytest"
+    ],
+    "scrapy": [
+      "Twisted",
+      "cssselect",
+      "lxml",
+      "parsel",
+      "PyDispatcher",
+      "pyOpenSSL",
+      "queuelib",
+      "service-identity",
+      "w3lib",
+      "pytest"
+    ],
+    "sanic": [
+      "aiofiles",
+      "httptools",
+      "multidict",
+      "pytest",
+      "pytest-sanic",
+      "websockets"
+    ],
+    "tornado": [],
+    "PySnooper": [
+      "pytest"
+    ],
+    "youtube-dl": []
+  },
+  "dependencyPins": {
+    "black": [],
+    "fastapi": [],
+    "luigi": [],
+    "scrapy": [],
+    "sanic": [],
+    "tornado": [],
+    "PySnooper": [
+      "pytest==5.4.3",
+      "attrs==19.3.0",
+      "more-itertools==8.3.0",
+      "packaging==20.4",
+      "pluggy==0.13.1",
+      "py==1.8.1",
+      "pyparsing==2.4.7",
+      "six==1.15.0",
+      "wcwidth==0.1.9"
+    ],
+    "youtube-dl": []
+  },
+  "local": {
+    "maxRepair": 2
+  }
+}

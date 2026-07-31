@@ -200,3 +200,15 @@ Do not invent token flags for a skill-hosted adapter. MLX Swarm must record
 frontier token usage as unavailable rather than estimating it. Import exact
 usage only through an explicitly supported host adapter and its original
 machine-readable usage artifact.
+
+## Evaluation frontier duty
+
+The economics harness can also use a Claude Code installation as its
+evaluation frontier through the `claude-cli` adapter: a packaged bridge
+makes exactly one single-turn `claude -p` completion per phase with every
+workspace tool disallowed and records a strict usage receipt from the
+headless JSON envelope. When acting in that role, return exactly one JSON
+object per phase with no prose, no fences, and no tool use — the bridge
+enforces one turn and the harness rejects anything else. Never run
+evaluation phases through this interactive skill; the harness owns that
+lifecycle via `mlx-swarm eval`.

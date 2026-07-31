@@ -216,6 +216,122 @@ def _hermes_profile_payload() -> dict[str, Any]:
     return payload
 
 
+def _claude_profile_payload() -> dict[str, Any]:
+    payload = _profile_payload()
+    payload["schemaVersion"] = 3
+    payload["profileId"] = "test-study-sonnet"
+    payload["frontier"] = {
+        "adapter": "claude-cli",
+        "command": "claude",
+        "commandVersion": "2.1.220 (Claude Code)",
+        "provider": "claude-code",
+        "model": "claude-sonnet-5",
+        "contextWindowTokens": 200000,
+        "maxCompletionTokens": 16384,
+        "reasoningEffort": "none",
+        "toolsets": [],
+        "armTimeoutSeconds": 2700,
+        "planningTimeoutSeconds": 600,
+        "localTimeoutSeconds": 1500,
+        "reviewTimeoutSeconds": 600,
+    }
+    return payload
+
+
+def _claude_envelope(**overrides: Any) -> dict[str, Any]:
+    envelope: dict[str, Any] = {
+        "is_error": False,
+        "subtype": "success",
+        "num_turns": 1,
+        "result": '{"ok": true}',
+        "usage": {
+            "input_tokens": 12,
+            "cache_read_input_tokens": 300,
+            "cache_creation_input_tokens": 90,
+            "output_tokens": 40,
+        },
+        "modelUsage": {
+            "claude-sonnet-5": {"inputTokens": 400, "outputTokens": 40},
+            "claude-haiku-4-5-20251001": {
+                "inputTokens": 500,
+                "outputTokens": 12,
+            },
+        },
+    }
+    envelope.update(overrides)
+    return envelope
+
+
+def test_claude_profile_parses_and_builds_bridge_command(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mlx_swarm.evaluation import claude_command
+
+    profile = load_evaluation_profile(
+        _write_profile(tmp_path, _claude_profile_payload())
+    )
+    assert profile.frontier.adapter == "claude-cli"
+
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.shutil.which",
+        lambda name: "/usr/local/bin/claude" if name == "claude" else None,
+    )
+    argv = claude_command(
+        profile,
+        usage_file=tmp_path / "usage.json",
+        prompt_file=tmp_path / "prompt.txt",
+        request_timeout_seconds=600,
+    )
+
+    assert argv[1].endswith("claude_completion.py")
+    assert "--command" in argv and "/usr/local/bin/claude" in argv
+    assert "--model" in argv and "claude-sonnet-5" in argv
+    assert "--max-completion-tokens" in argv and "16384" in argv
+
+
+def test_claude_envelope_maps_to_strict_receipt() -> None:
+    from mlx_swarm.claude_completion import receipt_from_envelope
+    from mlx_swarm.evaluation import parse_hermes_usage_json
+
+    receipt, content = receipt_from_envelope(
+        _claude_envelope(),
+        provider="claude-code",
+        model="claude-sonnet-5",
+    )
+
+    assert content == '{"ok": true}'
+    assert receipt["input_tokens"] == 12 + 300 + 90
+    assert receipt["cache_read_tokens"] == 300
+    assert receipt["cache_write_tokens"] == 90
+    assert receipt["output_tokens"] == 40
+    assert receipt["total_tokens"] == receipt["input_tokens"] + 40
+    parsed = parse_hermes_usage_json(
+        json.dumps(receipt),
+        expected_provider="claude-code",
+        expected_model="claude-sonnet-5",
+    )
+    assert parsed["usageStatus"] == "reported"
+    assert parsed["totalTokens"] == receipt["total_tokens"]
+
+
+def test_claude_envelope_rejects_error_multiturn_and_wrong_model() -> None:
+    from mlx_swarm.claude_completion import receipt_from_envelope
+
+    for overrides in (
+        {"is_error": True},
+        {"subtype": "error_max_turns"},
+        {"num_turns": 3},
+        {"modelUsage": {"claude-haiku-4-5-20251001": {}}},
+    ):
+        with pytest.raises(RuntimeError):
+            receipt_from_envelope(
+                _claude_envelope(**overrides),
+                provider="claude-code",
+                model="claude-sonnet-5",
+            )
+
+
 def _case(case_id: str, project: str, stratum: str) -> dict[str, Any]:
     number = int(case_id.rsplit("-", 1)[-1])
     return {
