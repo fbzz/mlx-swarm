@@ -42,7 +42,7 @@
         "stripSingleCodeFence": true,
         "pythonSyntax": true
       },
-      "maxRepairAttempts": 0,
+      "maxRepairAttempts": 1,
       "generationOverride": {
         "max_tokens": 300
       }
@@ -64,7 +64,7 @@
         "stripSingleCodeFence": true,
         "pythonSyntax": true
       },
-      "maxRepairAttempts": 0,
+      "maxRepairAttempts": 1,
       "generationOverride": {
         "max_tokens": 600
       }
@@ -89,7 +89,7 @@
           "verdict": ["approve", "reject"]
         }
       },
-      "maxRepairAttempts": 0,
+      "maxRepairAttempts": 1,
       "generationOverride": {
         "max_tokens": 250
       }

@@ -151,7 +151,7 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
-Download the checkpoint used for the v0.4 capacity profile:
+Download the checkpoint used for the v0.5 capacity profile:
 
 ```bash
 hf download \
@@ -221,7 +221,9 @@ a second frontier-provider key.
 2. Copy the displayed planning handoff into Claude Code, Codex, or another
    compatible Agent Skills host.
 3. Inspect the returned graph, paths, tests, and two SHA-256 approval digests.
-4. Choose supervised execution or approved YOLO in an isolated worktree.
+4. Choose supervised execution or approved YOLO in an isolated worktree; one
+   Approve-and-run action (or `run PLAN --approve-preview` on the CLI) binds
+   both digests.
 5. Let the local agents execute without frontier coordination.
 6. Inspect the completed evidence and copy the review handoff once.
 7. If needed, start one incremental successor from the retained worktree.
@@ -244,7 +246,7 @@ sampling settings and mutation paths are compatible.
 
 Context is not split into two fixed 128K shares:
 
-| Limit | v0.4 default | Meaning |
+| Limit | v0.5 default | Meaning |
 | --- | ---: | --- |
 | Checkpoint context | 262,144 tokens | Advertised maximum for an individual model request |
 | Prompt characters | 80,000 | Conservative pre-tokenization ceiling per task |
@@ -279,7 +281,9 @@ YOLO is self-driving inside a frozen contract. It is not unrestricted:
 - failed verification never becomes success: supervised and checkout runs
   pause, while isolated-worktree YOLO may revert, archive, and requeue its
   first failure only when the approved plan still has repair budget;
-- blind generation repair is disabled by default;
+- rejected output earns at most one gate-feedback repair by default; a
+  truncated response gets one bounded ceiling escalation, and a repair that
+  would deterministically replay a prior attempt is skipped unspent;
 - isolated worktrees are never merged or promoted automatically.
 
 The recommended flow is YOLO in an isolated worktree: approve the full scope
@@ -331,7 +335,7 @@ The project separates runtime-capacity evidence from model-quality claims.
 
 | Evidence | Current result |
 | --- | --- |
-| Release | [`v0.4.0`](https://github.com/fbzz/mlx-swarm/releases/tag/v0.4.0) |
+| Release | [`v0.5.0`](https://github.com/fbzz/mlx-swarm/releases/tag/v0.5.0) |
 | Regression suite | 280 collected locally: 274 passed, 6 environment-dependent skips |
 | CI | Green on Python 3.11, 3.12, and 3.13 |
 | Example cockpit run | Three agent tasks, three local calls, one model load, 1,848 local tokens, 12 seconds |
@@ -354,7 +358,7 @@ or task quality. The diagnostic evidence remains available in the
 [`benchmark report`](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/report.md)
 so the next fair protocol can improve on it rather than hide it.
 
-That is the honest state of v0.4: the orchestration, isolation, batching, audit,
+That is the honest state of v0.5: the orchestration, isolation, batching, audit,
 and revision machinery is verified; broader task-quality and economics claims
 still require a new sealed evaluation.
 

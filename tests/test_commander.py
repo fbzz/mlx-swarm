@@ -449,7 +449,8 @@ def test_commander_rejects_unvalidated_causal_hypothesis(
             total_tokens=50,
         )
     detail = store.request_detail(request_id)
-    assert detail["request"]["status"] == "plan_invalid"
+    assert detail["request"]["status"] == "awaiting_plan"
+    assert detail["request"]["planPhase"]["importAttempts"] == 1
 
 
 def test_commander_rejects_diagnosis_without_candidate_change_validation(
@@ -498,7 +499,13 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     assert "deterministic-edit" in prompt
     assert "contextRefs" in prompt
     assert "pairwise disjoint" in prompt
-    assert "Every local-agent task uses maxRepairAttempts 0" in prompt
+    assert "maxRepairAttempts 1 for local-agent tasks" in prompt
+    assert "wide and shallow" in prompt
+    assert "propagates failure" in prompt
+    assert "gate.maxCharacters must cover the full expected artifact" in prompt
+    assert "3.5 characters per" in prompt
+    assert '"maxCharacters": 2800' in prompt
+    assert "20000" not in prompt
     assert "aggregate rendered prompt budget per physical batch: 49152" in prompt
     assert "never divide it into fixed per-agent" in prompt
     assert "For review tasks, normally set max_tokens to at most 768" in prompt
@@ -566,17 +573,49 @@ def test_plan_claim_import_digest_and_immutable_slot(tmp_path: Path) -> None:
         store.claim_plan(request_id)
 
 
-def test_invalid_plan_is_recorded_and_request_is_sealed(tmp_path: Path) -> None:
+def test_invalid_plan_seals_only_after_bounded_reimports(
+    tmp_path: Path,
+) -> None:
     store = CommanderStore(_workspace(tmp_path))
     request_id = store.create_request("Make a plan")["request"]["requestId"]
     claim = store.claim_plan(request_id)
-    response = tmp_path / "invalid-plan.json"
-    response.write_text('{"schemaVersion": 1, "bad": true}', encoding="utf-8")
+    request_dir = Path(
+        store.request_detail(request_id)["planPrompt"]
+    ).parent
 
+    for attempt in (1, 2):
+        response = tmp_path / f"invalid-plan-{attempt}.json"
+        response.write_text(
+            json.dumps({"schemaVersion": 1, "bad": attempt}),
+            encoding="utf-8",
+        )
+        with pytest.raises(
+            CommanderError,
+            match=rf"attempt {attempt} is invalid; {3 - attempt} corrected",
+        ):
+            store.import_plan(
+                request_id,
+                response,
+                claim_id=claim["claimId"],
+                prompt_tokens=30,
+                completion_tokens=20,
+                total_tokens=50,
+            )
+        detail = store.request_detail(request_id)
+        assert detail["request"]["status"] == "awaiting_plan"
+        assert detail["request"]["planPhase"]["importAttempts"] == attempt
+        assert detail["validationError"]["attempt"] == attempt
+        assert detail["validationError"]["attemptsRemaining"] == 3 - attempt
+
+    final = tmp_path / "invalid-plan-3.json"
+    final.write_text(
+        json.dumps({"schemaVersion": 1, "bad": 3}),
+        encoding="utf-8",
+    )
     with pytest.raises(CommanderError, match="sealed"):
         store.import_plan(
             request_id,
-            response,
+            final,
             claim_id=claim["claimId"],
             prompt_tokens=30,
             completion_tokens=20,
@@ -585,13 +624,23 @@ def test_invalid_plan_is_recorded_and_request_is_sealed(tmp_path: Path) -> None:
 
     detail = store.request_detail(request_id)
     assert detail["request"]["status"] == "plan_invalid"
+    assert detail["request"]["planPhase"]["importAttempts"] == 3
     assert detail["validationError"]["phase"] == "plan"
+    assert detail["validationError"]["attemptsRemaining"] == 0
     assert detail["plan"] is None
     assert detail["planningAttemptReceipt"]["acceptedResponses"] == 0
     assert detail["planningAttemptReceipt"]["attemptedResponses"] == 1
     assert detail["planningAttemptReceipt"]["usage"]["totalTokens"] == 50
+    assert (request_dir / "frontier-plan.raw.txt").is_file()
+    assert (request_dir / "frontier-plan.raw.attempt-2.txt").is_file()
+    assert (request_dir / "frontier-plan.raw.attempt-3.txt").is_file()
+    for attempt in (1, 2, 3):
+        assert (
+            request_dir
+            / f"frontier-plan-attempt-{attempt}-receipt.json"
+        ).is_file()
     raw_response = (
-        Path(detail["planPrompt"]).parent / "frontier-plan.raw.txt"
+        request_dir / "frontier-plan.raw.attempt-3.txt"
     ).read_bytes()
     assert detail["planningAttemptReceipt"]["responseSha256"] == (
         hashlib.sha256(raw_response).hexdigest()
@@ -599,9 +648,126 @@ def test_invalid_plan_is_recorded_and_request_is_sealed(tmp_path: Path) -> None:
     with pytest.raises(CommanderError, match="already"):
         store.import_plan(
             request_id,
+            final,
+            claim_id=claim["claimId"],
+        )
+
+
+def test_corrected_reimport_accepts_plan_on_same_claim(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    request_id = store.create_request("Make a plan")["request"]["requestId"]
+    claim = store.claim_plan(request_id)
+    invalid = tmp_path / "invalid-first.json"
+    invalid.write_text(
+        '{"schemaVersion": 1, "bad": true}',
+        encoding="utf-8",
+    )
+    with pytest.raises(CommanderError, match="corrected re-import"):
+        store.import_plan(
+            request_id,
+            invalid,
+            claim_id=claim["claimId"],
+        )
+
+    corrected = tmp_path / "corrected.json"
+    corrected.write_text(json.dumps(_plan()), encoding="utf-8")
+    imported = store.import_plan(
+        request_id,
+        corrected,
+        claim_id=claim["claimId"],
+    )
+
+    assert imported["request"]["status"] == "plan_ready"
+    assert imported["request"]["planPhase"]["importAttempts"] == 2
+    assert imported["planningReceipt"] is not None
+    # The stale validation error must not surface on the accepted plan.
+    assert imported["validationError"] is None
+
+
+def test_replayed_invalid_response_does_not_spend_an_attempt(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    request_id = store.create_request("Make a plan")["request"]["requestId"]
+    claim = store.claim_plan(request_id)
+    invalid = tmp_path / "invalid-replay.json"
+    invalid.write_text(
+        '{"schemaVersion": 1, "bad": true}',
+        encoding="utf-8",
+    )
+    with pytest.raises(CommanderError, match="attempt 1 is invalid"):
+        store.import_plan(
+            request_id,
+            invalid,
+            claim_id=claim["claimId"],
+        )
+
+    with pytest.raises(CommanderError, match="attempt 1 is invalid"):
+        store.import_plan(
+            request_id,
+            invalid,
+            claim_id=claim["claimId"],
+        )
+
+    detail = store.request_detail(request_id)
+    assert detail["request"]["status"] == "awaiting_plan"
+    assert detail["request"]["planPhase"]["importAttempts"] == 1
+
+
+def test_replayed_earlier_invalid_response_does_not_spend_an_attempt(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    request_id = store.create_request("Make a plan")["request"]["requestId"]
+    claim = store.claim_plan(request_id)
+    first = tmp_path / "invalid-first.json"
+    first.write_text('{"schemaVersion": 1, "bad": 1}', encoding="utf-8")
+    second = tmp_path / "invalid-second.json"
+    second.write_text('{"schemaVersion": 1, "bad": 2}', encoding="utf-8")
+    with pytest.raises(CommanderError, match="attempt 1 is invalid"):
+        store.import_plan(request_id, first, claim_id=claim["claimId"])
+    with pytest.raises(CommanderError, match="attempt 2 is invalid"):
+        store.import_plan(request_id, second, claim_id=claim["claimId"])
+
+    with pytest.raises(
+        CommanderError,
+        match="already rejected as import attempt 1",
+    ):
+        store.import_plan(request_id, first, claim_id=claim["claimId"])
+
+    detail = store.request_detail(request_id)
+    assert detail["request"]["status"] == "awaiting_plan"
+    assert detail["request"]["planPhase"]["importAttempts"] == 2
+
+
+def test_invalid_plan_reports_every_validation_error(
+    tmp_path: Path,
+) -> None:
+    store = CommanderStore(_workspace(tmp_path))
+    request_id = store.create_request("Make a plan")["request"]["requestId"]
+    claim = store.claim_plan(request_id)
+    plan = _plan()
+    plan["tasks"] = [
+        dict(plan["tasks"][0], role="unknown-role"),
+        dict(plan["tasks"][0], id="second", maxRepairAttempts=99),
+    ]
+    response = tmp_path / "two-error-plan.json"
+    response.write_text(json.dumps(plan), encoding="utf-8")
+
+    with pytest.raises(CommanderError) as exc_info:
+        store.import_plan(
+            request_id,
             response,
             claim_id=claim["claimId"],
         )
+
+    message = str(exc_info.value)
+    assert "role must be one of" in message
+    assert "maxRepairAttempts" in message
+    errors = store.request_detail(request_id)["validationError"]["errors"]
+    assert len(errors) == 2
 
 
 def test_unreadable_plan_response_still_records_spent_usage(
@@ -611,7 +777,7 @@ def test_unreadable_plan_response_still_records_spent_usage(
     request_id = store.create_request("Make a plan")["request"]["requestId"]
     claim = store.claim_plan(request_id)
 
-    with pytest.raises(CommanderError, match="sealed"):
+    with pytest.raises(CommanderError, match="No import attempt was spent"):
         store.import_plan(
             request_id,
             tmp_path / "missing-response.json",
@@ -622,8 +788,14 @@ def test_unreadable_plan_response_still_records_spent_usage(
         )
 
     detail = store.request_detail(request_id)
-    assert detail["request"]["status"] == "plan_invalid"
+    assert detail["request"]["status"] == "awaiting_plan"
+    assert detail["request"]["planPhase"].get("importAttempts", 0) == 0
     assert detail["planningAttemptReceipt"]["usage"]["totalTokens"] == 25
+    request_dir = Path(detail["planPrompt"]).parent
+    assert not (request_dir / "frontier-plan.raw.txt").exists()
+
+    # A local read failure leaves the claim releasable.
+    store.release_plan_claim(request_id, claim["claimId"])
 
 
 def test_plan_import_recovers_after_raw_response_was_published(
@@ -1192,6 +1364,30 @@ def test_bundled_skill_installs_for_claude_without_codex_metadata(
     skill_text = (installed / "SKILL.md").read_text(encoding="utf-8")
     assert "Claude Code: `claude-code-skill`" in skill_text
     assert not (installed / "agents").exists()
+
+
+def test_bundled_skill_teaches_topology_sizing_and_reimport() -> None:
+    skill_text = (
+        Path(__file__).parent.parent
+        / "src"
+        / "mlx_swarm"
+        / "bundled_skills"
+        / "mlx-swarm-commander"
+        / "SKILL.md"
+    ).read_text(encoding="utf-8")
+
+    assert "## Shape the DAG" in skill_text
+    assert "wide and shallow" in skill_text
+    assert "blast radius" in skill_text
+    assert "Never delegate discovery" in skill_text
+    assert "3.5 characters per token" in skill_text
+    assert "gate.maxCharacters" in skill_text
+    assert "`maxRepairAttempts` to 1 for local-agent tasks" in skill_text
+    assert "every validation error at once" in skill_text
+    assert "--approve-preview" in skill_text
+    assert "calibration: unmeasured" in skill_text
+    assert "Set `maxRepairAttempts` to zero" not in skill_text
+    assert "Do not retry after an imported invalid response" not in skill_text
 
 
 def test_claude_skill_install_honors_config_dir_and_explicit_override(

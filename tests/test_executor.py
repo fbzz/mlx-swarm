@@ -23,6 +23,7 @@ from mlx_swarm.contracts import (
 from mlx_swarm.executor import (
     _generate_with_worker_strategy,
     _local_execution_profile,
+    _repair_rejected_tasks,
     _task_output_hit_token_limit,
     _worker_strategy_compatible,
     execute_plan,
@@ -107,6 +108,41 @@ def _plan(tmp_path: Path, tasks: tuple[TaskDef, ...], plan_id: str) -> Plan:
         tasks=tasks,
         raw={},
     )
+
+
+def test_deterministic_edit_gate_failure_names_actual_violation(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="frozen-edit",
+        role="implementation",
+        prompt="Apply the embedded edits.",
+        gate=OutputGate(
+            max_characters=10,
+            output_format="json",
+            json_required_keys=("edits",),
+            json_allowed_keys=("edits",),
+        ),
+        artifact_type="patch",
+        worker_output_protocol="edit-manifest-v1",
+        execution_mode="deterministic-edit",
+        deterministic_edits=(
+            {"path": "src/value.py", "old": "VALUE = 1", "new": "VALUE = 2"},
+        ),
+    )
+    backend = FakeBackend([])
+
+    session = execute_plan(
+        _config(tmp_path),
+        _plan(tmp_path, (task,), "deterministic-gate-error"),
+        backend=backend,
+    )
+
+    assert session.get_task_status("frozen-edit") == "failed"
+    error = session.state["tasks"]["frozen-edit"]["error"]
+    assert "max-characters" in error
+    assert "structural workspace validation" not in error
+    assert len(backend.calls) == 0
 
 
 def test_rejected_dependency_blocks_descendant(tmp_path: Path) -> None:
@@ -354,7 +390,7 @@ def test_generation_stops_without_repair_after_output_token_limit(
     session = execute_plan(
         _config(tmp_path),
         _plan(tmp_path, (task,), "token-limit-stop"),
-        max_repair=2,
+        max_repair=0,
         backend=backend,
     )
 
@@ -366,6 +402,288 @@ def test_generation_stops_without_repair_after_output_token_limit(
     assert task_state["gateResult"]["violations"][-1]["id"] == (
         "output-token-limit"
     )
+
+
+class TruncateFirstCallBackend(FakeBackend):
+    def generate(
+        self,
+        tasks: list[TaskDef],
+        prompts: list[str],
+    ) -> tuple[list[str], dict[str, Any]]:
+        self.calls.append((tasks, prompts))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        truncated = len(self.calls) == 1
+        return response, {
+            "batchSize": len(tasks),
+            "groups": [{
+                "taskIds": [task.id for task in tasks],
+                "hitTokenLimit": {
+                    task.id: truncated for task in tasks
+                },
+            }],
+        }
+
+
+def test_truncated_generation_escalates_ceiling_and_repairs(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=1,
+    )
+    backend = TruncateFirstCallBackend([
+        ["truncated output"],
+        ["PASS after escalation"],
+    ])
+
+    session = execute_plan(
+        _config(tmp_path),
+        _plan(tmp_path, (task,), "token-limit-escalate"),
+        max_repair=1,
+        backend=backend,
+    )
+
+    assert session.get_task_status("task") == "completed"
+    assert len(backend.calls) == 2
+    escalated = backend.calls[1][0][0]
+    assert escalated.generation_override["max_tokens"] == 2048
+    task_state = session.state["tasks"]["task"]
+    assert task_state["repairAttempts"] == 1
+    assert task_state["escalatedMaxTokens"] == 2048
+
+
+def test_truncated_generation_at_capability_cap_fails_fast(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=2,
+        generation_override={"max_tokens": 2048},
+    )
+    backend = TokenLimitBackend([
+        ["truncated output"],
+        ["unused repair"],
+    ])
+
+    session = execute_plan(
+        _config(tmp_path),
+        _plan(tmp_path, (task,), "token-limit-at-cap"),
+        max_repair=2,
+        backend=backend,
+    )
+
+    assert len(backend.calls) == 1
+    assert session.get_task_status("task") == "failed"
+    task_state = session.state["tasks"]["task"]
+    assert task_state["repairAttempts"] == 0
+    assert "split the task" in task_state["error"].lower()
+
+
+class SuspectedLimitBackend(FakeBackend):
+    def generate(
+        self,
+        tasks: list[TaskDef],
+        prompts: list[str],
+    ) -> tuple[list[str], dict[str, Any]]:
+        self.calls.append((tasks, prompts))
+        response = self.responses.pop(0)
+        if isinstance(response, Exception):
+            raise response
+        return response, {
+            "batchSize": len(tasks),
+            "groups": [{
+                "taskIds": [task.id for task in tasks],
+                "hitTokenLimit": {
+                    task.id: False for task in tasks
+                },
+                "suspectedTokenLimit": {
+                    task.id: True for task in tasks
+                },
+            }],
+        }
+
+
+def test_gate_passing_output_near_ceiling_is_not_truncated(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=1,
+    )
+    backend = SuspectedLimitBackend([["PASS near the ceiling"]])
+
+    session = execute_plan(
+        _config(tmp_path),
+        _plan(tmp_path, (task,), "suspected-but-complete"),
+        max_repair=1,
+        backend=backend,
+    )
+
+    assert session.get_task_status("task") == "completed"
+    assert len(backend.calls) == 1
+
+
+def test_gate_failing_output_near_ceiling_is_treated_as_truncated(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=0,
+    )
+    backend = SuspectedLimitBackend([["truncated garbag"]])
+
+    session = execute_plan(
+        _config(tmp_path),
+        _plan(tmp_path, (task,), "suspected-and-failing"),
+        max_repair=0,
+        backend=backend,
+    )
+
+    assert session.get_task_status("task") == "failed"
+    task_state = session.state["tasks"]["task"]
+    assert task_state["gateResult"]["violations"][-1]["id"] == (
+        "output-token-limit"
+    )
+
+
+def test_recorded_escalation_survives_plan_derived_task_resume(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=2,
+    )
+    config = _config(tmp_path)
+    plan = _plan(tmp_path, (task,), "escalation-resume")
+    session = Session(tmp_path / "runs" / "escalation-resume", plan)
+    session.update_task(
+        "task",
+        status="rejected",
+        output="truncated output",
+        gateResult={
+            "configured": True,
+            "passed": False,
+            "violations": [{
+                "id": "output-token-limit",
+                "kind": "size",
+                "message": "Generation reached its output-token limit.",
+            }],
+            "normalizations": [],
+        },
+        repairAttempts=1,
+        escalatedMaxTokens=2048,
+    )
+    backend = FakeBackend([["unused"]])
+
+    _repair_rejected_tasks(
+        config,
+        plan,
+        session,
+        backend,
+        [task],
+        2,
+        {},
+    )
+
+    assert len(backend.calls) == 0
+    assert session.get_task_status("task") == "failed"
+    error = session.state["tasks"]["task"]["error"]
+    assert "no escalation headroom" in error
+
+
+def test_repair_skips_deterministic_replay_of_recorded_dispatch(
+    tmp_path: Path,
+) -> None:
+    task = TaskDef(
+        id="task",
+        role="implementation",
+        prompt="Generate PASS",
+        gate=OutputGate(
+            required_patterns=(GatePattern("must-pass", "PASS"),),
+        ),
+        max_repair_attempts=1,
+        generation_override={"temperature": 0.0},
+    )
+    config = _config(tmp_path)
+    plan = _plan(tmp_path, (task,), "replay-skip")
+    session = Session(tmp_path / "runs" / "replay-skip", plan)
+    rejected_state = {
+        "status": "rejected",
+        "output": "bad output",
+        "gateResult": {
+            "configured": True,
+            "passed": False,
+            "violations": [{
+                "id": "must-pass",
+                "kind": "required-pattern",
+                "message": "Required pattern not found: must-pass.",
+            }],
+            "normalizations": [],
+        },
+        "repairAttempts": 0,
+    }
+    session.update_task("task", **rejected_state)
+    first_backend = FakeBackend([["still bad"]])
+
+    _repair_rejected_tasks(
+        config,
+        plan,
+        session,
+        first_backend,
+        [task],
+        1,
+        {},
+    )
+
+    assert len(first_backend.calls) == 1
+    assert len(session.state["tasks"]["task"]["repairSignatures"]) == 1
+
+    # Simulate resume after an interrupted dispatch: the pre-dispatch task
+    # state is restored while the recorded signature survives.
+    session.update_task("task", **rejected_state)
+    replay_backend = FakeBackend([["unused"]])
+
+    _repair_rejected_tasks(
+        config,
+        plan,
+        session,
+        replay_backend,
+        [task],
+        1,
+        {},
+    )
+
+    assert len(replay_backend.calls) == 0
+    assert session.get_task_status("task") == "failed"
+    error = session.state["tasks"]["task"]["error"]
+    assert "deterministically replay" in error
 
 
 def test_token_limit_detection_uses_final_reasoning_edit_stage() -> None:

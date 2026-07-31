@@ -13,7 +13,7 @@ from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Sequence
 
 from .contracts import (
     EXACT_EDIT_EXPECTED_MAX_TOKENS,
@@ -24,6 +24,7 @@ from .contracts import (
     MAX_WORKERS,
     ContractError,
     Plan,
+    PlanValidationError,
     SwarmConfig,
     load_plan,
     worker_capabilities_payload,
@@ -36,6 +37,7 @@ FRONTIER_REVIEW_INPUT_NAME = "frontier-review-input.json"
 REVISION_INPUT_NAME = "revision-input.json"
 REVISION_INPUT_SCHEMA_VERSION = 1
 MAX_INCREMENTAL_REVISION_DEPTH = 1
+MAX_PLAN_IMPORT_ATTEMPTS = 3
 MAX_FRONTIER_RESPONSE_BYTES = 1_000_000
 MAX_OBJECTIVE_CHARS = 20_000
 MAX_CONSTRAINTS = 128
@@ -50,6 +52,8 @@ REVIEW_DEFAULT_MAX_TOKENS = 768
 REVIEW_EXCEPTION_MAX_TOKENS = 1024
 REPORT_DEFAULT_MAX_TOKENS = 1536
 REPORT_EXCEPTION_MAX_TOKENS = 2048
+# Roughly four characters per expected output token for a local-agent gate.
+LOCAL_GATE_MAX_CHARACTERS_EXAMPLE = EXACT_EDIT_EXPECTED_MAX_TOKENS * 4
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}$")
 _SAFE_LINEAGE = re.compile(
@@ -531,7 +535,15 @@ PLAN LIMITS
 - 1 to {MAX_TASKS_PER_PLAN} tasks.
 - roles: implementation, test, review, or general.
 - dependency graph must be acyclic.
-- per-task maxRepairAttempts: 0 to 5; normal default {MAX_REPAIR_ATTEMPTS}.
+- Shape the DAG wide and shallow. Add dependsOn ONLY when a task consumes a
+  parent's completed output or mutates the same file. Every dependency edge
+  propagates failure: one rejected or failed ancestor blocks every transitive
+  descendant, so an unnecessary chain multiplies blast radius.
+- Independent tasks belong in the same DAG level even when the runtime
+  serializes their physical batches; level width is a fault-isolation
+  boundary, not a throughput promise.
+- per-task maxRepairAttempts: 0 to 5; omitted tasks default to \
+{MAX_REPAIR_ATTEMPTS}.
 - maximum local batch workers: {min(config.batch.max_workers, MAX_WORKERS)}.
 - worker prompt budget: {min(config.batch.max_prompt_characters, MAX_PROMPT_CHARS)} characters.
 - aggregate rendered prompt budget per physical batch: \
@@ -542,15 +554,25 @@ PLAN LIMITS
 - use deterministic gates wherever artifact shape can be checked.
 - no task generationOverride.max_tokens may exceed \
 {config.worker.capabilities.max_generation_tokens}.
-- Every local-agent task uses maxRepairAttempts 0. Do not plan blind repair
-  retries; split an oversized task before execution.
+- Set maxRepairAttempts 1 for local-agent tasks so one gate-feedback repair
+  can run; deterministic-edit tasks require 0. On a truncated output the
+  runtime escalates the bounded ceiling once within the capability maximum;
+  if the artifact is still truncated, split the task in a new plan instead
+  of planning further repairs.
 - For local-agent patch or test-suite tasks, target 350 to \
 {EXACT_EDIT_EXPECTED_MAX_TOKENS} expected output
   tokens and set max_tokens to at most \
 {min(EXACT_EDIT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
 - Reject or deterministically split a local patch or test-suite task whose
   expected output would exceed 70 percent of max_tokens or \
-{EXACT_EDIT_EXPECTED_MAX_TOKENS} tokens.
+{EXACT_EDIT_EXPECTED_MAX_TOKENS} tokens. Estimate expected output from the
+  literal characters of the artifact text at roughly 3.5 characters per
+  token; one asset or anchor per mutating task.
+- gate.maxCharacters must cover the full expected artifact: for a
+  deterministic-edit task it must be at least the length of the compact
+  serialized {{"edits": [...]}} payload (plan import rejects a smaller
+  gate), and for a local-agent task roughly four characters per expected
+  output token.
 - For review tasks, normally set max_tokens to at most \
 {min(REVIEW_DEFAULT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
   Use at most \
@@ -597,7 +619,7 @@ TOP-LEVEL SHAPE
       "prompt": "string",
       "dependsOn": ["task-id"],
 {task_workspace_fields}
-      "maxRepairAttempts": 0,
+      "maxRepairAttempts": 1,
       "outputProtocol": "string",
       "generationOverride": {{
         "temperature": 0.0,
@@ -607,7 +629,7 @@ TOP-LEVEL SHAPE
       "gate": {{
         "requiredPatterns": [{{"id": "rule-id", "pattern": "regex"}}],
         "forbiddenPatterns": [{{"id": "rule-id", "pattern": "regex"}}],
-        "maxCharacters": 20000,
+        "maxCharacters": {LOCAL_GATE_MAX_CHARACTERS_EXAMPLE},
         "format": "text|json",
         "stripSingleCodeFence": true,
         "pythonSyntax": false,
@@ -1727,6 +1749,61 @@ class CommanderStore:
         request["updatedAt"] = utc_now()
         _atomic_json(request_dir / "request.json", request)
 
+    def _reject_replayed_invalid_plan(
+        self,
+        request_dir: Path,
+        response_path: Path,
+        attempts_recorded: int,
+    ) -> None:
+        """Re-report a replayed invalid response without spending an attempt."""
+        if attempts_recorded < 1:
+            return
+        try:
+            incoming = _read_bounded_text(response_path)
+        except CommanderError:
+            return
+        durable_incoming = (
+            incoming
+            if not incoming or incoming.endswith("\n")
+            else incoming + "\n"
+        )
+        for attempt in range(attempts_recorded, 0, -1):
+            attempt_raw = _plan_raw_response_path(request_dir, attempt)
+            if not attempt_raw.is_file():
+                continue
+            if durable_incoming != _read_bounded_text(attempt_raw):
+                continue
+            if attempt == attempts_recorded:
+                recorded_error = _optional_json(
+                    request_dir / "plan.error.json"
+                )
+                errors = (
+                    recorded_error.get("errors")
+                    if recorded_error is not None
+                    else None
+                )
+                if not isinstance(errors, list) or not errors:
+                    errors = [
+                        str(
+                            (recorded_error or {}).get(
+                                "error",
+                                "Invalid plan.",
+                            )
+                        )
+                    ]
+                raise CommanderError(
+                    _invalid_plan_attempt_message(
+                        attempts_recorded,
+                        [str(entry) for entry in errors],
+                    )
+                )
+            raise CommanderError(
+                "These exact bytes were already rejected as import "
+                f"attempt {attempt}; "
+                f"{MAX_PLAN_IMPORT_ATTEMPTS - attempts_recorded} corrected "
+                "re-import(s) remain on this claim."
+            )
+
     def import_plan(
         self,
         request_id: str,
@@ -1771,6 +1848,7 @@ class CommanderStore:
                 "artifactSha256": plan_digest,
             }
             request["updatedAt"] = utc_now()
+            (request_dir / "plan.error.json").unlink(missing_ok=True)
             _atomic_json(request_dir / "request.json", request)
             return self.request_detail(request_id)
         usage = frontier_usage(
@@ -1781,8 +1859,40 @@ class CommanderStore:
         normalized_provider = _optional_text(provider, "provider", 200)
         normalized_model = _optional_text(model, "model", 300)
         normalized_adapter = _claimed_adapter(claim, adapter)
+        attempts_recorded = _recorded_import_attempts(request)
+        self._reject_replayed_invalid_plan(
+            request_dir,
+            response_path,
+            attempts_recorded,
+        )
+        attempt_number = attempts_recorded + 1
         response = ""
-        raw_response_path = request_dir / "frontier-plan.raw.txt"
+        raw_response_path = _plan_raw_response_path(
+            request_dir,
+            attempt_number,
+        )
+        if not raw_response_path.is_file():
+            # A local read failure is not a frontier planning attempt: keep
+            # the usage evidence, but spend no budget and record no raw
+            # response, so the claim can still be released or re-imported.
+            try:
+                _read_bounded_text(response_path)
+            except CommanderError as exc:
+                _atomic_json(
+                    request_dir / "frontier-plan-attempt-receipt.json",
+                    _invalid_frontier_attempt_receipt(
+                        phase="plan",
+                        adapter=normalized_adapter,
+                        provider=normalized_provider,
+                        model=normalized_model,
+                        response="",
+                        usage=usage,
+                    ),
+                )
+                raise CommanderError(
+                    f"{exc} No import attempt was spent; supply a readable "
+                    "response file and re-import with the same claim."
+                ) from exc
         request["updatedAt"] = utc_now()
         try:
             response = _capture_frontier_response(
@@ -1865,25 +1975,52 @@ class CommanderStore:
                 usage=usage,
             )
             _atomic_json(
+                request_dir
+                / f"frontier-plan-attempt-{attempt_number}-receipt.json",
+                attempt,
+            )
+            _atomic_json(
                 request_dir / "frontier-plan-attempt-receipt.json",
                 attempt,
+            )
+            error_list = (
+                list(exc.errors)
+                if isinstance(exc, PlanValidationError)
+                else [str(exc)]
             )
             error = {
                 "schemaVersion": COMMANDER_SCHEMA_VERSION,
                 "phase": "plan",
                 "error": str(exc),
+                "errors": error_list,
+                "attempt": attempt_number,
+                "attemptsRemaining": max(
+                    0,
+                    MAX_PLAN_IMPORT_ATTEMPTS - attempt_number,
+                ),
                 "recordedAt": utc_now(),
             }
             _atomic_json(request_dir / "plan.error.json", error)
-            request["status"] = "plan_invalid"
+            if attempt_number >= MAX_PLAN_IMPORT_ATTEMPTS:
+                request["status"] = "plan_invalid"
+                request["planPhase"] = {
+                    **request["planPhase"],
+                    "status": "invalid",
+                    "recordedAt": error["recordedAt"],
+                    "importAttempts": attempt_number,
+                }
+                _atomic_json(request_dir / "request.json", request)
+                raise CommanderError(
+                    "Frontier plan is invalid and this request is sealed: "
+                    f"{exc}"
+                ) from exc
             request["planPhase"] = {
                 **request["planPhase"],
-                "status": "invalid",
-                "recordedAt": error["recordedAt"],
+                "importAttempts": attempt_number,
             }
             _atomic_json(request_dir / "request.json", request)
             raise CommanderError(
-                f"Frontier plan is invalid and this request is sealed: {exc}"
+                _invalid_plan_attempt_message(attempt_number, error_list)
             ) from exc
         canonical_plan = plan.raw
         plan_digest = canonical_json_sha256(canonical_plan)
@@ -1914,8 +2051,12 @@ class CommanderStore:
             "status": "accepted",
             "acceptedAt": receipt["acceptedAt"],
             "artifactSha256": plan_digest,
+            "importAttempts": attempt_number,
         }
         request["updatedAt"] = utc_now()
+        # Numbered attempt receipts and raw files remain as audit evidence,
+        # but a stale validation error must not surface on an accepted plan.
+        (request_dir / "plan.error.json").unlink(missing_ok=True)
         _atomic_json(request_dir / "request.json", request)
         return self.request_detail(request_id)
 
@@ -2413,6 +2554,7 @@ class CommanderStore:
                     "acceptedAt",
                     "artifactSha256",
                     "recordedAt",
+                    "importAttempts",
                 }
             )
         _exact_keys(
@@ -2436,6 +2578,17 @@ class CommanderStore:
                 _text(phase[key], f"request.planPhase.{key}", 300)
         if "artifactSha256" in phase:
             _sha256(phase["artifactSha256"], "request.planPhase.artifactSha256")
+        if "importAttempts" in phase:
+            attempts = phase["importAttempts"]
+            if (
+                isinstance(attempts, bool)
+                or not isinstance(attempts, int)
+                or not 0 <= attempts <= MAX_PLAN_IMPORT_ATTEMPTS
+            ):
+                raise CommanderError(
+                    "request.planPhase.importAttempts is outside the "
+                    "supported range."
+                )
         if "revisionOf" in request:
             _lineage(request["revisionOf"], "request.revisionOf")
             predecessor = self._revision_predecessor(
@@ -2891,6 +3044,34 @@ def _read_bounded_text(path: Path) -> str:
             f"Frontier response exceeds {MAX_FRONTIER_RESPONSE_BYTES} bytes."
         )
     return resolved.read_text(encoding="utf-8")
+
+
+def _recorded_import_attempts(request: dict[str, Any]) -> int:
+    phase = request.get("planPhase")
+    if not isinstance(phase, dict):
+        return 0
+    value = phase.get("importAttempts", 0)
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return max(0, value)
+
+
+def _plan_raw_response_path(request_dir: Path, attempt_number: int) -> Path:
+    if attempt_number <= 1:
+        return request_dir / "frontier-plan.raw.txt"
+    return request_dir / f"frontier-plan.raw.attempt-{attempt_number}.txt"
+
+
+def _invalid_plan_attempt_message(
+    attempt_number: int,
+    errors: Sequence[str],
+) -> str:
+    remaining = MAX_PLAN_IMPORT_ATTEMPTS - attempt_number
+    return (
+        f"Frontier plan attempt {attempt_number} is invalid; "
+        f"{remaining} corrected re-import(s) remain on this claim: "
+        + "; ".join(errors)
+    )
 
 
 def _capture_frontier_response(

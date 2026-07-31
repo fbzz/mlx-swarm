@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import importlib.metadata
 import json
 import platform
@@ -14,13 +15,18 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Iterable
 
-from .backend import BatchBackend, MLXBatchBackend
+from .backend import (
+    BatchBackend,
+    MLXBatchBackend,
+    effective_generation_config,
+)
 from .contracts import (
     EXACT_EDIT_MAX_TOKENS,
     Plan,
     ROLE_DEFAULTS,
     SwarmConfig,
     TaskDef,
+    serialized_deterministic_edits,
     worker_capabilities_payload,
 )
 from .gates import evaluate_gate, gate_feedback_for_repair, normalize_output
@@ -597,11 +603,7 @@ def _execute_deterministic_chunk(
             status="running",
             batchIndex=level_idx,
         )
-        payload = json.dumps(
-            {"edits": list(task.deterministic_edits)},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        payload = serialized_deterministic_edits(task.deterministic_edits)
         _process_task_output(
             session,
             task,
@@ -611,12 +613,19 @@ def _execute_deterministic_chunk(
             statistics=record["statistics"],
         )
         if session.get_task_status(task.id) == "rejected":
+            gate_result = session.state["tasks"][task.id].get("gateResult") or {}
+            violations = gate_result.get("violations") or []
+            detail = "; ".join(
+                f"{violation.get('id', 'unknown')}: "
+                f"{violation.get('message', '')}"
+                for violation in violations
+            ) or "workspace artifact validation failed"
             session.update_task(
                 task.id,
                 status="failed",
                 error=(
-                    "Frontier-authored deterministic edits failed structural "
-                    "workspace validation."
+                    "Frontier-authored deterministic edits rejected by "
+                    f"gate: {detail}"
                 ),
             )
     record["generationFinishedAt"] = _utc_now()
@@ -768,6 +777,8 @@ def _execute_initial_chunk(
                 prompt=prompt,
                 phase="generation",
                 statistics=stats,
+                config=config,
+                max_repair=max_repair,
             )
     else:
         record["statistics"] = {"batchSize": 0}
@@ -893,12 +904,45 @@ def _repair_rejected_tasks(
                     ),
                 )
                 continue
+            dispatch_task = _escalate_truncated_task(
+                config,
+                session,
+                task,
+                task_state,
+                repair_prompt,
+                repair_record,
+            )
+            if dispatch_task is None:
+                continue
+            signature = _repair_dispatch_signature(
+                config,
+                dispatch_task,
+                repair_prompt,
+            )
+            recorded_signatures = list(
+                task_state.get("repairSignatures") or []
+            )
+            if (
+                signature["temperature"] == 0.0
+                and signature in recorded_signatures
+            ):
+                session.update_task(
+                    task.id,
+                    status="failed",
+                    error=(
+                        "Repair would deterministically replay a prior "
+                        "attempt (identical prompt and sampler); the "
+                        "generation call was skipped."
+                    ),
+                )
+                continue
             session.update_task(
                 task.id,
                 repairAttempts=task_state["repairAttempts"] + 1,
+                repairSignatures=recorded_signatures + [signature],
                 status="running",
             )
-            runnable_tasks.append(task)
+            runnable_tasks.append(dispatch_task)
             repair_prompts.append(repair_prompt)
 
         if runnable_tasks:
@@ -927,6 +971,8 @@ def _repair_rejected_tasks(
                     prompt=prompt,
                     phase=f"repair-{repair_round}",
                     statistics=stats,
+                    config=config,
+                    max_repair=max_repair,
                 )
         else:
             repair_record["statistics"] = {"batchSize": 0}
@@ -941,6 +987,84 @@ def _repair_rejected_tasks(
             and session.state["tasks"][task.id]["repairAttempts"]
             < _repair_limit(task, max_repair)
         ]
+
+
+def _escalate_truncated_task(
+    config: SwarmConfig,
+    session: Session,
+    task: TaskDef,
+    task_state: dict[str, Any],
+    repair_prompt: str,
+    repair_record: dict[str, Any],
+) -> TaskDef | None:
+    """Raise a truncated task's bounded ceiling; fail it when no headroom remains."""
+    violations = (task_state.get("gateResult") or {}).get("violations") or []
+    truncated = any(
+        violation.get("id") == "output-token-limit"
+        for violation in violations
+    )
+    if not truncated:
+        return task
+    effective = effective_generation_config(task, config)
+    recorded_escalation = task_state.get("escalatedMaxTokens")
+    effective_max = int(effective.get("max_tokens", 0))
+    if (
+        isinstance(recorded_escalation, int)
+        and not isinstance(recorded_escalation, bool)
+    ):
+        # A resumed or plan-derived TaskDef loses the in-memory escalation;
+        # the persisted ceiling keeps escalation monotonic across restarts.
+        effective_max = max(effective_max, recorded_escalation)
+    new_max = min(
+        effective_max * 2,
+        config.worker.capabilities.max_generation_tokens,
+    )
+    context_window = config.worker.capabilities.context_window_tokens
+    if context_window > 0:
+        # Conservative chars-per-token estimate; the backend context guard
+        # remains the hard stop and would fail the whole physical batch.
+        new_max = min(
+            new_max,
+            context_window - len(repair_prompt) // 3,
+        )
+    if new_max <= effective_max:
+        session.update_task(
+            task.id,
+            status="failed",
+            error=(
+                "Local generation reached its output-token limit and no "
+                "escalation headroom remains. Split the task or "
+                "deliberately raise its bounded generation ceiling."
+            ),
+        )
+        return None
+    session.update_task(task.id, escalatedMaxTokens=new_max)
+    repair_record.setdefault("escalations", {})[task.id] = new_max
+    return replace(
+        task,
+        generation_override={
+            **task.generation_override,
+            "max_tokens": new_max,
+        },
+    )
+
+
+def _repair_dispatch_signature(
+    config: SwarmConfig,
+    task: TaskDef,
+    repair_prompt: str,
+) -> dict[str, Any]:
+    """Identify one repair dispatch by its prompt and effective sampler."""
+    effective = effective_generation_config(task, config)
+    return {
+        "promptSha256": hashlib.sha256(
+            repair_prompt.encode("utf-8")
+        ).hexdigest(),
+        "maxTokens": int(effective.get("max_tokens", 0)),
+        "temperature": float(effective.get("temperature", 0.0)),
+        "topP": float(effective.get("top_p", 1.0)),
+        "seed": effective.get("seed"),
+    }
 
 
 def _filter_prompt_lengths(
@@ -1287,6 +1411,8 @@ def _process_task_output(
     prompt: str,
     phase: str,
     statistics: dict[str, Any],
+    config: SwarmConfig | None = None,
+    max_repair: int = 0,
 ) -> None:
     """Evaluate the gate, normalize output, and update session state."""
     previous_output = session.state["tasks"][task.id].get("output")
@@ -1295,9 +1421,19 @@ def _process_task_output(
         and previous_output == output
     )
     gate_result = evaluate_gate(output, task.gate)
+    # An exact ceiling hit always counts as truncation. The margin-based
+    # suspicion applies only to gate-failing output: a gate-passing artifact
+    # that merely lands near its ceiling is complete, not truncated.
     hit_token_limit = _task_output_hit_token_limit(
         statistics,
         task.id,
+    ) or (
+        not gate_result["passed"]
+        and _task_output_hit_token_limit(
+            statistics,
+            task.id,
+            key="suspectedTokenLimit",
+        )
     )
     if hit_token_limit:
         gate_result["passed"] = False
@@ -1353,12 +1489,15 @@ def _process_task_output(
     status = "completed" if gate_result["passed"] else "rejected"
     error = None
     if hit_token_limit:
-        status = "failed"
-        error = (
-            "Local generation reached its output-token limit; blind repair "
-            "was stopped. Split the task or deliberately raise its bounded "
-            "generation ceiling."
-        )
+        if _truncation_escalatable(session, task, config, max_repair):
+            status = "rejected"
+        else:
+            status = "failed"
+            error = (
+                "Local generation reached its output-token limit; blind "
+                "repair was stopped. Split the task or deliberately raise "
+                "its bounded generation ceiling."
+            )
     elif repeated_output and not gate_result["passed"]:
         status = "failed"
         error = (
@@ -1393,15 +1532,36 @@ def _process_task_output(
     )
 
 
+def _truncation_escalatable(
+    session: Session,
+    task: TaskDef,
+    config: SwarmConfig | None,
+    max_repair: int,
+) -> bool:
+    """A truncated task stays repairable only with budget and ceiling headroom."""
+    if config is None:
+        return False
+    task_state = session.state["tasks"][task.id]
+    if task_state.get("repairAttempts", 0) >= _repair_limit(task, max_repair):
+        return False
+    effective = effective_generation_config(task, config)
+    return (
+        int(effective.get("max_tokens", 0))
+        < config.worker.capabilities.max_generation_tokens
+    )
+
+
 def _task_output_hit_token_limit(
     statistics: dict[str, Any],
     task_id: str,
+    *,
+    key: str = "hitTokenLimit",
 ) -> bool:
     """Use the last task stage so reasoning truncation does not mask editing."""
     result = False
     matched = False
     for group in statistics.get("groups", []):
-        values = group.get("hitTokenLimit")
+        values = group.get(key)
         if isinstance(values, dict) and task_id in values:
             result = values[task_id] is True
             matched = True

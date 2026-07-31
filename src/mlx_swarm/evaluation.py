@@ -56,7 +56,10 @@ EVALUATION_SCHEMA_VERSION = 1
 PROFILE_SCHEMA_VERSION = 1
 SUITE_SCHEMA_VERSION = 1
 RESULT_SCHEMA_VERSION = 1
-FAIR_EVALUATION_PROTOCOL_VERSION = 4
+# Version 5: executor smart repair (bounded truncation escalation and
+# deterministic-replay skip) changed the mlx-swarm arm under identical
+# profiles.
+FAIR_EVALUATION_PROTOCOL_VERSION = 5
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"

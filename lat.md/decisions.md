@@ -82,3 +82,56 @@ This avoids repeated load overhead and special-token leakage while keeping each 
 ## Local-Only Model Resolution
 
 Model resolution uses local cache only (local_files_only=True for HuggingFace). No network downloads at runtime. Trade-off: models must be pre-downloaded.
+
+## Deterministic Edits Stay Gated, But Impossible Plans Fail at Import
+
+Frontier-authored deterministic edits pass through the same gate as model
+output so every artifact receives identical normalization and validation.
+Instead of exempting them from the size gate, plan validation rejects a task
+whose serialized `deterministicEdits` exceed its own `gate.maxCharacters` —
+converting a guaranteed mid-run cascade into an import-time error. Runtime
+gate failures on deterministic edits now name the exact violations.
+
+## Truncation Detection Uses a Tolerance Margin
+
+Re-encoding decoded output does not reliably reproduce the generated token
+count, so the backend reports an exact `hitTokenLimit` alongside a
+`suspectedTokenLimit` that fires within a 16-token margin of the ceiling.
+The executor treats the suspicion as truncation only when the gate also
+failed: a gate-passing artifact near its ceiling is complete, so a margin
+false positive never fails good output. Recovering the real per-sequence
+finish reason would require driving mlx_lm's internal `BatchGenerator` — an
+unstable pre-1.0 API — so the margin is preferred until a public
+finish-reason surface exists. A false negative is caught by the
+deterministic-replay skip.
+
+## Smart Repair Escalates Only max_tokens
+
+A truncated task with repair budget retries once with a doubled generation
+ceiling bounded by the capability maximum and declared context window. Repair
+never varies temperature or seed: sampler settings key the MLX batch groups,
+so varying them would fragment batching and destroy replay determinism. A
+repair dispatch whose prompt and effective sampler match a recorded prior
+dispatch is skipped without spending the generation call. The CLI and cockpit
+default the global repair cap to one; plans opt in per task.
+
+## Bounded Plan Re-Import With Full Error Reporting
+
+Plan validation accumulates every task error and reports them all at once.
+An invalid commander import leaves the claim open for up to three total
+attempts, each with its own numbered receipt and raw evidence; bytes
+identical to any recorded invalid attempt are re-reported without spending
+an attempt. A locally unreadable response file spends no attempt and writes
+no raw evidence — it records only the usage receipt and leaves the claim
+releasable. A successful import clears the stale `plan.error.json` so no
+validation error surfaces on an accepted plan, while the numbered attempt
+evidence remains for audit. Only accepted plans receive
+`frontier-plan-receipt.json`, preserving the one-accepted-artifact-per-phase
+model.
+
+## One-Action Approval Still Binds Two Digests
+
+The cockpit's Approve-and-run and the CLI's `run --approve-preview` bind the
+canonical plan digest and the execution digest in a single operator action.
+The digests remain independently computed, recorded, and revalidated — only
+the number of manual copy/paste steps changed, not the authority model.

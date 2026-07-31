@@ -17,6 +17,17 @@ from .contracts import (
     TaskDef,
 )
 
+# Re-encoding decoded text does not reliably reproduce the generated token
+# count, so truncation detection uses a tolerance margin below the ceiling.
+TOKEN_LIMIT_DETECTION_MARGIN = 16
+
+
+def suspected_token_limit(count: int, limit: int) -> bool:
+    """Return True when a re-tokenized output count suggests truncation."""
+    if limit <= TOKEN_LIMIT_DETECTION_MARGIN:
+        return count >= limit
+    return count >= limit - TOKEN_LIMIT_DETECTION_MARGIN
+
 
 class BatchBackend(Protocol):
     """Execution-facing backend contract used by the DAG executor."""
@@ -71,6 +82,14 @@ def _resolve_model_path(config: SwarmConfig) -> Path:
     raise RuntimeError(
         "No model configured. Set config.model.repository or config.model.localPath."
     )
+
+
+def effective_generation_config(
+    task: TaskDef,
+    config: SwarmConfig,
+) -> dict[str, Any]:
+    """Resolve the exact generation settings a task would run with."""
+    return _role_generation_config(task, config)
 
 
 def _role_generation_config(task: TaskDef, config: SwarmConfig) -> dict[str, Any]:
@@ -356,6 +375,7 @@ class MLXBatchBackend:
                     )
                 output_token_counts: dict[str, int] = {}
                 hit_token_limit: dict[str, bool] = {}
+                suspected_limit: dict[str, bool] = {}
                 for index, text, limit in zip(
                     indices,
                     texts,
@@ -366,6 +386,10 @@ class MLXBatchBackend:
                     task_id = tasks[index].id
                     output_token_counts[task_id] = count
                     hit_token_limit[task_id] = count >= limit
+                    suspected_limit[task_id] = suspected_token_limit(
+                        count,
+                        limit,
+                    )
 
                 group_prompt_tokens = int(
                     _stat_value(stats_obj, "prompt_tokens")
@@ -389,6 +413,7 @@ class MLXBatchBackend:
                     "generationTokens": group_generation_tokens,
                     "outputTokenCounts": output_token_counts,
                     "hitTokenLimit": hit_token_limit,
+                    "suspectedTokenLimit": suspected_limit,
                     "generationTokensPerSecond": _stat_value(
                         stats_obj,
                         "generation_tps",

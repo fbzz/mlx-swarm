@@ -76,10 +76,11 @@ pages do not poll. All task output and JSON evidence is rendered as text rather
 than executable HTML.
 
 Workspace plan launch submits the displayed canonical plan digest plus the
-execution digest for the selected mode and target. Supervised worktree is the
-default. YOLO worktree auto-seals Apply decisions; YOLO checkout is enabled only
-for a clean repository after an additional browser confirmation. Checkout
-cleanup is never exposed.
+execution digest for the selected mode and target in one Approve-and-run
+action. Supervised worktree is the default, and the repair cap selector
+defaults to one. YOLO worktree auto-seals Apply decisions; YOLO checkout is
+enabled only for a clean repository after an additional browser confirmation.
+Checkout cleanup is never exposed.
 
 The frontier panel presents planning usage and review usage as separate phases.
 Combined frontier totals appear only when both included receipts report usage;

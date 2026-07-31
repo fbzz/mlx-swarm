@@ -34,7 +34,18 @@ frontier call, the commander traces the observed failure through exact
 authoritative source excerpts or an already-approved verification receipt,
 states one falsifiable causal hypothesis, records its concrete validation
 evidence, and names the condition that would disprove it. Unsupported
-speculation is rejected at import and seals that request as invalid.
+speculation is rejected at import.
+
+An invalid import reports every accumulated validation error at once and
+leaves the claim open for a bounded number of corrected re-imports (three
+total attempts). Each invalid attempt persists its own numbered receipt and
+raw response; bytes identical to any recorded invalid attempt are rejected
+without spending an attempt, re-reporting the recorded errors when they match
+the latest attempt. A locally unreadable response file also spends no attempt
+and records no raw evidence. A successful import clears the stale
+`plan.error.json`; only an accepted plan ever receives
+`frontier-plan-receipt.json`. Exhausting the attempt budget seals the request
+as invalid.
 
 Commander imports additionally require
 `context.diagnosis.changeValidation`. It records the literal candidate

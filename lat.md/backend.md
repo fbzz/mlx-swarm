@@ -72,4 +72,15 @@ The backend reports:
 - **groups**: Per-call task IDs, settings, timing, token counts, task output
   counts, token-limit indicators, completion state, and any error.
 
+Truncation is reported through two per-task indicators. `hitTokenLimit` is
+the exact re-encoded-count comparison against the ceiling.
+`suspectedTokenLimit` additionally flags counts within a 16-token margin,
+because re-encoding decoded text does not reliably reproduce the generated
+token count; the [[Executor]] applies the suspicion only to gate-failing
+output, so a complete gate-passing artifact that merely lands near its
+ceiling is unaffected. mlx_lm computes a real per-sequence finish reason
+internally but its public `batch_generate` discards it; the margin avoids
+depending on that unstable pre-1.0 internal API. See
+[[src/mlx_swarm/backend.py#suspected_token_limit]].
+
 These are recorded in the [[Session]] batch records.

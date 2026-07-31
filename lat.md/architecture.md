@@ -49,8 +49,9 @@ How a plan moves from config to completed session.
    path/verification authority for workspace runs
 5. [[Executor]] snapshots the approved plan and sorts tasks into dependency levels
 6. For each level: block unsuccessful descendants, compose prompts, run bounded MLX batches, and evaluate [[Gates]]
-7. Rejected structural output with explicit non-zero repair budget gets
-   deterministic local gate feedback; token-limited output fails fast
+7. Rejected structural output with repair budget gets deterministic local
+   gate feedback; token-limited output earns one bounded ceiling escalation
+   before failing fast, and deterministic replays are skipped unspent
 8. Typed mutating artifacts pause for human Apply/Reject and allowlisted
    verification before descendants run
 9. [[Session]] persists every local transition without frontier coordination

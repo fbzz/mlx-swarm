@@ -11,9 +11,11 @@ import pytest
 from mlx_swarm.backend import (
     BatchGenerationError,
     MLXBatchBackend,
+    TOKEN_LIMIT_DETECTION_MARGIN,
     _render_prompt,
     _role_generation_config,
     _split_by_prompt_budget,
+    suspected_token_limit,
 )
 from mlx_swarm.contracts import (
     BatchConfig,
@@ -41,6 +43,23 @@ class FakeThinkingTokenizer:
         assert kwargs["add_special_tokens"] is False
         self.encoded = value
         return list(range(len(value)))
+
+
+def test_suspected_token_limit_catches_re_tokenization_drift() -> None:
+    assert suspected_token_limit(794, 800)
+    assert suspected_token_limit(800, 800)
+    assert suspected_token_limit(801, 800)
+
+
+def test_suspected_token_limit_ignores_comfortable_completions() -> None:
+    assert not suspected_token_limit(700, 1024)
+    assert not suspected_token_limit(783, 800)
+
+
+def test_suspected_token_limit_uses_exact_compare_for_tiny_limits() -> None:
+    for limit in range(1, TOKEN_LIMIT_DETECTION_MARGIN + 1):
+        assert not suspected_token_limit(limit - 1, limit)
+        assert suspected_token_limit(limit, limit)
 
 
 def test_render_prompt_closes_forced_thinking_when_disabled() -> None:

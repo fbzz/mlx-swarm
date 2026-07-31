@@ -11,10 +11,12 @@ import pytest
 from mlx_swarm.contracts import (
     ContractError,
     Plan,
+    PlanValidationError,
     SwarmConfig,
     TaskDef,
     load_config,
     load_plan,
+    serialized_deterministic_edits,
 )
 
 
@@ -499,6 +501,177 @@ def test_schema_v3_deterministic_edit_preserves_exact_whitespace(
         "old": "  VALUE = 1\n",
         "new": "\n  VALUE = 2\n\n",
     }
+
+
+def _deterministic_edit_plan_data(edits: list[dict], max_characters: int) -> dict:
+    task = _schema_v3_task(
+        "known-edit",
+        "src/value.py",
+        context_ref="source",
+    )
+    task.update({
+        "executionMode": "deterministic-edit",
+        "expectedOutputTokens": 0,
+        "maxRepairAttempts": 0,
+        "deterministicEdits": edits,
+    })
+    task["gate"]["maxCharacters"] = max_characters
+    task.pop("generationOverride")
+    return {
+        "schemaVersion": 3,
+        "integrationVerification": ["unit"],
+        "context": {
+            "objective": "Apply a known edit.",
+            "authoritativeSources": [{
+                "label": "source",
+                "content": "src/value.py has VALUE = 1.",
+            }],
+            "constraints": [],
+            "rejectionCriteria": ["The exact edit is not applied."],
+            "outputProtocol": "Return only JSON.",
+        },
+        "tasks": [task],
+    }
+
+
+def test_schema_v3_deterministic_edits_exceeding_gate_size_are_rejected(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    edits = [{
+        "path": "src/value.py",
+        "old": "VALUE = 1",
+        "new": "VALUE = 2\n" + ("# padding line\n" * 40),
+    }]
+    payload_length = len(serialized_deterministic_edits(edits))
+    plan_path = _write_plan(
+        tmp_path,
+        _deterministic_edit_plan_data(edits, payload_length - 1),
+    )
+
+    with pytest.raises(
+        ContractError,
+        match="deterministicEdits serialize",
+    ):
+        load_plan(plan_path, config)
+
+
+def test_plan_validation_reports_all_task_errors_at_once(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    bad_role = _schema_v3_task("left", "src/left.py", context_ref="left")
+    bad_role["role"] = "unknown-role"
+    bad_budget = _schema_v3_task("right", "src/right.py", context_ref="right")
+    bad_budget["expectedOutputTokens"] = 700
+    plan_path = _write_plan(tmp_path, {
+        "schemaVersion": 3,
+        "integrationVerification": ["unit"],
+        "context": {
+            "objective": "Update two independent modules.",
+            "authoritativeSources": [
+                {"label": "left", "content": "src/left.py has LEFT = 1."},
+                {"label": "right", "content": "src/right.py has RIGHT = 1."},
+            ],
+            "constraints": [],
+            "rejectionCriteria": ["A task fails validation."],
+            "outputProtocol": "Return only the requested artifact.",
+        },
+        "tasks": [bad_role, bad_budget],
+    })
+
+    with pytest.raises(PlanValidationError) as exc_info:
+        load_plan(plan_path, config)
+
+    error = exc_info.value
+    assert len(error.errors) == 2
+    assert "role must be one of" in error.errors[0]
+    assert "preflight budget" in error.errors[1]
+    assert "role must be one of" in str(error)
+    assert "preflight budget" in str(error)
+
+
+def test_plan_validation_single_error_message_is_unchanged(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    bad_role = _schema_v3_task("left", "src/left.py", context_ref="left")
+    bad_role["role"] = "unknown-role"
+    plan_path = _write_plan(tmp_path, {
+        "schemaVersion": 3,
+        "integrationVerification": ["unit"],
+        "context": {
+            "objective": "Update one module.",
+            "authoritativeSources": [
+                {"label": "left", "content": "src/left.py has LEFT = 1."},
+            ],
+            "constraints": [],
+            "rejectionCriteria": ["The task fails validation."],
+            "outputProtocol": "Return only the requested artifact.",
+        },
+        "tasks": [bad_role],
+    })
+
+    with pytest.raises(PlanValidationError) as exc_info:
+        load_plan(plan_path, config)
+
+    error = exc_info.value
+    assert len(error.errors) == 1
+    assert str(error) == error.errors[0]
+    assert "Plan validation found" not in str(error)
+
+
+def test_plan_validation_failed_task_id_still_satisfies_dependents(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    bad_role = _schema_v3_task("left", "src/left.py", context_ref="left")
+    bad_role["role"] = "unknown-role"
+    dependent = _schema_v3_task("right", "src/right.py", context_ref="right")
+    dependent["dependsOn"] = ["left"]
+    plan_path = _write_plan(tmp_path, {
+        "schemaVersion": 3,
+        "integrationVerification": ["unit"],
+        "context": {
+            "objective": "Update two modules in sequence.",
+            "authoritativeSources": [
+                {"label": "left", "content": "src/left.py has LEFT = 1."},
+                {"label": "right", "content": "src/right.py has RIGHT = 1."},
+            ],
+            "constraints": [],
+            "rejectionCriteria": ["A task fails validation."],
+            "outputProtocol": "Return only the requested artifact.",
+        },
+        "tasks": [bad_role, dependent],
+    })
+
+    with pytest.raises(PlanValidationError) as exc_info:
+        load_plan(plan_path, config)
+
+    error = exc_info.value
+    assert len(error.errors) == 1
+    assert "unknown task" not in str(error)
+
+
+def test_schema_v3_deterministic_edits_at_exact_gate_size_load(
+    tmp_path: Path,
+) -> None:
+    config = _schema_v3_config(tmp_path)
+    edits = [{
+        "path": "src/value.py",
+        "old": "VALUE = 1",
+        "new": "VALUE = 2",
+    }]
+    payload_length = len(serialized_deterministic_edits(edits))
+    plan = load_plan(
+        _write_plan(
+            tmp_path,
+            _deterministic_edit_plan_data(edits, payload_length),
+        ),
+        config,
+    )
+
+    assert plan.tasks[0].execution_mode == "deterministic-edit"
 
 
 # ---------------------------------------------------------------------------

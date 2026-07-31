@@ -1122,6 +1122,19 @@ def test_http_malformed_oversized_and_cross_origin_requests(
     assert "too large" in payload["error"]
 
 
+def test_http_launch_without_repair_cap_defaults_to_one(
+    http_cockpit,
+) -> None:
+    _app_instance, base = http_cockpit
+    status, launched = _post(
+        base + "/api/runs",
+        json.dumps({"planId": "cockpit-plan"}).encode(),
+        origin=base,
+    )
+    assert status == 202
+    assert launched["run"]["maxRepair"] == 1
+
+
 def test_http_launch_and_retry_lineage(http_cockpit) -> None:
     app, base = http_cockpit
     status, launched = _post(

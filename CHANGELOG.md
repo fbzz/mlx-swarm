@@ -2,7 +2,7 @@
 
 All notable changes to MLX Swarm are documented in this file.
 
-## [Unreleased]
+## [0.5.0] - 2026-07-31
 
 ### Added
 
@@ -11,6 +11,25 @@ All notable changes to MLX Swarm are documented in this file.
   `CLAUDE_CONFIG_DIR` discovery.
 - Provider-neutral structured planning and review handoffs with host-specific
   receipt provenance for Claude Code, Codex, and compatible Agent Skills hosts.
+- Plan-import preflight rejecting a deterministic-edit task whose serialized
+  `deterministicEdits` exceed its own `gate.maxCharacters`, turning a
+  guaranteed mid-run cascade failure into an immediate validation error.
+- Smart repair: a truncated local generation with remaining repair budget
+  retries once with a doubled bounded ceiling (recorded as
+  `escalatedMaxTokens`), and a repair dispatch that would deterministically
+  replay a recorded prior attempt is skipped without spending the call.
+- `PlanValidationError` accumulating every plan validation error into one
+  report instead of stopping at the first.
+- Bounded commander re-import: an invalid plan import leaves the claim open
+  for up to three total attempts with per-attempt receipts and raw evidence;
+  identical invalid replays do not spend an attempt; the request seals only
+  when the budget is exhausted.
+- `run PLAN --approve-preview`: one-step CLI approval that computes the
+  execution preview in-process, prints the bound contract, and records both
+  digests with an `approvalShortcut` provenance marker.
+- Skill guidance for DAG shape (wide and shallow, dependency blast radius),
+  delegation upper bounds, content-based output sizing, and
+  `gate.maxCharacters` selection, mirrored in the commander plan prompt.
 
 ### Changed
 
@@ -21,6 +40,27 @@ All notable changes to MLX Swarm are documented in this file.
   their claim.
 - Skill replacement refuses symlink destinations before resolving or removing
   the leaf path.
+- `--max-repair` (CLI run/resume) and the cockpit repair cap now default to 1;
+  resumed sessions keep their stored cap, and plan tasks that omit
+  `maxRepairAttempts` still default to zero repair.
+- Token-limit detection reports an exact `hitTokenLimit` plus a
+  `suspectedTokenLimit` within a 16-token margin; the executor treats the
+  margin-based suspicion as truncation only for gate-failing output, so a
+  complete artifact near its ceiling is never failed by the margin.
+- A recorded `escalatedMaxTokens` now survives resume and plan-derived task
+  reconstruction, keeping repair escalation monotonic across restarts.
+- A successful corrected re-import clears the stale `plan.error.json`, so an
+  accepted plan no longer surfaces the previous attempt's validation error in
+  the cockpit; a locally unreadable response file spends no import attempt
+  and leaves the claim releasable; replay idempotency matches bytes against
+  every recorded invalid attempt, not only the latest.
+- Deterministic-edit runtime gate failures name the actual violations instead
+  of a generic structural-validation message.
+- Fair-evaluation protocol version is now 5; summaries recorded under earlier
+  executor repair semantics are flagged for rerun by the protocol audit.
+- Previously loadable plans that embedded deterministic edits larger than
+  their own gate now fail at import/approval; such plans were guaranteed to
+  fail at runtime.
 
 ## [0.4.0] - 2026-07-30
 

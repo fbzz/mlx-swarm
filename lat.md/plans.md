@@ -136,9 +136,14 @@ prompt. `interfaceContract` freezes the boundary the worker must preserve.
 
 When the exact transformation is already known, `executionMode:
 "deterministic-edit"` embeds `deterministicEdits`, permits no generation
-override or repair, and consumes zero local generation calls. Local-agent
-tasks use no repair by default; a positive task and CLI repair budget must opt
-in to bounded repair.
+override or repair, and consumes zero local generation calls. Plan validation
+rejects a deterministic-edit task whose compact serialized `{"edits": [...]}`
+payload exceeds its own `gate.maxCharacters`, so a self-contradictory task
+fails at import instead of at runtime. A task that omits `maxRepairAttempts`
+defaults to zero repair; the CLI and cockpit global cap defaults to one, and
+the effective budget is the minimum of the two. Plan validation accumulates
+per-task errors and reports them all in one `PlanValidationError` instead of
+stopping at the first.
 
 Independent patch/test-suite tasks may occur in one topological level only
 when their `allowedPaths` are pairwise disjoint, including directory-prefix

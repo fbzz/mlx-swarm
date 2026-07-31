@@ -11,7 +11,7 @@ from unittest.mock import patch, MagicMock
 
 import pytest
 
-from mlx_swarm.cli import main
+from mlx_swarm.cli import _parser, main
 from mlx_swarm.contracts import load_config, load_plan
 from mlx_swarm.session import Session
 from mlx_swarm.workspace import execution_preview, persist_artifact
@@ -30,6 +30,19 @@ def test_legacy_swarm_help_warns_before_argparse_exits(
     captured = capsys.readouterr()
     assert "deprecated" in captured.err
     assert "mlx-swarm" in captured.err
+
+
+def test_run_and_resume_default_to_one_repair_attempt() -> None:
+    parser = _parser()
+    run_args = parser.parse_args(
+        ["--config", "swarm.json", "run", "plan.json"]
+    )
+    resume_args = parser.parse_args(
+        ["--config", "swarm.json", "resume", "session-dir"]
+    )
+
+    assert run_args.max_repair == 1
+    assert resume_args.max_repair == 1
 
 
 def _write_config(tmp_path: Path) -> Path:
@@ -367,6 +380,91 @@ def test_cli_workspace_preview_run_artifact_and_cleanup(
         check=True,
         stdout=subprocess.PIPE,
     )
+
+
+def test_cli_run_approve_preview_binds_both_digests(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    repo, config_path, plan_path = _write_workspace_v2(tmp_path)
+    assert main([
+        "--config",
+        str(config_path),
+        "workspace",
+        "preview",
+        str(plan_path),
+    ]) == 0
+    preview_payload = json.loads(capsys.readouterr().out)
+    preview = preview_payload["execution"]
+
+    mock_session = MagicMock()
+    mock_session.summary.return_value = {
+        "status": "completed",
+        "total": 1,
+        "completed": 1,
+    }
+    with patch("mlx_swarm.cli.execute_plan", return_value=mock_session):
+        assert main([
+            "--config",
+            str(config_path),
+            "run",
+            str(plan_path),
+            "--approve-preview",
+        ]) == 0
+    output = capsys.readouterr().out
+    approved = json.loads(
+        output[:output.index("}\n{") + 2]
+    )["approvedPreview"]
+    assert approved["planSha256"] == preview_payload["planDigest"]
+    assert approved["executionDigest"] == preview["executionDigest"]
+    assert approved["workspaceRoot"] == str(repo.resolve())
+
+    config = load_config(config_path)
+    plan = load_plan(plan_path, config)
+    run_dirs = [
+        value
+        for value in (config.artifacts_dir / plan.plan_id).iterdir()
+        if (value / "session.json").is_file()
+    ]
+    assert len(run_dirs) == 1
+    session = Session.load(run_dirs[0], config)
+    approval = session.workspace_snapshot()["executionApproval"]
+    assert approval["planSha256"] == preview_payload["planDigest"]
+    assert approval["executionDigest"] == preview["executionDigest"]
+    assert approval["approvalShortcut"] == "approve-preview"
+
+
+def test_cli_run_approve_preview_rejects_flag_combinations(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    _repo, config_path, plan_path = _write_workspace_v2(tmp_path)
+    assert main([
+        "--config",
+        str(config_path),
+        "run",
+        str(plan_path),
+        "--approve-preview",
+        "--approve-plan-digest",
+        "0" * 64,
+    ]) == 1
+    assert "cannot be combined" in capsys.readouterr().err
+
+
+def test_cli_run_approve_preview_requires_workspace_plan(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    plan_path = _write_plan(tmp_path)
+    assert main([
+        "--config",
+        str(config_path),
+        "run",
+        str(plan_path),
+        "--approve-preview",
+    ]) == 1
+    assert "schema-v2 workspace" in capsys.readouterr().err
 
 
 def test_cli_main_checkout_yolo_preview_and_launch_policy(

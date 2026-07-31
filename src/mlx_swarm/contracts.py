@@ -8,7 +8,7 @@ import json
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Mapping, Sequence
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -61,6 +61,21 @@ ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
 
 class ContractError(ValueError):
     """Raised when a configuration, plan, or manifest is invalid."""
+
+
+class PlanValidationError(ContractError):
+    """Raised with every accumulated plan validation error at once."""
+
+    def __init__(self, errors: Sequence[str]):
+        self.errors = list(errors)
+        if len(self.errors) == 1:
+            message = self.errors[0]
+        else:
+            message = (
+                f"Plan validation found {len(self.errors)} errors:\n- "
+                + "\n- ".join(self.errors)
+            )
+        super().__init__(message)
 
 
 # ---------------------------------------------------------------------------
@@ -591,55 +606,74 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
     plan_id = _identifier(raw["planId"], "plan.planId")
     objective = _text(raw["objective"], "plan.objective")
 
+    errors: list[str] = []
+
     context: TaskContext | None = None
+    known_context_labels: set[str] | None = set()
     if "context" in raw:
-        context = _parse_context(raw["context"], config)
-    known_context_labels = (
-        {source.label for source in context.authoritative_sources}
-        if context is not None
-        else set()
-    )
-    integration_verification = tuple(
-        _identifier(value, f"plan.integrationVerification[{index}]")
-        for index, value in enumerate(
-            _list(
-                raw.get("integrationVerification", []),
-                "plan.integrationVerification",
-                minimum=1 if schema_version == 3 else 0,
-                maximum=MAX_VERIFICATION_PROFILES,
+        try:
+            context = _parse_context(raw["context"], config)
+        except ContractError as exc:
+            errors.append(str(exc))
+            # Membership checks against unknown labels would be noise.
+            known_context_labels = None
+    if context is not None:
+        known_context_labels = {
+            source.label for source in context.authoritative_sources
+        }
+    integration_verification: tuple[str, ...] = ()
+    try:
+        integration_verification = tuple(
+            _identifier(value, f"plan.integrationVerification[{index}]")
+            for index, value in enumerate(
+                _list(
+                    raw.get("integrationVerification", []),
+                    "plan.integrationVerification",
+                    minimum=1 if schema_version == 3 else 0,
+                    maximum=MAX_VERIFICATION_PROFILES,
+                )
             )
         )
-    )
-    if len(set(integration_verification)) != len(
-        integration_verification
-    ):
-        raise ContractError(
-            "plan.integrationVerification must not contain duplicates."
-        )
-    if integration_verification:
-        if config.workspace is None:
+        if len(set(integration_verification)) != len(
+            integration_verification
+        ):
             raise ContractError(
-                "plan.integrationVerification requires workspace execution."
+                "plan.integrationVerification must not contain duplicates."
             )
-        unknown_profiles = (
-            set(integration_verification)
-            - set(config.workspace.verification_profiles)
-        )
-        if unknown_profiles:
-            raise ContractError(
-                "plan.integrationVerification references unknown profiles: "
-                + ", ".join(sorted(unknown_profiles))
+        if integration_verification:
+            if config.workspace is None:
+                raise ContractError(
+                    "plan.integrationVerification requires workspace "
+                    "execution."
+                )
+            unknown_profiles = (
+                set(integration_verification)
+                - set(config.workspace.verification_profiles)
             )
+            if unknown_profiles:
+                raise ContractError(
+                    "plan.integrationVerification references unknown "
+                    "profiles: "
+                    + ", ".join(sorted(unknown_profiles))
+                )
+    except ContractError as exc:
+        errors.append(str(exc))
+        integration_verification = ()
 
     task_list = raw["tasks"]
     if not isinstance(task_list, list):
-        raise ContractError("plan.tasks must be an array.")
+        errors.append("plan.tasks must be an array.")
+        raise PlanValidationError(errors)
     if not 1 <= len(task_list) <= MAX_TASKS_PER_PLAN:
-        raise ContractError(f"plan.tasks must contain 1 to {MAX_TASKS_PER_PLAN} entries.")
+        errors.append(
+            f"plan.tasks must contain 1 to {MAX_TASKS_PER_PLAN} entries."
+        )
+        raise PlanValidationError(errors)
 
     tasks: list[TaskDef] = []
     task_ids: set[str] = set()
-    for i, t_raw in enumerate(task_list):
+
+    def _parse_plan_task(i: int, t_raw: Any) -> None:
         name = f"plan.tasks[{i}]"
         t = _object(t_raw, name)
         task_required = {"id", "role", "prompt"}
@@ -738,7 +772,7 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
             if "contextRefs" in t
             else None
         )
-        if context_refs is not None:
+        if context_refs is not None and known_context_labels is not None:
             unknown_context_refs = set(context_refs) - known_context_labels
             if unknown_context_refs:
                 raise ContractError(
@@ -890,6 +924,15 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
                         f"{name}.executionMode deterministic-edit requires "
                         "maxRepairAttempts 0."
                     )
+                assert gate is not None
+                payload = serialized_deterministic_edits(deterministic_edits)
+                if len(payload) > gate.max_characters:
+                    raise ContractError(
+                        f"{name}.deterministicEdits serialize to "
+                        f"{len(payload)} characters, exceeding "
+                        f"gate.maxCharacters {gate.max_characters}; raise "
+                        "maxCharacters (limit 100000) or split the task."
+                    )
             elif deterministic_edits:
                 raise ContractError(
                     f"{name}.deterministicEdits requires executionMode "
@@ -951,15 +994,33 @@ def load_plan(path: Path, config: SwarmConfig) -> Plan:
             )
         )
 
+    for i, t_raw in enumerate(task_list):
+        try:
+            _parse_plan_task(i, t_raw)
+        except ContractError as exc:
+            errors.append(str(exc))
+            # A failed task still names an id; register it so siblings
+            # depending on it report their own errors, not unknown-task
+            # noise.
+            if isinstance(t_raw, dict) and isinstance(
+                t_raw.get("id"), str
+            ):
+                task_ids.add(t_raw["id"])
+
     # Validate all depends_on targets exist
     if integration_verification and "plan-integration" in task_ids:
-        raise ContractError(
+        errors.append(
             "Task id plan-integration is reserved for final verification."
         )
     for t in tasks:
         for dep in t.depends_on:
             if dep not in task_ids:
-                raise ContractError(f"Task {t.id} depends on unknown task: {dep}")
+                errors.append(
+                    f"Task {t.id} depends on unknown task: {dep}"
+                )
+
+    if errors:
+        raise PlanValidationError(errors)
 
     plan = Plan(
         schema_version=schema_version,
@@ -1548,6 +1609,17 @@ def _path_array(
     if len(set(paths)) != len(paths):
         raise ContractError(f"{name} must not contain duplicates.")
     return paths
+
+
+def serialized_deterministic_edits(
+    edits: Sequence[Mapping[str, str]],
+) -> str:
+    """Serialize deterministic edits exactly as the executor materializes them."""
+    return json.dumps(
+        {"edits": list(edits)},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 def _parse_deterministic_edits(

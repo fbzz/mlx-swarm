@@ -574,7 +574,7 @@ function renderCommanderDag(detail) {
 function commanderStatusCopy(status) {
   const messages = {
     awaiting_plan: "Copy the handoff into your frontier agent. The cockpit will poll for the validated plan.",
-    plan_invalid: "The single planning response failed validation. Create a new request to try again.",
+    plan_invalid: "Planning failed validation on every bounded re-import attempt. Create a new request to try again.",
     plan_ready: "Preview the complete contract and digest, then approve it to launch local work.",
     launched: "This immutable request has already launched its approved local run.",
   };

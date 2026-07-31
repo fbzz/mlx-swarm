@@ -34,8 +34,10 @@ Workspace tasks pass deterministic gates and typed artifact validation before
 they can change state.
 
 Schema-v3 deterministic-edit tasks bypass model loading and materialize their
-frontier-authored manifests directly. Non-mutating review/report artifacts
-complete normally.
+frontier-authored manifests directly; a gate rejection of that embedded
+payload fails the task with an error naming the exact violations. Plan import
+already rejects a manifest whose serialized bytes exceed its own
+`gate.maxCharacters`. Non-mutating review/report artifacts complete normally.
 A valid patch/test-suite artifact moves through:
 
 `running → awaiting_approval → applying → verifying → completed`
@@ -72,21 +74,32 @@ Git commits without duplicate apply. See
 ## Repair Loop
 
 After initial generation, rejected tasks with remaining task-level and global
-`--max-repair` budget enter the repair loop. Both defaults are zero, so repair
-is an explicit opt-in:
+`--max-repair` budget enter the repair loop. The CLI and cockpit default the
+global cap to one; tasks still opt in per task, and plan tasks that omit
+`maxRepairAttempts` keep the zero default:
 
 1. Collect all rejected tasks with remaining repair budget.
 2. Compose repair prompts with [[Gates#Gate Feedback]] and previous output.
-3. Run repair batch through [[Backend|generate_batch]].
-4. Process outputs and evaluate gates again.
-5. Repeat until all pass or budget exhausted.
+3. Skip a dispatch whose prompt and effective sampler exactly match a
+   recorded prior dispatch when sampling is deterministic — the call would
+   replay byte-identical output, so the task fails with an explicit
+   replay-skip error instead of spending the generation.
+4. Run repair batch through [[Backend|generate_batch]].
+5. Process outputs and evaluate gates again.
+6. Repeat until all pass or budget exhausted.
 
-An output whose final generation stage reports `hitTokenLimit` fails
-immediately with an `output-token-limit` violation and never enters repair.
-The commander must split or tighten that task instead of spending another
-local generation call on the same oversized contract.
+An output whose final generation stage reports `hitTokenLimit` receives an
+`output-token-limit` violation. With remaining repair budget and ceiling
+headroom below the capability maximum, the task stays repairable and its one
+escalated repair doubles `max_tokens` (bounded by the capability maximum and
+the declared context window); the escalation is recorded as
+`escalatedMaxTokens`. Without budget or headroom the task fails fast, and the
+commander must split that task instead of spending another local generation
+call on the same oversized contract. Repair never varies temperature or seed:
+that would fragment sampler groups and destroy replay determinism.
 
-See [[src/mlx_swarm/executor.py#_process_task_output]].
+See [[src/mlx_swarm/executor.py#_process_task_output]] and
+[[src/mlx_swarm/executor.py#_repair_rejected_tasks]].
 
 ## Reasoning to editing
 

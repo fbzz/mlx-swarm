@@ -1623,7 +1623,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                 self._send_json(
                     self.app.launch_run(
                         _required_text(body, "planId"),
-                        body.get("maxRepair", 0),
+                        body.get("maxRepair", 1),
                         plan_digest=body.get("planDigest"),
                         execution_digest=body.get("executionDigest"),
                         approval_mode=body.get(
@@ -1656,7 +1656,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                         self.app.approve_commander_run(
                             request_id,
                             _required_text(body, "planDigest"),
-                            body.get("maxRepair", 0),
+                            body.get("maxRepair", 1),
                             body.get("executionDigest"),
                             body.get("approvalMode", "supervised"),
                             body.get("workspaceTarget", "worktree"),
@@ -1723,7 +1723,7 @@ class CockpitHandler(BaseHTTPRequestHandler):
                         self.app.retry_run(
                             plan_id,
                             session_id,
-                            body.get("maxRepair", 0),
+                            body.get("maxRepair", 1),
                             execution_digest=body.get("executionDigest"),
                             approval_mode=body.get("approvalMode"),
                             workspace_target=body.get("workspaceTarget"),

@@ -28,6 +28,14 @@ changes whose integration, isolation, approval, or audit risk justifies a
 governed DAG. Once a commander request has already been approved or launched,
 continue its durable workflow rather than rerouting it mid-session.
 
+Swarm delegation also has an upper bound. Never delegate discovery, API
+inference, causal-fix selection, or a multi-asset bundle to the local worker:
+diagnosis and edit design stay in this frontier call, and each mutating task
+carries exactly one asset or source anchor. Estimate the literal characters of
+each expected artifact at roughly 3.5 characters per token; if the estimate
+exceeds 70% of the task's generation ceiling, split the task or embed the
+known bytes as a deterministic edit.
+
 ## Identify the frontier host
 
 Use one adapter ID for each claim. This records provenance without changing the
@@ -54,11 +62,29 @@ Use deterministic edits when bytes are known, consuming zero model tokens. For
 local patch or test tasks, keep expected output at or below 700 tokens and
 `max_tokens` at or below 1,024. Use 768 for normal reviews, up to 1,024 only
 when evidence-heavy; use 1,536 for reports, up to 2,048 only when genuinely
-indivisible. Set `maxRepairAttempts` to zero. If an artifact could exceed 70%
-of its ceiling, split it before execution. If a result reports
-`hitTokenLimit`, do not request a repair of the same task: split it or
-deliberately raise its bounded ceiling in a new plan. Keep global thinking off;
-use a configured local reasoning stage only as a selective fallback.
+indivisible. Set `maxRepairAttempts` to 1 for local-agent tasks so one
+gate-feedback repair can run; deterministic-edit tasks require 0. If an
+artifact could exceed 70% of its ceiling, split it before execution. On
+`hitTokenLimit` the runtime escalates the bounded ceiling once within the
+capability maximum and skips repairs that would deterministically replay a
+prior attempt; if the artifact is still truncated, split it in a new plan.
+Keep global thinking off; use a configured local reasoning stage only as a
+selective fallback.
+
+Size every `gate.maxCharacters` to the full expected artifact: for a
+deterministic-edit task at least the length of the compact serialized
+`{"edits": [...]}` payload — plan import rejects a smaller gate — and for a
+local-agent task roughly four characters per expected output token.
+
+## Shape the DAG
+
+Plan wide and shallow. Add `dependsOn` ONLY when a task consumes a parent's
+completed output or mutates the same file. Every dependency edge propagates
+failure: one rejected or failed ancestor blocks every transitive descendant,
+so an unnecessary chain multiplies blast radius. Keep independent tasks in
+the same DAG level with disjoint path ceilings — the two-agent envelope is a
+concurrency limit the runtime enforces by serializing physical batches, never
+a reason to chain independent tasks behind each other.
 
 ## Prepare a plan
 
@@ -91,8 +117,9 @@ use a configured local reasoning stage only as a selective fallback.
    receipt; never run an unapproved command or promote a speculative diagnosis.
    Obey the prompt's `WORKER CAPABILITY CONTRACT` as an authority boundary.
    It describes local model scale, specialization, measured calibration, and
-   the maximum safe delegation level. Never infer stronger capability from the
-   model name. For `exact-edit`, retain diagnosis and edit design in this
+   the maximum safe delegation level. Its numbers override the shipped-profile
+   numbers in this skill. Never infer stronger capability from the model name.
+   Treat `calibration: unmeasured` as exact-edit-only conservatism. For `exact-edit`, retain diagnosis and edit design in this
    frontier call, then give each mutating agent one mechanical transformation
    with exact file, symbol, source anchors, and old-to-new instructions.
    Complete the mandatory candidate-change specificity gate before emitting the
@@ -107,15 +134,19 @@ use a configured local reasoning stage only as a selective fallback.
    operator-owned cockpit choices bound into a separate execution digest.
 5. Save the response beside the prompt as
    `frontier-plan.response.json`.
-6. Import it once using the returned claim:
+6. Import it using the returned claim:
 
    `mlx-swarm --config CONFIG commander import-plan REQUEST_ID RESPONSE --claim-id CLAIM_ID`
 
-7. Report the validation result and tell the operator to preview and approve
-   both the plan digest and the displayed Git execution digest in the cockpit.
+7. Report the validation result and tell the operator to approve the run in
+   the cockpit; one approval action binds both the plan digest and the
+   displayed Git execution digest. The CLI equivalent is
+   `run PLAN --approve-preview`. Supervised versus YOLO stays operator-owned.
 
-Do not retry after an imported invalid response. A new frontier call requires a
-new commander request.
+A rejected import reports every validation error at once. Fix all reported
+errors in one corrected response and re-import it with the same claim; the
+request seals after the bounded re-import budget is exhausted, and a sealed
+request requires a new commander request.
 
 ## Continue or wait
 

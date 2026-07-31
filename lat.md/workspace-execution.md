@@ -31,7 +31,13 @@ worktree runtime root. Contract version 2 also binds the operator-owned
 execution policy: `supervised | yolo`, `worktree | checkout`, and the
 verification-failure action. Isolated-worktree YOLO uses `repair-once`;
 supervised and checkout execution use `pause`. Checkout is valid only with YOLO.
-Approval submits this digest and the independent canonical plan digest. See
+Approval submits this digest and the independent canonical plan digest. The
+cockpit binds both in one Approve-and-run action; the CLI equivalent is
+`run PLAN --approve-preview`, which computes the preview in-process, prints
+the bound contract, and records both digests plus an `approvalShortcut`
+provenance marker in the session's execution approval. Explicit
+`--approve-plan-digest`/`--approve-execution-digest` flags remain available
+and mutually exclusive with the shortcut. See
 [[src/mlx_swarm/workspace.py#execution_preview]].
 
 Contract version 3 is used only for an incremental revision successor. It adds

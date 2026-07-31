@@ -1703,9 +1703,10 @@ def test_incremental_revision_plan_cannot_repeat_carried_task_id(
             response,
             claim_id=claim["claimId"],
         )
-    assert store.request_detail("repeated-task")["request"][
-        "status"
-    ] == "plan_invalid"
+    detail = store.request_detail("repeated-task")
+    assert detail["request"]["status"] == "awaiting_plan"
+    assert detail["request"]["planPhase"]["importAttempts"] == 1
+    assert "repeats carried task IDs" in detail["validationError"]["error"]
 
 
 def test_incremental_revision_claim_rejects_dirty_inspection_tree(
@@ -1904,6 +1905,49 @@ def test_schema_v3_deterministic_edit_bypasses_local_model(
     assert Path(snapshot["worktreePath"], "src/value.py").read_text() == (
         "VALUE = 2\n"
     )
+
+
+def test_schema_v3_deterministic_edits_larger_than_gate_rejected_at_load(
+    tmp_path: Path,
+) -> None:
+    repo, config_path = _repo(tmp_path)
+    task = _v3_edit_task(
+        "change",
+        "src/value.py",
+        "value-source",
+        execution_mode="deterministic-edit",
+        edits=[{
+            "path": "src/value.py",
+            "old": "VALUE = 1",
+            "new": "VALUE = 2\n" + ("# generated padding\n" * 300),
+        }],
+    )
+    task["gate"]["maxCharacters"] = 500
+    plan_path = repo / "config" / "oversized-plan.json"
+    plan_path.write_text(json.dumps({
+        "schemaVersion": 3,
+        "planId": "oversized-plan",
+        "objective": "Embed edits larger than the gate allows.",
+        "integrationVerification": ["syntax"],
+        "context": {
+            "objective": "Change VALUE to 2.",
+            "authoritativeSources": [{
+                "label": "value-source",
+                "content": "src/value.py contains VALUE = 1.",
+            }],
+            "constraints": [],
+            "rejectionCriteria": ["VALUE is not 2."],
+            "outputProtocol": "Return only the contracted artifact.",
+        },
+        "tasks": [task],
+    }), encoding="utf-8")
+    config = load_config(config_path)
+
+    with pytest.raises(
+        ContractError,
+        match="deterministicEdits serialize",
+    ):
+        load_plan(plan_path, config)
 
 
 def test_schema_v3_batches_disjoint_mutations_and_verifies_final_state(

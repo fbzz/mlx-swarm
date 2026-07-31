@@ -79,8 +79,11 @@ def _parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--max-repair",
         type=_non_negative_int,
-        default=0,
-        help="Global cap on opt-in repair attempts per task (default: 0).",
+        default=1,
+        help=(
+            "Global cap on repair attempts per task (default: 1; tasks "
+            "opt in via maxRepairAttempts)."
+        ),
     )
     run_parser.add_argument("--verbose", action="store_true", help="Print full statistics.")
     run_parser.add_argument(
@@ -92,6 +95,15 @@ def _parser() -> argparse.ArgumentParser:
         "--approve-execution-digest",
         default=None,
         help="Required displayed execution SHA-256 for a new workspace run.",
+    )
+    run_parser.add_argument(
+        "--approve-preview",
+        action="store_true",
+        help=(
+            "Compute and approve the execution preview in one step, "
+            "printing the bound contract. Mutually exclusive with the "
+            "explicit digest flags."
+        ),
     )
     run_parser.add_argument(
         "--approval-mode",
@@ -122,8 +134,11 @@ def _parser() -> argparse.ArgumentParser:
     resume_parser.add_argument(
         "--max-repair",
         type=_non_negative_int,
-        default=0,
-        help="Global cap on opt-in repair attempts per task (default: 0).",
+        default=1,
+        help=(
+            "Global cap on repair attempts per task (default: 1; a "
+            "resumed session keeps its stored cap)."
+        ),
     )
     resume_parser.add_argument(
         "--verbose",
@@ -824,6 +839,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         if args.command == "run":
             plan = load_plan(args.plan, config)
+            if args.approve_preview and (
+                args.approve_plan_digest is not None
+                or args.approve_execution_digest is not None
+            ):
+                raise WorkspaceError(
+                    "--approve-preview cannot be combined with explicit "
+                    "digest flags."
+                )
             if (
                 not plan.workspace_execution
                 and (
@@ -831,6 +854,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     or args.workspace_target != "worktree"
                     or args.approve_plan_digest is not None
                     or args.approve_execution_digest is not None
+                    or args.approve_preview
                 )
             ):
                 raise WorkspaceError(
@@ -844,7 +868,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if plan.workspace_execution and not existing_session:
                 plan_digest = canonical_json_sha256(plan.raw)
-                if args.approve_plan_digest != plan_digest:
+                if (
+                    not args.approve_preview
+                    and args.approve_plan_digest != plan_digest
+                ):
                     raise WorkspaceError(
                         "Workspace run requires the displayed canonical plan "
                         "digest via --approve-plan-digest."
@@ -856,13 +883,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                     workspace_target=args.workspace_target,
                 )
                 if (
-                    args.approve_execution_digest
+                    not args.approve_preview
+                    and args.approve_execution_digest
                     != preview["executionDigest"]
                 ):
                     raise WorkspaceError(
                         "Workspace run requires the displayed execution "
                         "digest via --approve-execution-digest."
                     )
+                if args.approve_preview:
+                    _print({
+                        "approvedPreview": {
+                            "planSha256": plan_digest,
+                            "executionDigest": preview["executionDigest"],
+                            "workspaceRoot": preview["workspaceRoot"],
+                            "baseSha": preview["baseSha"],
+                            "startingBranch": preview.get(
+                                "startingBranch"
+                            ),
+                            "approvalMode": args.approval_mode,
+                            "workspaceTarget": args.workspace_target,
+                            "executionPolicySha256": preview[
+                                "executionPolicySha256"
+                            ],
+                            "verificationProfiles": sorted(
+                                preview.get("verificationProfiles") or {}
+                            ),
+                            "dirty": preview.get("dirty"),
+                        },
+                    })
                 run_id = (
                     session_dir.name
                     if session_dir is not None
@@ -891,22 +940,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                     plan_source=plan.source,
                 )
                 prepared.state["maxRepair"] = args.max_repair
+                execution_approval = {
+                    "schemaVersion": 1,
+                    "planSha256": plan_digest,
+                    "executionDigest": preview["executionDigest"],
+                    "workspaceRoot": preview["workspaceRoot"],
+                    "baseSha": preview["baseSha"],
+                    "approvalMode": args.approval_mode,
+                    "workspaceTarget": args.workspace_target,
+                    "executionPolicySha256": preview[
+                        "executionPolicySha256"
+                    ],
+                    "approvedAt": _utc_now(),
+                    "source": "cli",
+                }
+                if args.approve_preview:
+                    execution_approval["approvalShortcut"] = (
+                        "approve-preview"
+                    )
                 prepared.attach_workspace(
                     snapshot,
-                    execution_approval={
-                        "schemaVersion": 1,
-                        "planSha256": plan_digest,
-                        "executionDigest": preview["executionDigest"],
-                        "workspaceRoot": preview["workspaceRoot"],
-                        "baseSha": preview["baseSha"],
-                        "approvalMode": args.approval_mode,
-                        "workspaceTarget": args.workspace_target,
-                        "executionPolicySha256": preview[
-                            "executionPolicySha256"
-                        ],
-                        "approvedAt": _utc_now(),
-                        "source": "cli",
-                    },
+                    execution_approval=execution_approval,
                 )
             session = execute_plan(
                 config,

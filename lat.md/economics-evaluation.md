@@ -122,7 +122,10 @@ are immutable and retain the timing, usage, patch, and oracle record.
 Each result includes wall-clock phase timing, all `turn.completed` usage,
 local tokens, repair and model-load counts, patch digest, changed-file count,
 and oracle evidence. Missing frontier usage makes an arm measurement invalid;
-it is never converted to zero.
+it is never converted to zero. Protocol version 5 marks the introduction of
+executor smart repair (bounded truncation escalation and deterministic-replay
+skip); summaries produced under earlier protocol versions are flagged for
+rerun by the protocol audit rather than compared across the change.
 
 Every local generation and repair also writes an immutable attempt record with
 the exact prompt, raw response, normalized response, gate result, statistics,

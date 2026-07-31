@@ -44,7 +44,7 @@
         "examples/workspace_demo/is_palindrome_module.py"
       ],
       "verification": [],
-      "maxRepairAttempts": 0,
+      "maxRepairAttempts": 1,
       "generationOverride": {
         "temperature": 0.0,
         "top_p": 1.0,
@@ -84,7 +84,7 @@
       "verification": [
         "pytest-workspace-demo"
       ],
-      "maxRepairAttempts": 0,
+      "maxRepairAttempts": 1,
       "generationOverride": {
         "temperature": 0.0,
         "top_p": 1.0,
@@ -124,7 +124,7 @@
         "implementation",
         "tests"
       ],
-      "maxRepairAttempts": 0,
+      "maxRepairAttempts": 1,
       "generationOverride": {
         "temperature": 0.0,
         "top_p": 1.0,
