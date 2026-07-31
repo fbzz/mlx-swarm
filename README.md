@@ -335,10 +335,11 @@ The project separates runtime-capacity evidence from model-quality claims.
 | Evidence | Current result |
 | --- | --- |
 | Release | [`v0.5.0`](https://github.com/fbzz/mlx-swarm/releases/tag/v0.5.0) |
-| Regression suite | 280 collected locally: 274 passed, 6 environment-dependent skips |
+| Regression suite | 315 passed locally |
 | CI | Green on Python 3.11, 3.12, and 3.13 |
 | Example cockpit run | Three agent tasks, three local calls, one model load, 1,848 local tokens, 12 seconds |
 | Largest recorded two-agent probe | 45,164 aggregate rendered prompt tokens, 70.67 seconds, 7.99 GB peak memory |
+| GLM 5.2 end-to-end benchmark | 4/4 objectives completed; 6/6 plans imported first-try; 81.8% first-pass gate acceptance |
 | Default physical batch ceiling | 49,152 aggregate prompt tokens |
 | Runtime model policy | Cache-only resolution; one resident MLX model |
 
@@ -356,15 +357,27 @@ your hardware is the gate for raising `delegationLevel` to
 `bounded-implementation`. Multi-file diagnosis, API discovery, and
 architecture choices stay with the frontier at every measured level.
 
+A four-objective end-to-end benchmark with GLM 5.2 as planner and
+reviewer completed against a real Node.js repository: six of six strict
+schema-v3 plans imported on the first attempt, 81.8% first-pass gate
+acceptance across all eleven attempted tasks, all four integration
+verifications green, and 5-21 seconds of local execution per run.
+Objective 2 needed three plans before succeeding; the session-evidence
+audit, corrected aggregates, and the gate-sizing guidance defect the
+benchmark exposed (since fixed) are recorded in the
+[benchmark results](benchmarks/glm52-planner-benchmark-results.md)
+alongside the [protocol](benchmarks/glm52-planner-benchmark.md).
+
 The published preliminary BugsInPy economics run is also marked
 `protocol_invalid`; its 0/6 Swarm result must not be used to claim token savings
 or task quality. The diagnostic evidence remains available in the
 [`benchmark report`](benchmarks/results/bugsinpy-v1-20260728t162359z-preliminary-6/report.md)
 so the next fair protocol can improve on it rather than hide it.
 
-That is the honest state of v0.5: the orchestration, isolation, batching, audit,
-and revision machinery is verified; broader task-quality and economics claims
-still require a new sealed evaluation.
+That is the honest state of v0.5: the orchestration, isolation, batching,
+audit, and revision machinery is verified, and a first external-planner
+benchmark is on record; broader task-quality and economics claims still
+require a new sealed evaluation.
 
 ## Configure your own project
 
