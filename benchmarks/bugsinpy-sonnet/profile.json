@@ -42,7 +42,7 @@
     "provider": "claude-code",
     "model": "claude-sonnet-5",
     "contextWindowTokens": 200000,
-    "maxCompletionTokens": 16384,
+    "maxCompletionTokens": 32768,
     "reasoningEffort": "none",
     "toolsets": [],
     "armTimeoutSeconds": 2700,

@@ -39,8 +39,10 @@ _DISALLOWED_TOOLS = (
 )
 
 _SYSTEM_DISCIPLINE = (
-    "Return exactly one JSON object. Do not use tools, Markdown fences, "
-    "XML, or explanatory prose."
+    "All tools are disabled and any tool call immediately fails the task: "
+    "you have exactly one assistant message to answer. Write the complete "
+    "answer as exactly one JSON object in that message. Do not use tools, "
+    "Markdown fences, XML, or explanatory prose."
 )
 
 
@@ -202,9 +204,18 @@ def main() -> int:
             check=False,
         )
         if process.returncode != 0:
+            detail = process.stderr.strip() or process.stdout.strip()
+            try:
+                failed_envelope = json.loads(process.stdout)
+                detail = (
+                    f"subtype={failed_envelope.get('subtype')} "
+                    f"result={str(failed_envelope.get('result'))[:300]}"
+                )
+            except (json.JSONDecodeError, AttributeError):
+                pass
             raise RuntimeError(
                 "Claude CLI exited with "
-                f"{process.returncode}: {process.stderr.strip()[:400]}"
+                f"{process.returncode}: {detail[:400]}"
             )
         try:
             envelope = json.loads(process.stdout)
