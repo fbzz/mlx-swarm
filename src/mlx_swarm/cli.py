@@ -149,6 +149,17 @@ def _parser() -> argparse.ArgumentParser:
 
     sub.add_parser("list", help="List sessions in artifacts directory.")
 
+    stats_parser = sub.add_parser(
+        "stats",
+        help="Aggregate operational statistics from session ledgers.",
+    )
+    stats_parser.add_argument(
+        "--artifacts",
+        type=Path,
+        default=None,
+        help="Artifacts directory (defaults to the config artifacts dir).",
+    )
+
     artifact_parser = sub.add_parser(
         "artifact",
         help="Inspect or decide a typed workspace artifact.",
@@ -1007,6 +1018,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                 summary["tasks"] = session.export_results()["tasks"]
             _print(summary)
             return 0 if summary["status"] == "completed" else 1
+
+        if args.command == "stats":
+            from .stats import collect_stats
+
+            artifacts = args.artifacts or config.artifacts_dir
+            _print(collect_stats(artifacts))
+            return 0
 
         if args.command == "inspect":
             session = Session.load(args.session_dir, config)

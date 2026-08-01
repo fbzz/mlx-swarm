@@ -2,6 +2,46 @@
 
 All notable changes to MLX Swarm are documented in this file.
 
+## [0.5.1] - 2026-08-01
+
+### Added
+
+- `claude-cli` evaluation frontier adapter: a packaged one-call bridge over
+  the authenticated Claude Code CLI (single turn, all workspace tools
+  disallowed, strict usage receipts mapped from the headless JSON envelope
+  with full cache accounting, keychain identity derived under the stripped
+  harness environment, error envelopes surfaced on failure).
+- Frontier transport cache (fair-evaluation protocol 16): every
+  receipt-valid completion freezes its response and receipt, keyed by
+  adapter/model pins and a timing-normalized prompt digest; identical calls
+  replay at zero cost, and `eval seed-cache` freezes a prior evaluation's
+  already-purchased responses. Completion ceilings are deliberately outside
+  the key: completed responses are ceiling-independent by construction.
+- Bounded contract-repair retry: a receipt-valid frontier response that
+  fails schema or materialization validation earns exactly one corrective
+  call carrying the validator's errors, with both receipts reported as
+  separate usage phases; infrastructure failures never retry.
+- `mlx-swarm stats`: aggregate operational statistics (session and task
+  status, execution-mode mix, first-pass gate acceptance, blocked share,
+  repairs, escalations, local token totals) from durable session ledgers.
+- GLM 5.2 planner benchmark protocol, results, and session-evidence audit
+  under `benchmarks/`; hermes-completion GLM evaluation adapter merged from
+  its development branch (runtime-witness task packets, delegation
+  blueprints, protocol lines 13-16).
+- Sonnet evaluation profile (`benchmarks/bugsinpy-sonnet/`) with hard-case
+  limits (64k completion ceiling; 1500s planning, 3900s arm budgets).
+
+### Changed
+
+- Gate-sizing guidance raises `maxCharacters` to at least five characters
+  per expected output token with explicit headroom language (a knife-edge
+  gate rejected a correct artifact by 3% in the GLM benchmark).
+- Prose-wrapped delegation blueprints extract their first complete embedded
+  JSON object deterministically; materialized worker tasks clamp to the
+  800-token paired-arm bound (protocol 15).
+- Evaluation synthetic approvals bind to the snapshot's sealed execution
+  policy (contract-v2 fields), unblocking local arms.
+
 ## [0.5.0] - 2026-07-31
 
 ### Added
