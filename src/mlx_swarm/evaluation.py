@@ -4006,11 +4006,16 @@ class EvaluationRunner:
                     self.profile.frontier.planning_timeout_seconds
                 ),
             )
-            plan_frontier_result = run_command(
+            plan_frontier_result = run_cached_completion(
+                self.profile,
                 plan_command,
+                cache_root=self.store.root,
                 cwd=repository,
                 timeout=self.profile.frontier.planning_timeout_seconds,
-                env=frontier_environment(),
+                prompt_text=plan_prompt_text,
+                usage_file=plan_usage_file,
+                evidence_root=evidence_root,
+                label="planning",
             )
             (evidence_root / "plan-stdout.log").write_text(
                 plan_frontier_result.stdout,
