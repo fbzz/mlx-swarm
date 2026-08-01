@@ -45,7 +45,7 @@
     "maxCompletionTokens": 64000,
     "reasoningEffort": "none",
     "toolsets": [],
-    "armTimeoutSeconds": 3600,
+    "armTimeoutSeconds": 3900,
     "planningTimeoutSeconds": 1500,
     "localTimeoutSeconds": 1500,
     "reviewTimeoutSeconds": 900
