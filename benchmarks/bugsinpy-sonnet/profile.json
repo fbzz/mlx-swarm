@@ -42,13 +42,13 @@
     "provider": "claude-code",
     "model": "claude-sonnet-5",
     "contextWindowTokens": 200000,
-    "maxCompletionTokens": 32768,
+    "maxCompletionTokens": 64000,
     "reasoningEffort": "none",
     "toolsets": [],
-    "armTimeoutSeconds": 2700,
-    "planningTimeoutSeconds": 600,
+    "armTimeoutSeconds": 3600,
+    "planningTimeoutSeconds": 1500,
     "localTimeoutSeconds": 1500,
-    "reviewTimeoutSeconds": 600
+    "reviewTimeoutSeconds": 900
   },
   "pythonBootstrap": [
     "pip==23.3.2",

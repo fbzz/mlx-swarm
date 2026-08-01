@@ -9092,7 +9092,10 @@ def completion_cache_key(
             "adapter": frontier.adapter,
             "provider": frontier.provider,
             "model": frontier.model,
-            "maxCompletionTokens": frontier.max_completion_tokens,
+            # The completion ceiling is deliberately not part of the key:
+            # only receipt-valid completed responses are cached, and a
+            # completed response is identical under any ceiling at or above
+            # its own output length. Truncated calls never produce receipts.
             "reasoningEffort": frontier.reasoning_effort,
             "promptSha256": hashlib.sha256(
                 normalized_cache_prompt(prompt_text).encode("utf-8")
