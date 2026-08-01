@@ -1,0 +1,141 @@
+{
+  "caseId": "tornado-2",
+  "project": "tornado",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "tornado-2",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 0,
+    "elapsedSeconds": 7.915118957986124,
+    "phaseSeconds": {
+      "frontier": 0.0,
+      "oracle": 6.929324249969795
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 2,
+      "promptTokens": 181542,
+      "cachedInputTokens": 48679,
+      "completionTokens": 79492,
+      "reasoningTokens": 0,
+      "totalTokens": 261034,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 120877,
+          "cachedInputTokens": 34307,
+          "completionTokens": 56285,
+          "reasoningTokens": 0,
+          "totalTokens": 177162,
+          "malformedLines": 0,
+          "cacheWriteTokens": 86566
+        },
+        {
+          "phase": "frontier-alone-repair",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 60665,
+          "cachedInputTokens": 14372,
+          "completionTokens": 23207,
+          "reasoningTokens": 0,
+          "totalTokens": 83872,
+          "malformedLines": 0,
+          "cacheWriteTokens": 46291
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "a8614097b3234f64f1b136d87637a68b3ba761473c6690daf5fa0fdcf8b4ce67",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": 1,
+      "evidence": "$ /evaluation/cache/environments/tornado-e001cbbd451e78a2/bin/python -m unittest -q tornado.test.httpclient_test.HTTPClientCommonTestCase.test_redirect_put_without_body\nERROR:asyncio:Exception in callback _HTTPConnection.finish.<locals>.<lambda>(<Future finis...Stream closed>) at /evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/simple_httpclient.py:654\nhandle: <Handle _HTTPConnection.finish.<locals>.<lambda>(<Future finis...Stream closed>) at /evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/simple_httpclient.py:654>\nTraceback (most recent call last):\n  File \"/opt/python37/lib/python3.7/asyncio/events.py\", line 88, in _run\n    self._context.run(self._callback, *self._args)\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/simple_httpclient.py\", line 654, in <lambda>\n    fut.add_done_callback(lambda f: final_callback(f.result()))\ntornado.simple_httpclient.HTTPStreamClosedError: Stream closed\n======================================================================\nERROR: test_redirect_put_without_body (tornado.test.httpclient_test.HTTPClientCommonTestCase)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/testing.py\", line 94, in __call__\n    result = self.orig_method(*args, **kwargs)\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/test/httpclient_test.py\", line 321, in test_redirect_put_without_body\n    allow_nonstandard_methods=True,\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/testing.py\", line 437, in fetch\n    timeout=get_async_test_timeout(),\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/ioloop.py\", line 530, in run_sync\n    raise TimeoutError(\"Operation timed out after %s seconds\" % timeout)\ntornado.util.TimeoutError: Operation timed out after 5 seconds\n\n----------------------------------------------------------------------\nRan 1 test in 5.066s\n\nFAILED (errors=1)\n"
+    },
+    "recordedAt": "2026-08-01T17:49:05.858084+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "tornado-2",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "failed",
+    "completed": false,
+    "score": 0,
+    "elapsedSeconds": 0.016432208998594433,
+    "phaseSeconds": {
+      "planning": 0.0
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 2,
+      "promptTokens": 125929,
+      "cachedInputTokens": 34320,
+      "completionTokens": 35119,
+      "reasoningTokens": 0,
+      "totalTokens": 161048,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 62015,
+          "cachedInputTokens": 14372,
+          "completionTokens": 12565,
+          "reasoningTokens": 0,
+          "totalTokens": 74580,
+          "malformedLines": 0,
+          "cacheWriteTokens": 47641
+        },
+        {
+          "phase": "planning-repair",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 63914,
+          "cachedInputTokens": 19948,
+          "completionTokens": 22554,
+          "reasoningTokens": 0,
+          "totalTokens": 86468,
+          "malformedLines": 0,
+          "cacheWriteTokens": 43964
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": null,
+      "changedFiles": 0
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": null,
+      "evidence": "Frontier delegation blueprint was rejected: Frontier delegation blueprint must contain 1 to 8 edits."
+    },
+    "recordedAt": "2026-08-01T17:49:09.923872+00:00"
+  },
+  "frontierTokenDelta": 99986,
+  "timeDeltaSeconds": 7.898686748987529
+}

@@ -1,0 +1,922 @@
+{
+  "schemaVersion": 1,
+  "suiteId": "bugsinpy-sonnet-preliminary-20260801t165840z-preliminary-6",
+  "measuredCases": 6,
+  "completePairs": 6,
+  "frontierAlone": {
+    "cases": 6,
+    "completed": 6,
+    "score": 4,
+    "completionRate": 100.0,
+    "scoreRate": 66.66666666666666,
+    "medianElapsedSeconds": 4.756685062486213,
+    "frontierTokens": 1002017,
+    "medianFrontierTokens": 181137.5,
+    "localTokens": 0,
+    "medianLocalTokens": 0,
+    "repairs": 0,
+    "medianRepairs": 0.0,
+    "modelLoads": 0
+  },
+  "mlxSwarm": {
+    "cases": 6,
+    "completed": 3,
+    "score": 3,
+    "completionRate": 50.0,
+    "scoreRate": 50.0,
+    "medianElapsedSeconds": 119.66210799998953,
+    "frontierTokens": 671465,
+    "medianFrontierTokens": 96113.0,
+    "localTokens": 24182,
+    "medianLocalTokens": 4089.5,
+    "repairs": 0,
+    "medianRepairs": 0.0,
+    "modelLoads": 5
+  },
+  "paired": {
+    "frontierTokensSaved": 330552,
+    "frontierTokensSavedMedian": 67062.5,
+    "frontierTokensSavedPercent": 32.98866186901021,
+    "bootstrap95": {
+      "lower": 487.0,
+      "upper": 109343.83333333333,
+      "samples": 10000
+    },
+    "acceptedByBothCases": 3,
+    "acceptedByBothTokensSaved": -3933,
+    "allUsageValid": true
+  },
+  "claim": {
+    "status": "preliminary",
+    "text": "Measured scores, time, and tokens are directional. The 30-pair product claim gate was not evaluated."
+  },
+  "rows": [
+    {
+      "caseId": "black-7",
+      "project": "black",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "black-7",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 2.6481926249689423,
+        "phaseSeconds": {
+          "frontier": 0.0,
+          "oracle": 2.0810071250307374
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 126369,
+          "cachedInputTokens": 34303,
+          "completionTokens": 79145,
+          "reasoningTokens": 0,
+          "totalTokens": 205514,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 126369,
+              "cachedInputTokens": 34303,
+              "completionTokens": 79145,
+              "reasoningTokens": 0,
+              "totalTokens": 205514,
+              "malformedLines": 0,
+              "cacheWriteTokens": 92062
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "fe890728f7472326c72f8e1869da7b12154ca51714d2f14694c302b247c48136",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/black-2b40cba5f7d166fe/bin/python -m unittest -q tests.test_black.BlackTestCase.test_tuple_assign\n----------------------------------------------------------------------\nRan 1 test in 0.028s\n\nOK\n"
+        },
+        "recordedAt": "2026-08-01T17:32:55.632209+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "black-7",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 186.82135104201734,
+        "phaseSeconds": {
+          "planning": 0.0,
+          "local": 38.30016979103675,
+          "review": 144.7312542090076,
+          "oracle": 2.0734437920036726
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 2,
+          "promptTokens": 88048,
+          "cachedInputTokens": 28744,
+          "completionTokens": 56857,
+          "reasoningTokens": 0,
+          "totalTokens": 144905,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 64761,
+              "cachedInputTokens": 14372,
+              "completionTokens": 42742,
+              "reasoningTokens": 0,
+              "totalTokens": 107503,
+              "malformedLines": 0,
+              "cacheWriteTokens": 50387
+            },
+            {
+              "phase": "review",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 23287,
+              "cachedInputTokens": 14372,
+              "completionTokens": 14115,
+              "reasoningTokens": 0,
+              "totalTokens": 37402,
+              "malformedLines": 0,
+              "cacheWriteTokens": 8913
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 7462,
+          "generationTokens": 202,
+          "generationCalls": 1,
+          "modelLoads": 1
+        },
+        "repairs": 0,
+        "modelLoads": 1,
+        "reviewVerdict": "approved",
+        "patch": {
+          "sha256": "008c462b4014935544b5fdf11264c6d89c98fdd090f55e8e0fda695c69c118c5",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/black-2b40cba5f7d166fe/bin/python -m unittest -q tests.test_black.BlackTestCase.test_tuple_assign\n----------------------------------------------------------------------\nRan 1 test in 0.026s\n\nOK\n"
+        },
+        "recordedAt": "2026-08-01T17:32:49.069019+00:00"
+      },
+      "frontierTokenDelta": 60609,
+      "timeDeltaSeconds": -184.1731584170484
+    },
+    {
+      "caseId": "fastapi-14",
+      "project": "fastapi",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "fastapi-14",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 5.287839833006728,
+        "phaseSeconds": {
+          "frontier": 0.0,
+          "oracle": 3.9959897499647923
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 124157,
+          "cachedInputTokens": 34308,
+          "completionTokens": 126867,
+          "reasoningTokens": 0,
+          "totalTokens": 251024,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 124157,
+              "cachedInputTokens": 34308,
+              "completionTokens": 126867,
+              "reasoningTokens": 0,
+              "totalTokens": 251024,
+              "malformedLines": 0,
+              "cacheWriteTokens": 89845
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "7c9700dbfbccb9a262a0159db53f53222023015237323507fb3e32884fe3e4cc",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/fastapi-306e586fa8cd0cab/bin/python -m pytest tests/test_additional_properties.py::test_additional_properties_schema\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-14/arms/frontier-alone/oracle\ncollected 1 item\n\ntests/test_additional_properties.py .                                    [100%]\n\n============================== 1 passed in 1.86s ===============================\n"
+        },
+        "recordedAt": "2026-08-01T17:33:07.791960+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "fastapi-14",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 369.8544455409865,
+        "phaseSeconds": {
+          "planning": 256.01583883399144,
+          "local": 106.67760345799616,
+          "review": 0.0,
+          "oracle": 4.554503166989889
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 63655,
+          "cachedInputTokens": 14372,
+          "completionTokens": 26386,
+          "reasoningTokens": 0,
+          "totalTokens": 90041,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 63655,
+              "cachedInputTokens": 14372,
+              "completionTokens": 26386,
+              "reasoningTokens": 0,
+              "totalTokens": 90041,
+              "malformedLines": 0,
+              "cacheWriteTokens": 49281
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 3515,
+          "generationTokens": 88,
+          "generationCalls": 1,
+          "modelLoads": 1
+        },
+        "repairs": 0,
+        "modelLoads": 1,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "31f198d908b72c0edc7451f358eee2e225f72ee91b84f8edd72c342631c4fcd7",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": 1,
+          "evidence": "$ /evaluation/cache/environments/fastapi-306e586fa8cd0cab/bin/python -m pytest tests/test_additional_properties.py::test_additional_properties_schema\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-14/arms/mlx-swarm/oracle\ncollected 1 item\n\ntests/test_additional_properties.py F                                    [100%]\n\n=================================== FAILURES ===================================\n______________________ test_additional_properties_schema _______________________\n\n    def test_additional_properties_schema():\n        response = client.get(\"/openapi.json\")\n        assert response.status_code == 200\n>       assert response.json() == openapi_schema\nE       AssertionError: assert {'components'...'Foo Post'}}}} == {'components'...'Foo Post'}}}}\nE         Omitting 3 identical items, use -vv to show\nE         Differing items:\nE         {'components': {'schemas': {'HTTPValidationError': {'properties': {'detail': {'items': {...}, 'title': 'Detail', 'type... 'Error Type', 'type': 'string'}}, 'required': ['loc', 'msg', 'type'], 'title': 'ValidationError', 'type': 'object'}}}} != {'components': {'schemas': {'HTTPValidationError': {'properties': {'detail': {'items': {...}, 'title': 'Detail', 'type... 'Error Type', 'type': 'string'}}, 'required': ['loc', 'msg', 'type'], 'title': 'ValidationError', 'type': 'object'}}}}\nE         Use -v to get the full diff\n\ntests/test_additional_properties.py:104: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_additional_properties.py::test_additional_properties_schema\n============================== 1 failed in 2.35s ===============================\n"
+        },
+        "recordedAt": "2026-08-01T17:39:22.014655+00:00"
+      },
+      "frontierTokenDelta": 160983,
+      "timeDeltaSeconds": -364.56660570797976
+    },
+    {
+      "caseId": "luigi-13",
+      "project": "luigi",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "luigi-13",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 3.6674354590359144,
+        "phaseSeconds": {
+          "frontier": 0.0,
+          "oracle": 2.6425902080372907
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 65265,
+          "cachedInputTokens": 14372,
+          "completionTokens": 155,
+          "reasoningTokens": 0,
+          "totalTokens": 65420,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 65265,
+              "cachedInputTokens": 14372,
+              "completionTokens": 155,
+              "reasoningTokens": 0,
+              "totalTokens": 65420,
+              "malformedLines": 0,
+              "cacheWriteTokens": 50891
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "5e02cac1db578af969f74002808ed55c81615d004871763ae57f7d28efc9a2f1",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/luigi-445d02cac7525524/bin/python -m pytest test/file_test.py::FileSystemTest::test_move_to_new_dir\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/luigi-13/arms/frontier-alone/oracle\ncollected 1 item\n\ntest/file_test.py .                                                      [100%]\n\n=============================== warnings summary ===============================\nluigi/parameter.py:28\n  /evaluation/cases/luigi-13/arms/frontier-alone/oracle/luigi/parameter.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n    from collections import OrderedDict, Mapping\n\n-- Docs: https://docs.pytest.org/en/latest/warnings.html\n========================= 1 passed, 1 warning in 0.79s =========================\n"
+        },
+        "recordedAt": "2026-08-01T17:40:52.093025+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "luigi-13",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 70.73612874996616,
+        "phaseSeconds": {
+          "planning": 0.0,
+          "local": 31.493962999957148,
+          "review": 34.14822887495393,
+          "oracle": 2.611966540978756
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 2,
+          "promptTokens": 90096,
+          "cachedInputTokens": 28744,
+          "completionTokens": 8693,
+          "reasoningTokens": 0,
+          "totalTokens": 98789,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 66872,
+              "cachedInputTokens": 14372,
+              "completionTokens": 5944,
+              "reasoningTokens": 0,
+              "totalTokens": 72816,
+              "malformedLines": 0,
+              "cacheWriteTokens": 52498
+            },
+            {
+              "phase": "review",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 23224,
+              "cachedInputTokens": 14372,
+              "completionTokens": 2749,
+              "reasoningTokens": 0,
+              "totalTokens": 25973,
+              "malformedLines": 0,
+              "cacheWriteTokens": 8850
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 5376,
+          "generationTokens": 32,
+          "generationCalls": 1,
+          "modelLoads": 1
+        },
+        "repairs": 0,
+        "modelLoads": 1,
+        "reviewVerdict": "approved",
+        "patch": {
+          "sha256": "17fd1ba9fec5761e94a3ac619682e599484420ad1d4706263fe839f07cf01804",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/luigi-445d02cac7525524/bin/python -m pytest test/file_test.py::FileSystemTest::test_move_to_new_dir\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/luigi-13/arms/mlx-swarm/oracle\ncollected 1 item\n\ntest/file_test.py .                                                      [100%]\n\n=============================== warnings summary ===============================\nluigi/parameter.py:28\n  /evaluation/cases/luigi-13/arms/mlx-swarm/oracle/luigi/parameter.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n    from collections import OrderedDict, Mapping\n\n-- Docs: https://docs.pytest.org/en/latest/warnings.html\n========================= 1 passed, 1 warning in 0.81s =========================\n"
+        },
+        "recordedAt": "2026-08-01T17:40:41.951881+00:00"
+      },
+      "frontierTokenDelta": -33369,
+      "timeDeltaSeconds": -67.06869329093024
+    },
+    {
+      "caseId": "scrapy-24",
+      "project": "scrapy",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "scrapy-24",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 0,
+        "elapsedSeconds": 206.08283287502127,
+        "phaseSeconds": {
+          "frontier": 112.2083434999804,
+          "oracle": 6.12583104101941
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 2,
+          "promptTokens": 135479,
+          "cachedInputTokens": 34309,
+          "completionTokens": 21282,
+          "reasoningTokens": 0,
+          "totalTokens": 156761,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 67503,
+              "cachedInputTokens": 14372,
+              "completionTokens": 12590,
+              "reasoningTokens": 0,
+              "totalTokens": 80093,
+              "malformedLines": 0,
+              "cacheWriteTokens": 53129
+            },
+            {
+              "phase": "frontier-alone-repair",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 67976,
+              "cachedInputTokens": 19937,
+              "completionTokens": 8692,
+              "reasoningTokens": 0,
+              "totalTokens": 76668,
+              "malformedLines": 0,
+              "cacheWriteTokens": 48037
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "c8e802a3280eaa75c81b4765929c3aefaf6fb64f62329d93e0329b6c87b65465",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": 1,
+          "evidence": "$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_downloader_handlers.HttpProxyTestCase.test_download_with_proxy_https_timeout\nUnhandled Error\nTraceback (most recent call last):\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/log.py\", line 103, in callWithLogger\n    return callWithContext({\"system\": lp}, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/log.py\", line 86, in callWithContext\n    return context.call({ILogContext: newCtx}, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/context.py\", line 122, in callWithContext\n    return self.currentContext().callWithContext(ctx, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/context.py\", line 85, in callWithContext\n    return func(*args,**kw)\n--- <exception caught here> ---\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/posixbase.py\", line 614, in _doReadOrWrite\n    why = selectable.doRead()\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 243, in doRead\n    return self._dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 249, in _dataReceived\n    rval = self.protocol.dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/endpoints.py\", line 132, in dataReceived\n    return self._wrappedProtocol.dataReceived(data)\n  File \"/evaluation/cases/scrapy-24/arms/frontier-alone/oracle/scrapy/core/downloader/handlers/http11.py\", line 112, in processProxyResponse\n    if  TunnelingTCP4ClientEndpoint._responseMatcher.match(bytes):\nbuiltins.TypeError: cannot use a string pattern on a bytes-like object\n\n/evaluation/cases/scrapy-24/arms/frontier-alone/oracle/scrapy/core/downloader/handlers/http11.py:143: DeprecationWarning: <scrapy.core.downloader.contextfactory.ScrapyClientContextFactory object at 0x400a592130> was passed as the HTTPS policy for an Agent, but it does not provide IPolicyForHTTPS.  Since Twisted 14.0, you must pass a provider of IPolicyForHTTPS.\n  super(TunnelingAgent, self).__init__(reactor, contextFactory,\n======================================================================\nERROR: test_download_with_proxy_https_timeout (tests.test_downloader_handlers.HttpProxyTestCase)\ntest_download_with_proxy_https_timeout\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/posixbase.py\", line 614, in _doReadOrWrite\n    why = selectable.doRead()\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 243, in doRead\n    return self._dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 249, in _dataReceived\n    rval = self.protocol.dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/endpoints.py\", line 132, in dataReceived\n    return self._wrappedProtocol.dataReceived(data)\n  File \"/evaluation/cases/scrapy-24/arms/frontier-alone/oracle/scrapy/core/downloader/handlers/http11.py\", line 112, in processProxyResponse\n    if  TunnelingTCP4ClientEndpoint._responseMatcher.match(bytes):\nTypeError: cannot use a string pattern on a bytes-like object\n\n----------------------------------------------------------------------\nRan 1 test in 0.244s\n\nFAILED (errors=1)\n"
+        },
+        "recordedAt": "2026-08-01T17:44:25.273733+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "scrapy-24",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 168.5880872500129,
+        "phaseSeconds": {
+          "planning": 119.5760983749642,
+          "local": 39.89448741602246,
+          "review": 0.0,
+          "oracle": 5.758687082969118
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 69110,
+          "cachedInputTokens": 14372,
+          "completionTokens": 14135,
+          "reasoningTokens": 0,
+          "totalTokens": 83245,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 69110,
+              "cachedInputTokens": 14372,
+              "completionTokens": 14135,
+              "reasoningTokens": 0,
+              "totalTokens": 83245,
+              "malformedLines": 0,
+              "cacheWriteTokens": 54736
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 4366,
+          "generationTokens": 210,
+          "generationCalls": 1,
+          "modelLoads": 1
+        },
+        "repairs": 0,
+        "modelLoads": 1,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "f4cfa24870befe2ceb27d57dba7fdd4345551de01d6d48f7db7b27846c3f790f",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": 1,
+          "evidence": "$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_downloader_handlers.HttpProxyTestCase.test_download_with_proxy_https_timeout\nUnhandled Error\nTraceback (most recent call last):\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/log.py\", line 103, in callWithLogger\n    return callWithContext({\"system\": lp}, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/log.py\", line 86, in callWithContext\n    return context.call({ILogContext: newCtx}, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/context.py\", line 122, in callWithContext\n    return self.currentContext().callWithContext(ctx, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/context.py\", line 85, in callWithContext\n    return func(*args,**kw)\n--- <exception caught here> ---\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/posixbase.py\", line 614, in _doReadOrWrite\n    why = selectable.doRead()\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 243, in doRead\n    return self._dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 249, in _dataReceived\n    rval = self.protocol.dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/endpoints.py\", line 132, in dataReceived\n    return self._wrappedProtocol.dataReceived(data)\n  File \"/evaluation/cases/scrapy-24/arms/mlx-swarm/oracle/scrapy/core/downloader/handlers/http11.py\", line 112, in processProxyResponse\n    if  TunnelingTCP4ClientEndpoint._responseMatcher.match(bytes):\nbuiltins.TypeError: cannot use a string pattern on a bytes-like object\n\n/evaluation/cases/scrapy-24/arms/mlx-swarm/oracle/scrapy/core/downloader/handlers/http11.py:143: DeprecationWarning: <scrapy.core.downloader.contextfactory.ScrapyClientContextFactory object at 0x4009662790> was passed as the HTTPS policy for an Agent, but it does not provide IPolicyForHTTPS.  Since Twisted 14.0, you must pass a provider of IPolicyForHTTPS.\n  super(TunnelingAgent, self).__init__(reactor, contextFactory,\n======================================================================\nERROR: test_download_with_proxy_https_timeout (tests.test_downloader_handlers.HttpProxyTestCase)\ntest_download_with_proxy_https_timeout\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/posixbase.py\", line 614, in _doReadOrWrite\n    why = selectable.doRead()\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 243, in doRead\n    return self._dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 249, in _dataReceived\n    rval = self.protocol.dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/endpoints.py\", line 132, in dataReceived\n    return self._wrappedProtocol.dataReceived(data)\n  File \"/evaluation/cases/scrapy-24/arms/mlx-swarm/oracle/scrapy/core/downloader/handlers/http11.py\", line 112, in processProxyResponse\n    if  TunnelingTCP4ClientEndpoint._responseMatcher.match(bytes):\nTypeError: cannot use a string pattern on a bytes-like object\n\n----------------------------------------------------------------------\nRan 1 test in 0.235s\n\nFAILED (errors=1)\n"
+        },
+        "recordedAt": "2026-08-01T17:47:19.485954+00:00"
+      },
+      "frontierTokenDelta": 73516,
+      "timeDeltaSeconds": 37.49474562500836
+    },
+    {
+      "caseId": "sanic-5",
+      "project": "sanic",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "sanic-5",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 4.225530291965697,
+        "phaseSeconds": {
+          "frontier": 0.0,
+          "oracle": 3.5579744999995455
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 59564,
+          "cachedInputTokens": 14372,
+          "completionTokens": 2700,
+          "reasoningTokens": 0,
+          "totalTokens": 62264,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 59564,
+              "cachedInputTokens": 14372,
+              "completionTokens": 2700,
+              "reasoningTokens": 0,
+              "totalTokens": 62264,
+              "malformedLines": 0,
+              "cacheWriteTokens": 45190
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "4ae9218acd91b3201821cb8dfcb25174e8d2c187355d8de33580c8b2a7fd61e8",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/sanic-772461c9ea528e76/bin/python -m pytest tests/test_logging.py::test_logging_modified_root_logger_config\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/sanic-5/arms/frontier-alone/oracle\nplugins: sanic-1.6.1\ncollected 1 item\n\ntests/test_logging.py .                                                  [100%]\n\n============================== 1 passed in 0.19s ===============================\n/evaluation/cases/sanic-5/arms/frontier-alone/oracle/sanic/response.py:115: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n/evaluation/cases/sanic-5/arms/frontier-alone/oracle/sanic/response.py:174: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n"
+        },
+        "recordedAt": "2026-08-01T17:48:51.395822+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "sanic-5",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "completed",
+        "completed": true,
+        "score": 1,
+        "elapsedSeconds": 69.74071099999128,
+        "phaseSeconds": {
+          "planning": 0.0,
+          "local": 32.15307058300823,
+          "review": 32.45139595796354,
+          "oracle": 3.484814000024926
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 2,
+          "promptTokens": 84429,
+          "cachedInputTokens": 28744,
+          "completionTokens": 9008,
+          "reasoningTokens": 0,
+          "totalTokens": 93437,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 61171,
+              "cachedInputTokens": 14372,
+              "completionTokens": 6231,
+              "reasoningTokens": 0,
+              "totalTokens": 67402,
+              "malformedLines": 0,
+              "cacheWriteTokens": 46797
+            },
+            {
+              "phase": "review",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 23258,
+              "cachedInputTokens": 14372,
+              "completionTokens": 2777,
+              "reasoningTokens": 0,
+              "totalTokens": 26035,
+              "malformedLines": 0,
+              "cacheWriteTokens": 8884
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 2868,
+          "generationTokens": 63,
+          "generationCalls": 1,
+          "modelLoads": 1
+        },
+        "repairs": 0,
+        "modelLoads": 1,
+        "reviewVerdict": "approved",
+        "patch": {
+          "sha256": "ad733159d21a10c63d6819b0f1b8700e385f2c869c422e9d666cf0df6049ac62",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": true,
+          "exitCode": 0,
+          "evidence": "$ /evaluation/cache/environments/sanic-772461c9ea528e76/bin/python -m pytest tests/test_logging.py::test_logging_modified_root_logger_config\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/sanic-5/arms/mlx-swarm/oracle\nplugins: sanic-1.6.1\ncollected 1 item\n\ntests/test_logging.py .                                                  [100%]\n\n============================== 1 passed in 0.19s ===============================\n/evaluation/cases/sanic-5/arms/mlx-swarm/oracle/sanic/response.py:115: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n/evaluation/cases/sanic-5/arms/mlx-swarm/oracle/sanic/response.py:174: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n"
+        },
+        "recordedAt": "2026-08-01T17:48:40.739206+00:00"
+      },
+      "frontierTokenDelta": -31173,
+      "timeDeltaSeconds": -65.51518070802558
+    },
+    {
+      "caseId": "tornado-2",
+      "project": "tornado",
+      "frontier": {
+        "schemaVersion": 1,
+        "caseId": "tornado-2",
+        "phase": "measured",
+        "arm": "frontier-alone",
+        "status": "completed",
+        "completed": true,
+        "score": 0,
+        "elapsedSeconds": 7.915118957986124,
+        "phaseSeconds": {
+          "frontier": 0.0,
+          "oracle": 6.929324249969795
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 2,
+          "promptTokens": 181542,
+          "cachedInputTokens": 48679,
+          "completionTokens": 79492,
+          "reasoningTokens": 0,
+          "totalTokens": 261034,
+          "phases": [
+            {
+              "phase": "frontier-alone",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 120877,
+              "cachedInputTokens": 34307,
+              "completionTokens": 56285,
+              "reasoningTokens": 0,
+              "totalTokens": 177162,
+              "malformedLines": 0,
+              "cacheWriteTokens": 86566
+            },
+            {
+              "phase": "frontier-alone-repair",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 60665,
+              "cachedInputTokens": 14372,
+              "completionTokens": 23207,
+              "reasoningTokens": 0,
+              "totalTokens": 83872,
+              "malformedLines": 0,
+              "cacheWriteTokens": 46291
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": "a8614097b3234f64f1b136d87637a68b3ba761473c6690daf5fa0fdcf8b4ce67",
+          "changedFiles": 1
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": 1,
+          "evidence": "$ /evaluation/cache/environments/tornado-e001cbbd451e78a2/bin/python -m unittest -q tornado.test.httpclient_test.HTTPClientCommonTestCase.test_redirect_put_without_body\nERROR:asyncio:Exception in callback _HTTPConnection.finish.<locals>.<lambda>(<Future finis...Stream closed>) at /evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/simple_httpclient.py:654\nhandle: <Handle _HTTPConnection.finish.<locals>.<lambda>(<Future finis...Stream closed>) at /evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/simple_httpclient.py:654>\nTraceback (most recent call last):\n  File \"/opt/python37/lib/python3.7/asyncio/events.py\", line 88, in _run\n    self._context.run(self._callback, *self._args)\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/simple_httpclient.py\", line 654, in <lambda>\n    fut.add_done_callback(lambda f: final_callback(f.result()))\ntornado.simple_httpclient.HTTPStreamClosedError: Stream closed\n======================================================================\nERROR: test_redirect_put_without_body (tornado.test.httpclient_test.HTTPClientCommonTestCase)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/testing.py\", line 94, in __call__\n    result = self.orig_method(*args, **kwargs)\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/test/httpclient_test.py\", line 321, in test_redirect_put_without_body\n    allow_nonstandard_methods=True,\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/testing.py\", line 437, in fetch\n    timeout=get_async_test_timeout(),\n  File \"/evaluation/cases/tornado-2/arms/frontier-alone/oracle/tornado/ioloop.py\", line 530, in run_sync\n    raise TimeoutError(\"Operation timed out after %s seconds\" % timeout)\ntornado.util.TimeoutError: Operation timed out after 5 seconds\n\n----------------------------------------------------------------------\nRan 1 test in 5.066s\n\nFAILED (errors=1)\n"
+        },
+        "recordedAt": "2026-08-01T17:49:05.858084+00:00"
+      },
+      "swarm": {
+        "schemaVersion": 1,
+        "caseId": "tornado-2",
+        "phase": "measured",
+        "arm": "mlx-swarm",
+        "status": "failed",
+        "completed": false,
+        "score": 0,
+        "elapsedSeconds": 0.016432208998594433,
+        "phaseSeconds": {
+          "planning": 0.0
+        },
+        "frontierUsage": {
+          "usageStatus": "reported",
+          "turns": 2,
+          "promptTokens": 125929,
+          "cachedInputTokens": 34320,
+          "completionTokens": 35119,
+          "reasoningTokens": 0,
+          "totalTokens": 161048,
+          "phases": [
+            {
+              "phase": "planning",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 62015,
+              "cachedInputTokens": 14372,
+              "completionTokens": 12565,
+              "reasoningTokens": 0,
+              "totalTokens": 74580,
+              "malformedLines": 0,
+              "cacheWriteTokens": 47641
+            },
+            {
+              "phase": "planning-repair",
+              "usageStatus": "reported",
+              "turns": 1,
+              "promptTokens": 63914,
+              "cachedInputTokens": 19948,
+              "completionTokens": 22554,
+              "reasoningTokens": 0,
+              "totalTokens": 86468,
+              "malformedLines": 0,
+              "cacheWriteTokens": 43964
+            }
+          ]
+        },
+        "localUsage": {
+          "promptTokens": 0,
+          "generationTokens": 0,
+          "generationCalls": 0,
+          "modelLoads": 0
+        },
+        "repairs": 0,
+        "modelLoads": 0,
+        "reviewVerdict": null,
+        "patch": {
+          "sha256": null,
+          "changedFiles": 0
+        },
+        "oracle": {
+          "passed": false,
+          "exitCode": null,
+          "evidence": "Frontier delegation blueprint was rejected: Frontier delegation blueprint must contain 1 to 8 edits."
+        },
+        "recordedAt": "2026-08-01T17:49:09.923872+00:00"
+      },
+      "frontierTokenDelta": 99986,
+      "timeDeltaSeconds": 7.898686748987529
+    }
+  ],
+  "generatedAt": "2026-08-01T17:49:09.923872+00:00",
+  "studyType": "preliminary_6_pair",
+  "sourceEvaluationId": "bugsinpy-sonnet-preliminary-20260801t165840z",
+  "decisionGate": {
+    "status": "stop_and_improve_workers",
+    "text": "Acceptance is materially behind (3/6 vs 4/6). Improve local worker patch quality before running the 30-pair study."
+  },
+  "preparation": {
+    "caseCount": 8,
+    "totalSeconds": 1078.2380986250355,
+    "medianSeconds": 116.56877845851704,
+    "pilotSeconds": 224.72371799999382,
+    "measuredSeconds": 853.5143806250417
+  },
+  "study": {
+    "benchmark": "BugsInPy",
+    "benchmarkRevision": "11c5f1eea954a42132cfd06bf257766a7963e0fd",
+    "seed": 20260728,
+    "recordedAt": "2026-08-01T17:20:45.272226+00:00",
+    "frontierAdapter": "claude-cli",
+    "frontierProvider": "claude-code",
+    "frontierModel": "claude-sonnet-5",
+    "frontierCommandVersion": "2.1.220 (Claude Code)",
+    "frontierToolsets": [],
+    "frontierContextWindow": 200000,
+    "frontierMaxCompletionTokens": 64000,
+    "reasoningEffort": "none",
+    "codexVersion": null,
+    "mlxSwarmCommit": "e02627586f2793d59f688675b2f497b8001e7f85",
+    "evaluationProtocolVersion": 16,
+    "localModel": {
+      "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "",
+      "path": "/Users/fzuin/.cache/huggingface/hub/models--mlx-community--Qwen3.6-35B-A3B-4bit/snapshots/38740b847e4cb78f352aba30aa41c76e08e6eb46",
+      "fingerprint": "aff3a46a930400a012bb26f76227c311a590bc8afbc6efd4f2782d3b36063600"
+    },
+    "hardware": {
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "processor": "arm",
+      "memoryBytes": 51539607552
+    },
+    "runtime": {
+      "python": "3.13.9",
+      "pythonExecutable": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+      "packages": {
+        "mlx": "0.32.0",
+        "mlx-lm": "0.31.3",
+        "huggingface-hub": "1.25.1"
+      },
+      "git": "git version 2.52.0",
+      "uv": "uv 0.10.0 (0ba432459 2026-02-05)",
+      "benchmarkBuildJobs": 4,
+      "container": {
+        "image": "mlx-swarm-bugsinpy-amd64:11c5f1eea954-py37",
+        "digest": "sha256:f577bdd087333bbc04de8641a2523cd47860dea704aee62339283a40030ee1cb",
+        "architecture": "amd64",
+        "os": "linux",
+        "sizeBytes": 223560071,
+        "platform": "linux/amd64"
+      }
+    }
+  },
+  "protocolAudit": {
+    "status": "valid",
+    "observedVersion": 16,
+    "requiredVersion": 16,
+    "invariants": [
+      "one immutable task packet and write-root contract for both arms",
+      "exact contiguous workspace source excerpts",
+      "Git recount support for semantically valid diff hunks",
+      "immutable prompt and output evidence for every local attempt",
+      "Docker context is frozen into verifier profiles",
+      "verifier infrastructure failures are invalid measurements",
+      "measured work requires a two-case zero-frontier local replay gate"
+    ],
+    "issues": []
+  }
+}

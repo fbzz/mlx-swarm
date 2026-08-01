@@ -1,0 +1,269 @@
+{
+  "schemaVersion": 1,
+  "results": [
+    {
+      "schemaVersion": 1,
+      "caseId": "black-11",
+      "phase": "pilot",
+      "arm": "frontier-alone",
+      "status": "completed",
+      "completed": true,
+      "score": 0,
+      "elapsedSeconds": 2.545071375032421,
+      "phaseSeconds": {
+        "frontier": 0.0,
+        "oracle": 1.8926858750055544
+      },
+      "frontierUsage": {
+        "usageStatus": "reported",
+        "turns": 1,
+        "promptTokens": 342197,
+        "cachedInputTokens": 239605,
+        "completionTokens": 58445,
+        "reasoningTokens": 0,
+        "totalTokens": 400642,
+        "phases": [
+          {
+            "phase": "frontier-alone",
+            "usageStatus": "reported",
+            "turns": 1,
+            "promptTokens": 342197,
+            "cachedInputTokens": 239605,
+            "completionTokens": 58445,
+            "reasoningTokens": 0,
+            "totalTokens": 400642,
+            "malformedLines": 0,
+            "cacheWriteTokens": 102582
+          }
+        ]
+      },
+      "localUsage": {
+        "promptTokens": 0,
+        "generationTokens": 0,
+        "generationCalls": 0,
+        "modelLoads": 0
+      },
+      "repairs": 0,
+      "modelLoads": 0,
+      "reviewVerdict": null,
+      "patch": {
+        "sha256": "49f3067bc618c43587649e68fec5dec1fc9dfa67917ff1ced73a1c257f6ebd6c",
+        "changedFiles": 1
+      },
+      "oracle": {
+        "passed": false,
+        "exitCode": 1,
+        "evidence": "$ /evaluation/cache/environments/black-2b40cba5f7d166fe/bin/python -m unittest -q tests.test_black.BlackTestCase.test_comments6\nExpected tree:\nfile_input\n  simple_stmt\n    import_from\n      NAME 'from'\n      NAME ' ' 'typing'\n      NAME ' ' 'import'\n      import_as_names\n        NAME ' ' 'Any'\n        COMMA ','\n        NAME ' ' 'Tuple'\n      /import_as_names\n    /import_from\n    NEWLINE '\\n'\n  /simple_stmt\n  funcdef\n    NAME '\\n\\n' 'def'\n    NAME ' ' 'f'\n    parameters\n      LPAR '('\n      typedargslist\n        NAME '\\n    ' 'a'\n        COMMA ','\n      /typedargslist\n      RPAR '  # type: int\\n' ')'\n    /parameters\n    COLON ':'\n    suite\n      NEWLINE '\\n'\n      INDENT ''\n      simple_stmt\n        NAME '    ' 'pass'\n        NEWLINE '\\n'\n      /simple_stmt\n      DEDENT ''\n    /suite\n  /funcdef\n  funcdef\n    NAME '\\n\\n# test type comments\\n' 'def'\n    NAME ' ' 'f'\n    parameters\n      LPAR '('\n      typedargslist\n        NAME 'a'\n        COMMA ','\n        NAME ' ' 'b'\n        COMMA ','\n        NAME ' ' 'c'\n        COMMA ','\n        NAME ' ' 'd'\n        COMMA ','\n        NAME ' ' 'e'\n        COMMA ','\n        NAME ' ' 'f'\n        COMMA ','\n        NAME ' ' 'g'\n        COMMA ','\n        NAME ' ' 'h'\n        COMMA ','\n        NAME ' ' 'i'\n      /typedargslist\n      RPAR ')'\n    /parameters\n    COLON ':'\n    suite\n      NEWLINE '\\n'\n      INDENT ''\n      simple_stmt\n        NAME '    # type: (int, int, int, int, int, int, int, int, int) -> None\\n    ' 'pass'\n        NEWLINE '\\n'\n      /simple_stmt\n      DEDENT ''\n    /suite\n  /funcdef\n  funcdef\n    NAME '\\n\\n' 'def'\n    NAME ' ' 'f'\n    parameters\n      LPAR '('\n      typedargslist\n        NAME '\\n    ' 'a'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'b'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'c'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'd'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'e'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'f'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'g'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'h'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'i'\n        COMMA ','\n      /typedargslist\n      RPAR '  # type: int\\n' ')'\n    /parameters\n    COLON ':'\n    suite\n      NEWLINE '\\n'\n      INDENT ''\n      simple_stmt\n        NAME '    # type: (...) -> None\\n    ' 'pass'\n        NEWLINE '\\n'\n      /simple_stmt\n      DEDENT ''\n    /suite\n  /funcdef\n  funcdef\n    NAME '\\n\\n' 'def'\n    NAME ' ' 'f'\n    parameters\n      LPAR '('\n      typedargslist\n        NAME '\\n    ' 'arg'\n        COMMA ','\n        STAR '  # type: int\\n    ' '*'\n        NAME 'args'\n        COMMA ','\n        NAME '  # type: *Any\\n    ' 'default'\n        EQUAL '='\n        NAME 'False'\n        COMMA ','\n        DOUBLESTAR '  # type: bool\\n    ' '**'\n        NAME 'kwargs'\n        COMMA ','\n      /typedargslist\n      RPAR '  # type: **Any\\n' ')'\n    /parameters\n    COLON ':'\n    suite\n      NEWLINE '\\n'\n      INDENT ''\n      simple_stmt\n        NAME '    # type: (...) -> None\\n    ' 'pass'\n        NEWLINE '\\n'\n      /simple_stmt\n      DEDENT ''\n    /suite\n  /funcdef\n  funcdef\n    NAME '\\n\\n' 'def'\n    NAME ' ' 'f'\n    parameters\n      LPAR '('\n      typedargslist\n        NAME '\\n    ' 'a'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'b'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'c'\n        COMMA ','\n        NAME '  # type: int\\n    ' 'd'\n        COMMA ','\n      /typedargslist\n      RPAR '  # type: int\\n' ')'\n    /parameters\n    COLON ':'\n    suite\n      NEWLINE '\\n'\n      INDENT ''\n      simple_stmt\n        expr_stmt\n          NAME '    # type: (...) -> None\\n\\n    ' 'element'\n          EQUAL ' ' '='\n          NUMBER ' ' '0'\n        /expr_stmt\n        NEWLINE '  # type: int' '\\n'\n      /simple_stmt\n      simple_stmt\n        expr_stmt\n          NAME '    ' 'another_element'\n          EQUAL ' ' '='\n          NUMBER ' ' '1'\n        /expr_stmt\n        NEWLINE '  # type: float' '\\n'\n      /simple_stmt\n      s"
+      },
+      "recordedAt": "2026-08-01T17:20:52.547756+00:00"
+    },
+    {
+      "schemaVersion": 1,
+      "caseId": "black-11",
+      "phase": "pilot",
+      "arm": "mlx-swarm",
+      "status": "completed",
+      "completed": true,
+      "score": 1,
+      "elapsedSeconds": 178.98605333303567,
+      "phaseSeconds": {
+        "planning": 0.0,
+        "local": 49.98072929197224,
+        "review": 125.64807079097955,
+        "oracle": 1.7348301249439828
+      },
+      "frontierUsage": {
+        "usageStatus": "reported",
+        "turns": 3,
+        "promptTokens": 267892,
+        "cachedInputTokens": 118706,
+        "completionTokens": 62391,
+        "reasoningTokens": 0,
+        "totalTokens": 330283,
+        "phases": [
+          {
+            "phase": "planning",
+            "usageStatus": "reported",
+            "turns": 1,
+            "promptTokens": 172872,
+            "cachedInputTokens": 84390,
+            "completionTokens": 34748,
+            "reasoningTokens": 0,
+            "totalTokens": 207620,
+            "malformedLines": 0,
+            "cacheWriteTokens": 88478
+          },
+          {
+            "phase": "planning-repair",
+            "usageStatus": "reported",
+            "turns": 1,
+            "promptTokens": 71777,
+            "cachedInputTokens": 19944,
+            "completionTokens": 15370,
+            "reasoningTokens": 0,
+            "totalTokens": 87147,
+            "malformedLines": 0,
+            "cacheWriteTokens": 51831
+          },
+          {
+            "phase": "review",
+            "usageStatus": "reported",
+            "turns": 1,
+            "promptTokens": 23243,
+            "cachedInputTokens": 14372,
+            "completionTokens": 12273,
+            "reasoningTokens": 0,
+            "totalTokens": 35516,
+            "malformedLines": 0,
+            "cacheWriteTokens": 8869
+          }
+        ]
+      },
+      "localUsage": {
+        "promptTokens": 3960,
+        "generationTokens": 172,
+        "generationCalls": 1,
+        "modelLoads": 1
+      },
+      "repairs": 0,
+      "modelLoads": 1,
+      "reviewVerdict": "approved",
+      "patch": {
+        "sha256": "764501781831d4ee8145422d29374cde9affcc1f724c1b89587ce12cc69784c5",
+        "changedFiles": 1
+      },
+      "oracle": {
+        "passed": true,
+        "exitCode": 0,
+        "evidence": "$ /evaluation/cache/environments/black-2b40cba5f7d166fe/bin/python -m unittest -q tests.test_black.BlackTestCase.test_comments6\n----------------------------------------------------------------------\nRan 1 test in 0.063s\n\nOK\n"
+      },
+      "recordedAt": "2026-08-01T17:23:54.536116+00:00"
+    },
+    {
+      "schemaVersion": 1,
+      "caseId": "fastapi-6",
+      "phase": "pilot",
+      "arm": "frontier-alone",
+      "status": "completed",
+      "completed": true,
+      "score": 1,
+      "elapsedSeconds": 11.680615167017095,
+      "phaseSeconds": {
+        "frontier": 0.0,
+        "oracle": 9.885715290962253
+      },
+      "frontierUsage": {
+        "usageStatus": "reported",
+        "turns": 1,
+        "promptTokens": 123102,
+        "cachedInputTokens": 123098,
+        "completionTokens": 11271,
+        "reasoningTokens": 0,
+        "totalTokens": 134373,
+        "phases": [
+          {
+            "phase": "frontier-alone",
+            "usageStatus": "reported",
+            "turns": 1,
+            "promptTokens": 123102,
+            "cachedInputTokens": 123098,
+            "completionTokens": 11271,
+            "reasoningTokens": 0,
+            "totalTokens": 134373,
+            "malformedLines": 0,
+            "cacheWriteTokens": 0
+          }
+        ]
+      },
+      "localUsage": {
+        "promptTokens": 0,
+        "generationTokens": 0,
+        "generationCalls": 0,
+        "modelLoads": 0
+      },
+      "repairs": 0,
+      "modelLoads": 0,
+      "reviewVerdict": null,
+      "patch": {
+        "sha256": "9c8b8debd3a6efc1ca7ec1449f68c8c1611ba0a160e0001295c2744f98a6c432",
+        "changedFiles": 1
+      },
+      "oracle": {
+        "passed": true,
+        "exitCode": 0,
+        "evidence": "$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_list_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-6/arms/frontier-alone/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 1.61s ===============================\n\n$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_set_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-6/arms/frontier-alone/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 1.47s ===============================\n\n$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_tuple_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-6/arms/frontier-alone/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 1.50s ===============================\n"
+      },
+      "recordedAt": "2026-08-01T17:27:26.346104+00:00"
+    },
+    {
+      "schemaVersion": 1,
+      "caseId": "fastapi-6",
+      "phase": "pilot",
+      "arm": "mlx-swarm",
+      "status": "completed",
+      "completed": true,
+      "score": 1,
+      "elapsedSeconds": 186.65238020801917,
+      "phaseSeconds": {
+        "planning": 0.0,
+        "local": 37.72437929100124,
+        "review": 134.67454520898173,
+        "oracle": 9.721938125032466
+      },
+      "frontierUsage": {
+        "usageStatus": "reported",
+        "turns": 2,
+        "promptTokens": 86522,
+        "cachedInputTokens": 28744,
+        "completionTokens": 31576,
+        "reasoningTokens": 0,
+        "totalTokens": 118098,
+        "phases": [
+          {
+            "phase": "planning",
+            "usageStatus": "reported",
+            "turns": 1,
+            "promptTokens": 63158,
+            "cachedInputTokens": 14372,
+            "completionTokens": 17415,
+            "reasoningTokens": 0,
+            "totalTokens": 80573,
+            "malformedLines": 0,
+            "cacheWriteTokens": 48784
+          },
+          {
+            "phase": "review",
+            "usageStatus": "reported",
+            "turns": 1,
+            "promptTokens": 23364,
+            "cachedInputTokens": 14372,
+            "completionTokens": 14161,
+            "reasoningTokens": 0,
+            "totalTokens": 37525,
+            "malformedLines": 0,
+            "cacheWriteTokens": 8990
+          }
+        ]
+      },
+      "localUsage": {
+        "promptTokens": 3375,
+        "generationTokens": 84,
+        "generationCalls": 1,
+        "modelLoads": 1
+      },
+      "repairs": 0,
+      "modelLoads": 1,
+      "reviewVerdict": "approved",
+      "patch": {
+        "sha256": "34afd2397135fcffa5fec252a43e78664de9d7bdc42b7ce0184b7b4a3da13ce8",
+        "changedFiles": 1
+      },
+      "oracle": {
+        "passed": true,
+        "exitCode": 0,
+        "evidence": "$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_list_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-6/arms/mlx-swarm/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 1.50s ===============================\n\n$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_set_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-6/arms/mlx-swarm/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 1.47s ===============================\n\n$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_tuple_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-6/arms/mlx-swarm/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 1.52s ===============================\n"
+      },
+      "recordedAt": "2026-08-01T17:27:10.373250+00:00"
+    }
+  ]
+}

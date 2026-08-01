@@ -1,0 +1,132 @@
+{
+  "caseId": "luigi-13",
+  "project": "luigi",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "luigi-13",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 3.6674354590359144,
+    "phaseSeconds": {
+      "frontier": 0.0,
+      "oracle": 2.6425902080372907
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 65265,
+      "cachedInputTokens": 14372,
+      "completionTokens": 155,
+      "reasoningTokens": 0,
+      "totalTokens": 65420,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 65265,
+          "cachedInputTokens": 14372,
+          "completionTokens": 155,
+          "reasoningTokens": 0,
+          "totalTokens": 65420,
+          "malformedLines": 0,
+          "cacheWriteTokens": 50891
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "5e02cac1db578af969f74002808ed55c81615d004871763ae57f7d28efc9a2f1",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/luigi-445d02cac7525524/bin/python -m pytest test/file_test.py::FileSystemTest::test_move_to_new_dir\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/luigi-13/arms/frontier-alone/oracle\ncollected 1 item\n\ntest/file_test.py .                                                      [100%]\n\n=============================== warnings summary ===============================\nluigi/parameter.py:28\n  /evaluation/cases/luigi-13/arms/frontier-alone/oracle/luigi/parameter.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n    from collections import OrderedDict, Mapping\n\n-- Docs: https://docs.pytest.org/en/latest/warnings.html\n========================= 1 passed, 1 warning in 0.79s =========================\n"
+    },
+    "recordedAt": "2026-08-01T17:40:52.093025+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "luigi-13",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 70.73612874996616,
+    "phaseSeconds": {
+      "planning": 0.0,
+      "local": 31.493962999957148,
+      "review": 34.14822887495393,
+      "oracle": 2.611966540978756
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 2,
+      "promptTokens": 90096,
+      "cachedInputTokens": 28744,
+      "completionTokens": 8693,
+      "reasoningTokens": 0,
+      "totalTokens": 98789,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 66872,
+          "cachedInputTokens": 14372,
+          "completionTokens": 5944,
+          "reasoningTokens": 0,
+          "totalTokens": 72816,
+          "malformedLines": 0,
+          "cacheWriteTokens": 52498
+        },
+        {
+          "phase": "review",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 23224,
+          "cachedInputTokens": 14372,
+          "completionTokens": 2749,
+          "reasoningTokens": 0,
+          "totalTokens": 25973,
+          "malformedLines": 0,
+          "cacheWriteTokens": 8850
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 5376,
+      "generationTokens": 32,
+      "generationCalls": 1,
+      "modelLoads": 1
+    },
+    "repairs": 0,
+    "modelLoads": 1,
+    "reviewVerdict": "approved",
+    "patch": {
+      "sha256": "17fd1ba9fec5761e94a3ac619682e599484420ad1d4706263fe839f07cf01804",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/luigi-445d02cac7525524/bin/python -m pytest test/file_test.py::FileSystemTest::test_move_to_new_dir\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/luigi-13/arms/mlx-swarm/oracle\ncollected 1 item\n\ntest/file_test.py .                                                      [100%]\n\n=============================== warnings summary ===============================\nluigi/parameter.py:28\n  /evaluation/cases/luigi-13/arms/mlx-swarm/oracle/luigi/parameter.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working\n    from collections import OrderedDict, Mapping\n\n-- Docs: https://docs.pytest.org/en/latest/warnings.html\n========================= 1 passed, 1 warning in 0.81s =========================\n"
+    },
+    "recordedAt": "2026-08-01T17:40:41.951881+00:00"
+  },
+  "frontierTokenDelta": -33369,
+  "timeDeltaSeconds": -67.06869329093024
+}

@@ -1,0 +1,272 @@
+{
+  "schemaVersion": 1,
+  "suite": {
+    "schemaVersion": 1,
+    "suiteId": "bugsinpy-sonnet-preliminary-20260801t165840z-preliminary-6",
+    "profileId": "bugsinpy-sonnet-preliminary",
+    "benchmark": {
+      "name": "BugsInPy",
+      "repository": "https://github.com/soarsmu/BugsInPy.git",
+      "revision": "11c5f1eea954a42132cfd06bf257766a7963e0fd"
+    },
+    "seed": 20260728,
+    "createdAt": "2026-08-01T17:20:42.301080+00:00",
+    "cases": [
+      {
+        "caseId": "black-11",
+        "project": "black",
+        "bugId": 11,
+        "repository": "https://github.com/psf/black",
+        "buggyCommit": "283a5d53a8d57e8e186a08c9fbf249e1fbe7bc94",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/data/comments6.py",
+          "tests/test_black.py"
+        ],
+        "reference": {
+          "paths": [
+            "black.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 26,
+          "sha256": "8e436570bcd903a4d22a14a1f809e1d25e96ff623152a004759a3eb14e7a67ee",
+          "stratum": "large"
+        },
+        "phase": "pilot",
+        "objective": "Repair BugsInPy case black-11 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "fastapi-6",
+        "project": "fastapi",
+        "bugId": 6,
+        "repository": "https://github.com/tiangolo/fastapi",
+        "buggyCommit": "5db99a27cf640864b4793807811848698c5ff4a2",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/test_forms_from_non_typing_sequences.py"
+        ],
+        "reference": {
+          "paths": [
+            "fastapi/dependencies/utils.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 6,
+          "sha256": "b9a1d34ba803751762f2728a2d7a8d3b5917431bd92eff944272c527ea177123",
+          "stratum": "medium"
+        },
+        "phase": "pilot",
+        "objective": "Repair BugsInPy case fastapi-6 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "black-7",
+        "project": "black",
+        "bugId": 7,
+        "repository": "https://github.com/psf/black",
+        "buggyCommit": "18119d38466652ae818436cb497f601294ed4558",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/data/tupleassign.py",
+          "tests/test_black.py"
+        ],
+        "reference": {
+          "paths": [
+            "black.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 14,
+          "sha256": "d38d70d4ee808a09cb19097d06e58bb87eec9c87dd366d0315928701f2260f25",
+          "stratum": "large"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case black-7 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "fastapi-14",
+        "project": "fastapi",
+        "bugId": 14,
+        "repository": "https://github.com/tiangolo/fastapi",
+        "buggyCommit": "2ddb804940bbcad4ed730b2a910c8fd3c1167127",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/test_additional_properties.py"
+        ],
+        "reference": {
+          "paths": [
+            "fastapi/openapi/models.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 6,
+          "sha256": "75c5ff2305dee72d8ee18117c92d15a20d8e2e0f263044b5d8fd16a89b491eeb",
+          "stratum": "medium"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case fastapi-14 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "luigi-13",
+        "project": "luigi",
+        "bugId": 13,
+        "repository": "https://github.com/spotify/luigi",
+        "buggyCommit": "3c90bcdac63d978dbdaeae408420e22b963c9863",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "test/file_test.py"
+        ],
+        "reference": {
+          "paths": [
+            "luigi/file.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 2,
+          "sha256": "58f1abc12d3cb4bc217e7190469f79ee7e674f1e2952eecd06e81fceb22a2555",
+          "stratum": "small"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case luigi-13 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "scrapy-24",
+        "project": "scrapy",
+        "bugId": 24,
+        "repository": "https://github.com/scrapy/scrapy",
+        "buggyCommit": "98c060d0b2cc76934e16abc03a033f21850fd565",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/test_downloader_handlers.py"
+        ],
+        "reference": {
+          "paths": [
+            "scrapy/core/downloader/handlers/http11.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 14,
+          "sha256": "5a687a767affe7846c8196f9bd84590caa5ef0ed35cc1d677cd420273c3f01bc",
+          "stratum": "large"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case scrapy-24 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "sanic-5",
+        "project": "sanic",
+        "bugId": 5,
+        "repository": "https://github.com/huge-success/sanic",
+        "buggyCommit": "e3a27c2cc485d57aa1ff87d9f69098e4ab12727e",
+        "pythonVersion": "3.8",
+        "testFiles": [
+          "tests/test_logging.py"
+        ],
+        "reference": {
+          "paths": [
+            "sanic/log.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 2,
+          "sha256": "ad733159d21a10c63d6819b0f1b8700e385f2c869c422e9d666cf0df6049ac62",
+          "stratum": "small"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case sanic-5 so every frozen verification command passes without modifying tests or benchmark evidence."
+      },
+      {
+        "caseId": "tornado-2",
+        "project": "tornado",
+        "bugId": 2,
+        "repository": "https://github.com/tornadoweb/tornado",
+        "buggyCommit": "2ca8821d006f6693f920a4b183a3a7c985a5c8ad",
+        "pythonVersion": "3.7",
+        "testFiles": [
+          "tornado/test/httpclient_test.py"
+        ],
+        "reference": {
+          "paths": [
+            "tornado/http1connection.py"
+          ],
+          "changedFiles": 1,
+          "changedLines": 5,
+          "sha256": "aa9823628a654dcd6513fb6fa3ade5fc89361f580abf6f284e01d590b402ed4f",
+          "stratum": "medium"
+        },
+        "phase": "measured",
+        "objective": "Repair BugsInPy case tornado-2 so every frozen verification command passes without modifying tests or benchmark evidence."
+      }
+    ]
+  },
+  "environment": {
+    "schemaVersion": 1,
+    "evaluationProtocolVersion": 16,
+    "recordedAt": "2026-08-01T17:20:45.272226+00:00",
+    "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "python": "3.13.9",
+    "codexVersion": null,
+    "frontierAdapter": "claude-cli",
+    "frontierProvider": "claude-code",
+    "frontierModel": "claude-sonnet-5",
+    "frontierCommandVersion": "2.1.220 (Claude Code)",
+    "frontierToolsets": [],
+    "frontierContextWindow": 200000,
+    "frontierMaxCompletionTokens": 64000,
+    "reasoningEffort": "none",
+    "mlxSwarmCommit": "e02627586f2793d59f688675b2f497b8001e7f85",
+    "mlxSwarmSourceDirty": false,
+    "hardware": {
+      "platform": "macOS-26.5.2-arm64-arm-64bit-Mach-O",
+      "machine": "arm64",
+      "processor": "arm",
+      "memoryBytes": 51539607552
+    },
+    "runtime": {
+      "python": "3.13.9",
+      "pythonExecutable": "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3.13",
+      "packages": {
+        "mlx": "0.32.0",
+        "mlx-lm": "0.31.3",
+        "huggingface-hub": "1.25.1"
+      },
+      "git": "git version 2.52.0",
+      "uv": "uv 0.10.0 (0ba432459 2026-02-05)",
+      "benchmarkBuildJobs": 4,
+      "container": {
+        "image": "mlx-swarm-bugsinpy-amd64:11c5f1eea954-py37",
+        "digest": "sha256:f577bdd087333bbc04de8641a2523cd47860dea704aee62339283a40030ee1cb",
+        "architecture": "amd64",
+        "os": "linux",
+        "sizeBytes": 223560071,
+        "platform": "linux/amd64"
+      }
+    },
+    "localModel": {
+      "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+      "revision": "",
+      "path": null,
+      "fingerprint": "aff3a46a930400a012bb26f76227c311a590bc8afbc6efd4f2782d3b36063600"
+    },
+    "localWorker": {
+      "mode": "direct",
+      "reasoningMaxTokens": 768,
+      "capabilities": {
+        "parameterScale": "35B-A3B",
+        "contextWindowTokens": 262144,
+        "maxGenerationTokens": 2048,
+        "specialization": "general",
+        "delegationLevel": "bounded-implementation",
+        "strengths": [
+          "Maintainer calibration passed 4/4 first-pass cases with zero repairs, including two autonomous single-file bug diagnoses (off-by-one loop bound, inverted discount operator).",
+          "Measured 78.5 tok/s single worker, 126.5 tok/s aggregate at width two, at or below 20.2 GB peak memory."
+        ],
+        "limitations": [
+          "Diagnosis calibration covered single-file causal bugs with failing evidence supplied; multi-file diagnosis, API discovery, and architecture choices remain with the frontier.",
+          "Keep expected output at or below 700 tokens and max_tokens at or below 1024 for bounded edits."
+        ],
+        "calibration": {
+          "status": "passed",
+          "passedCases": 4,
+          "totalCases": 4,
+          "evidenceSha256": "1904d1646bba77beba42b79e68f79463ee11aa212e34b9920939aa8176049ab1"
+        }
+      }
+    },
+    "profileSha256": "d125dc9446bf3cef3982c1dd85e7cabac84f6d52372f21347971edfeb5eb1be7"
+  }
+}

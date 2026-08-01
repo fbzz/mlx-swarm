@@ -1,0 +1,120 @@
+{
+  "caseId": "fastapi-14",
+  "project": "fastapi",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "fastapi-14",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 5.287839833006728,
+    "phaseSeconds": {
+      "frontier": 0.0,
+      "oracle": 3.9959897499647923
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 124157,
+      "cachedInputTokens": 34308,
+      "completionTokens": 126867,
+      "reasoningTokens": 0,
+      "totalTokens": 251024,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 124157,
+          "cachedInputTokens": 34308,
+          "completionTokens": 126867,
+          "reasoningTokens": 0,
+          "totalTokens": 251024,
+          "malformedLines": 0,
+          "cacheWriteTokens": 89845
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "7c9700dbfbccb9a262a0159db53f53222023015237323507fb3e32884fe3e4cc",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/fastapi-306e586fa8cd0cab/bin/python -m pytest tests/test_additional_properties.py::test_additional_properties_schema\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-14/arms/frontier-alone/oracle\ncollected 1 item\n\ntests/test_additional_properties.py .                                    [100%]\n\n============================== 1 passed in 1.86s ===============================\n"
+    },
+    "recordedAt": "2026-08-01T17:33:07.791960+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "fastapi-14",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "failed",
+    "completed": false,
+    "score": 0,
+    "elapsedSeconds": 369.8544455409865,
+    "phaseSeconds": {
+      "planning": 256.01583883399144,
+      "local": 106.67760345799616,
+      "review": 0.0,
+      "oracle": 4.554503166989889
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 63655,
+      "cachedInputTokens": 14372,
+      "completionTokens": 26386,
+      "reasoningTokens": 0,
+      "totalTokens": 90041,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 63655,
+          "cachedInputTokens": 14372,
+          "completionTokens": 26386,
+          "reasoningTokens": 0,
+          "totalTokens": 90041,
+          "malformedLines": 0,
+          "cacheWriteTokens": 49281
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 3515,
+      "generationTokens": 88,
+      "generationCalls": 1,
+      "modelLoads": 1
+    },
+    "repairs": 0,
+    "modelLoads": 1,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "31f198d908b72c0edc7451f358eee2e225f72ee91b84f8edd72c342631c4fcd7",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": 1,
+      "evidence": "$ /evaluation/cache/environments/fastapi-306e586fa8cd0cab/bin/python -m pytest tests/test_additional_properties.py::test_additional_properties_schema\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/fastapi-14/arms/mlx-swarm/oracle\ncollected 1 item\n\ntests/test_additional_properties.py F                                    [100%]\n\n=================================== FAILURES ===================================\n______________________ test_additional_properties_schema _______________________\n\n    def test_additional_properties_schema():\n        response = client.get(\"/openapi.json\")\n        assert response.status_code == 200\n>       assert response.json() == openapi_schema\nE       AssertionError: assert {'components'...'Foo Post'}}}} == {'components'...'Foo Post'}}}}\nE         Omitting 3 identical items, use -vv to show\nE         Differing items:\nE         {'components': {'schemas': {'HTTPValidationError': {'properties': {'detail': {'items': {...}, 'title': 'Detail', 'type... 'Error Type', 'type': 'string'}}, 'required': ['loc', 'msg', 'type'], 'title': 'ValidationError', 'type': 'object'}}}} != {'components': {'schemas': {'HTTPValidationError': {'properties': {'detail': {'items': {...}, 'title': 'Detail', 'type... 'Error Type', 'type': 'string'}}, 'required': ['loc', 'msg', 'type'], 'title': 'ValidationError', 'type': 'object'}}}}\nE         Use -v to get the full diff\n\ntests/test_additional_properties.py:104: AssertionError\n=========================== short test summary info ============================\nFAILED tests/test_additional_properties.py::test_additional_properties_schema\n============================== 1 failed in 2.35s ===============================\n"
+    },
+    "recordedAt": "2026-08-01T17:39:22.014655+00:00"
+  },
+  "frontierTokenDelta": 160983,
+  "timeDeltaSeconds": -364.56660570797976
+}

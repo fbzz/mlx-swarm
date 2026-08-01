@@ -1,0 +1,132 @@
+{
+  "caseId": "scrapy-24",
+  "project": "scrapy",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "scrapy-24",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 0,
+    "elapsedSeconds": 206.08283287502127,
+    "phaseSeconds": {
+      "frontier": 112.2083434999804,
+      "oracle": 6.12583104101941
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 2,
+      "promptTokens": 135479,
+      "cachedInputTokens": 34309,
+      "completionTokens": 21282,
+      "reasoningTokens": 0,
+      "totalTokens": 156761,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 67503,
+          "cachedInputTokens": 14372,
+          "completionTokens": 12590,
+          "reasoningTokens": 0,
+          "totalTokens": 80093,
+          "malformedLines": 0,
+          "cacheWriteTokens": 53129
+        },
+        {
+          "phase": "frontier-alone-repair",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 67976,
+          "cachedInputTokens": 19937,
+          "completionTokens": 8692,
+          "reasoningTokens": 0,
+          "totalTokens": 76668,
+          "malformedLines": 0,
+          "cacheWriteTokens": 48037
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "c8e802a3280eaa75c81b4765929c3aefaf6fb64f62329d93e0329b6c87b65465",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": 1,
+      "evidence": "$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_downloader_handlers.HttpProxyTestCase.test_download_with_proxy_https_timeout\nUnhandled Error\nTraceback (most recent call last):\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/log.py\", line 103, in callWithLogger\n    return callWithContext({\"system\": lp}, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/log.py\", line 86, in callWithContext\n    return context.call({ILogContext: newCtx}, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/context.py\", line 122, in callWithContext\n    return self.currentContext().callWithContext(ctx, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/context.py\", line 85, in callWithContext\n    return func(*args,**kw)\n--- <exception caught here> ---\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/posixbase.py\", line 614, in _doReadOrWrite\n    why = selectable.doRead()\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 243, in doRead\n    return self._dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 249, in _dataReceived\n    rval = self.protocol.dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/endpoints.py\", line 132, in dataReceived\n    return self._wrappedProtocol.dataReceived(data)\n  File \"/evaluation/cases/scrapy-24/arms/frontier-alone/oracle/scrapy/core/downloader/handlers/http11.py\", line 112, in processProxyResponse\n    if  TunnelingTCP4ClientEndpoint._responseMatcher.match(bytes):\nbuiltins.TypeError: cannot use a string pattern on a bytes-like object\n\n/evaluation/cases/scrapy-24/arms/frontier-alone/oracle/scrapy/core/downloader/handlers/http11.py:143: DeprecationWarning: <scrapy.core.downloader.contextfactory.ScrapyClientContextFactory object at 0x400a592130> was passed as the HTTPS policy for an Agent, but it does not provide IPolicyForHTTPS.  Since Twisted 14.0, you must pass a provider of IPolicyForHTTPS.\n  super(TunnelingAgent, self).__init__(reactor, contextFactory,\n======================================================================\nERROR: test_download_with_proxy_https_timeout (tests.test_downloader_handlers.HttpProxyTestCase)\ntest_download_with_proxy_https_timeout\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/posixbase.py\", line 614, in _doReadOrWrite\n    why = selectable.doRead()\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 243, in doRead\n    return self._dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 249, in _dataReceived\n    rval = self.protocol.dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/endpoints.py\", line 132, in dataReceived\n    return self._wrappedProtocol.dataReceived(data)\n  File \"/evaluation/cases/scrapy-24/arms/frontier-alone/oracle/scrapy/core/downloader/handlers/http11.py\", line 112, in processProxyResponse\n    if  TunnelingTCP4ClientEndpoint._responseMatcher.match(bytes):\nTypeError: cannot use a string pattern on a bytes-like object\n\n----------------------------------------------------------------------\nRan 1 test in 0.244s\n\nFAILED (errors=1)\n"
+    },
+    "recordedAt": "2026-08-01T17:44:25.273733+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "scrapy-24",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "failed",
+    "completed": false,
+    "score": 0,
+    "elapsedSeconds": 168.5880872500129,
+    "phaseSeconds": {
+      "planning": 119.5760983749642,
+      "local": 39.89448741602246,
+      "review": 0.0,
+      "oracle": 5.758687082969118
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 69110,
+      "cachedInputTokens": 14372,
+      "completionTokens": 14135,
+      "reasoningTokens": 0,
+      "totalTokens": 83245,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 69110,
+          "cachedInputTokens": 14372,
+          "completionTokens": 14135,
+          "reasoningTokens": 0,
+          "totalTokens": 83245,
+          "malformedLines": 0,
+          "cacheWriteTokens": 54736
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 4366,
+      "generationTokens": 210,
+      "generationCalls": 1,
+      "modelLoads": 1
+    },
+    "repairs": 0,
+    "modelLoads": 1,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "f4cfa24870befe2ceb27d57dba7fdd4345551de01d6d48f7db7b27846c3f790f",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": false,
+      "exitCode": 1,
+      "evidence": "$ /evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/bin/python -m unittest -q tests.test_downloader_handlers.HttpProxyTestCase.test_download_with_proxy_https_timeout\nUnhandled Error\nTraceback (most recent call last):\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/log.py\", line 103, in callWithLogger\n    return callWithContext({\"system\": lp}, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/log.py\", line 86, in callWithContext\n    return context.call({ILogContext: newCtx}, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/context.py\", line 122, in callWithContext\n    return self.currentContext().callWithContext(ctx, func, *args, **kw)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/python/context.py\", line 85, in callWithContext\n    return func(*args,**kw)\n--- <exception caught here> ---\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/posixbase.py\", line 614, in _doReadOrWrite\n    why = selectable.doRead()\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 243, in doRead\n    return self._dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 249, in _dataReceived\n    rval = self.protocol.dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/endpoints.py\", line 132, in dataReceived\n    return self._wrappedProtocol.dataReceived(data)\n  File \"/evaluation/cases/scrapy-24/arms/mlx-swarm/oracle/scrapy/core/downloader/handlers/http11.py\", line 112, in processProxyResponse\n    if  TunnelingTCP4ClientEndpoint._responseMatcher.match(bytes):\nbuiltins.TypeError: cannot use a string pattern on a bytes-like object\n\n/evaluation/cases/scrapy-24/arms/mlx-swarm/oracle/scrapy/core/downloader/handlers/http11.py:143: DeprecationWarning: <scrapy.core.downloader.contextfactory.ScrapyClientContextFactory object at 0x4009662790> was passed as the HTTPS policy for an Agent, but it does not provide IPolicyForHTTPS.  Since Twisted 14.0, you must pass a provider of IPolicyForHTTPS.\n  super(TunnelingAgent, self).__init__(reactor, contextFactory,\n======================================================================\nERROR: test_download_with_proxy_https_timeout (tests.test_downloader_handlers.HttpProxyTestCase)\ntest_download_with_proxy_https_timeout\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/posixbase.py\", line 614, in _doReadOrWrite\n    why = selectable.doRead()\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 243, in doRead\n    return self._dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/tcp.py\", line 249, in _dataReceived\n    rval = self.protocol.dataReceived(data)\n  File \"/evaluation/cache/environments/scrapy-d6fae7ae38b6cbdf/lib/python3.8/site-packages/twisted/internet/endpoints.py\", line 132, in dataReceived\n    return self._wrappedProtocol.dataReceived(data)\n  File \"/evaluation/cases/scrapy-24/arms/mlx-swarm/oracle/scrapy/core/downloader/handlers/http11.py\", line 112, in processProxyResponse\n    if  TunnelingTCP4ClientEndpoint._responseMatcher.match(bytes):\nTypeError: cannot use a string pattern on a bytes-like object\n\n----------------------------------------------------------------------\nRan 1 test in 0.235s\n\nFAILED (errors=1)\n"
+    },
+    "recordedAt": "2026-08-01T17:47:19.485954+00:00"
+  },
+  "frontierTokenDelta": 73516,
+  "timeDeltaSeconds": 37.49474562500836
+}

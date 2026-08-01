@@ -1,0 +1,132 @@
+{
+  "caseId": "sanic-5",
+  "project": "sanic",
+  "frontier": {
+    "schemaVersion": 1,
+    "caseId": "sanic-5",
+    "phase": "measured",
+    "arm": "frontier-alone",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 4.225530291965697,
+    "phaseSeconds": {
+      "frontier": 0.0,
+      "oracle": 3.5579744999995455
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 1,
+      "promptTokens": 59564,
+      "cachedInputTokens": 14372,
+      "completionTokens": 2700,
+      "reasoningTokens": 0,
+      "totalTokens": 62264,
+      "phases": [
+        {
+          "phase": "frontier-alone",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 59564,
+          "cachedInputTokens": 14372,
+          "completionTokens": 2700,
+          "reasoningTokens": 0,
+          "totalTokens": 62264,
+          "malformedLines": 0,
+          "cacheWriteTokens": 45190
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 0,
+      "generationTokens": 0,
+      "generationCalls": 0,
+      "modelLoads": 0
+    },
+    "repairs": 0,
+    "modelLoads": 0,
+    "reviewVerdict": null,
+    "patch": {
+      "sha256": "4ae9218acd91b3201821cb8dfcb25174e8d2c187355d8de33580c8b2a7fd61e8",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/sanic-772461c9ea528e76/bin/python -m pytest tests/test_logging.py::test_logging_modified_root_logger_config\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/sanic-5/arms/frontier-alone/oracle\nplugins: sanic-1.6.1\ncollected 1 item\n\ntests/test_logging.py .                                                  [100%]\n\n============================== 1 passed in 0.19s ===============================\n/evaluation/cases/sanic-5/arms/frontier-alone/oracle/sanic/response.py:115: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n/evaluation/cases/sanic-5/arms/frontier-alone/oracle/sanic/response.py:174: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n"
+    },
+    "recordedAt": "2026-08-01T17:48:51.395822+00:00"
+  },
+  "swarm": {
+    "schemaVersion": 1,
+    "caseId": "sanic-5",
+    "phase": "measured",
+    "arm": "mlx-swarm",
+    "status": "completed",
+    "completed": true,
+    "score": 1,
+    "elapsedSeconds": 69.74071099999128,
+    "phaseSeconds": {
+      "planning": 0.0,
+      "local": 32.15307058300823,
+      "review": 32.45139595796354,
+      "oracle": 3.484814000024926
+    },
+    "frontierUsage": {
+      "usageStatus": "reported",
+      "turns": 2,
+      "promptTokens": 84429,
+      "cachedInputTokens": 28744,
+      "completionTokens": 9008,
+      "reasoningTokens": 0,
+      "totalTokens": 93437,
+      "phases": [
+        {
+          "phase": "planning",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 61171,
+          "cachedInputTokens": 14372,
+          "completionTokens": 6231,
+          "reasoningTokens": 0,
+          "totalTokens": 67402,
+          "malformedLines": 0,
+          "cacheWriteTokens": 46797
+        },
+        {
+          "phase": "review",
+          "usageStatus": "reported",
+          "turns": 1,
+          "promptTokens": 23258,
+          "cachedInputTokens": 14372,
+          "completionTokens": 2777,
+          "reasoningTokens": 0,
+          "totalTokens": 26035,
+          "malformedLines": 0,
+          "cacheWriteTokens": 8884
+        }
+      ]
+    },
+    "localUsage": {
+      "promptTokens": 2868,
+      "generationTokens": 63,
+      "generationCalls": 1,
+      "modelLoads": 1
+    },
+    "repairs": 0,
+    "modelLoads": 1,
+    "reviewVerdict": "approved",
+    "patch": {
+      "sha256": "ad733159d21a10c63d6819b0f1b8700e385f2c869c422e9d666cf0df6049ac62",
+      "changedFiles": 1
+    },
+    "oracle": {
+      "passed": true,
+      "exitCode": 0,
+      "evidence": "$ /evaluation/cache/environments/sanic-772461c9ea528e76/bin/python -m pytest tests/test_logging.py::test_logging_modified_root_logger_config\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/cases/sanic-5/arms/mlx-swarm/oracle\nplugins: sanic-1.6.1\ncollected 1 item\n\ntests/test_logging.py .                                                  [100%]\n\n============================== 1 passed in 0.19s ===============================\n/evaluation/cases/sanic-5/arms/mlx-swarm/oracle/sanic/response.py:115: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n/evaluation/cases/sanic-5/arms/mlx-swarm/oracle/sanic/response.py:174: SyntaxWarning: \"is\" with a literal. Did you mean \"==\"?\n  if self.status is 200:\n"
+    },
+    "recordedAt": "2026-08-01T17:48:40.739206+00:00"
+  },
+  "frontierTokenDelta": -31173,
+  "timeDeltaSeconds": -65.51518070802558
+}
