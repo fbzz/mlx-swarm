@@ -64,7 +64,11 @@ RESULT_SCHEMA_VERSION = 1
 # Version 15 additionally accepts a prose-wrapped blueprint by extracting
 # the first complete embedded JSON object deterministically, and clamps the
 # materialized worker task to the 800-token paired-arm generation bound.
-FAIR_EVALUATION_PROTOCOL_VERSION = 15
+# Version 16 adds the shared frontier transport cache (identical completion
+# calls replay their frozen response and receipt instead of re-spending
+# tokens) and one bounded, honestly-accounted contract-repair retry when a
+# receipt-valid response fails schema or materialization validation.
+FAIR_EVALUATION_PROTOCOL_VERSION = 16
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -370,6 +374,8 @@ _FRONTIER_ADAPTERS = (
 _COMPLETION_ADAPTERS = frozenset({"hermes-completion", "claude-cli"})
 _FRONTIER_TOOLSETS = ("todo", "read-source", "submit-plan")
 _MAX_FRONTIER_RESPONSE_BYTES = 1_000_000
+_FRONTIER_CACHE_DIRNAME = "_frontier-cache"
+_CONTRACT_REPAIR_RESPONSE_LIMIT = 20_000
 
 
 @dataclass(frozen=True)
@@ -3641,11 +3647,16 @@ class EvaluationRunner:
                     self.profile.frontier.arm_timeout_seconds
                 ),
             )
-            frontier_result = run_command(
+            frontier_result = run_cached_completion(
+                self.profile,
                 command,
+                cache_root=self.store.root,
                 cwd=repository,
                 timeout=self.profile.frontier.arm_timeout_seconds,
-                env=frontier_environment(),
+                prompt_text=prompt,
+                usage_file=usage_file,
+                evidence_root=evidence_root,
+                label="frontier-alone",
             )
             (evidence_root / "stdout.log").write_text(
                 frontier_result.stdout,
@@ -3667,9 +3678,7 @@ class EvaluationRunner:
                 expected_provider=self.profile.frontier.provider,
                 expected_model=self.profile.frontier.model,
             )
-            usage = usage_with_phases([
-                ("frontier-alone", phase_usage)
-            ])
+            alone_phases = [("frontier-alone", phase_usage)]
             response_text = frontier_result.stdout[
                 :_MAX_FRONTIER_RESPONSE_BYTES
             ]
@@ -3690,12 +3699,90 @@ class EvaluationRunner:
                     )
                 except EvaluationError as exc:
                     materialize_error = str(exc)
+                if materialize_error is not None:
+                    # One bounded, honestly-accounted contract repair: the
+                    # call succeeded but its content failed validation.
+                    repair_prompt = compose_contract_repair_prompt(
+                        prompt,
+                        error=materialize_error,
+                        previous_response=response_text,
+                    )
+                    repair_prompt_file = (
+                        evidence_root / "frontier-alone-repair-prompt.txt"
+                    )
+                    repair_prompt_file.write_text(
+                        repair_prompt,
+                        encoding="utf-8",
+                    )
+                    repair_usage_file = (
+                        evidence_root / "frontier-alone-repair-usage.json"
+                    )
+                    repair_result = run_cached_completion(
+                        self.profile,
+                        frontier_command(
+                            self.profile,
+                            cwd=repository,
+                            sandbox="",
+                            output_last_message=response_file,
+                            usage_file=repair_usage_file,
+                            prompt_file=repair_prompt_file,
+                            request_timeout_seconds=(
+                                self.profile.frontier.arm_timeout_seconds
+                            ),
+                        ),
+                        cache_root=self.store.root,
+                        cwd=repository,
+                        timeout=self.profile.frontier.arm_timeout_seconds,
+                        prompt_text=repair_prompt,
+                        usage_file=repair_usage_file,
+                        evidence_root=evidence_root,
+                        label="frontier-alone-repair",
+                    )
+                    raw_repair_usage = ""
+                    if repair_usage_file.is_file():
+                        raw_repair_usage = repair_usage_file.read_text(
+                            encoding="utf-8"
+                        )
+                    (
+                        evidence_root / "frontier-alone-repair-usage-raw.json"
+                    ).write_text(raw_repair_usage, encoding="utf-8")
+                    repair_usage = parse_hermes_usage_json(
+                        raw_repair_usage,
+                        expected_provider=self.profile.frontier.provider,
+                        expected_model=self.profile.frontier.model,
+                    )
+                    alone_phases.append(
+                        ("frontier-alone-repair", repair_usage)
+                    )
+                    if (
+                        not repair_result.timed_out
+                        and repair_result.returncode == 0
+                        and repair_result.stdout.strip()
+                        and repair_usage["usageStatus"] == "reported"
+                    ):
+                        response_text = repair_result.stdout[
+                            :_MAX_FRONTIER_RESPONSE_BYTES
+                        ]
+                        response_file.write_text(
+                            response_text,
+                            encoding="utf-8",
+                        )
+                        try:
+                            diff = materialize_frontier_edit_manifest(
+                                response_text,
+                                repository=repository,
+                                approved_write_roots=approved_write_roots,
+                            )
+                            materialize_error = None
+                        except EvaluationError as exc:
+                            materialize_error = str(exc)
             else:
                 materialize_error = (
                     "Frontier timed out"
                     if frontier_result.timed_out
                     else "Frontier returned no response."
                 )
+            usage = usage_with_phases(alone_phases)
         else:
             last_message = evidence_root / "last-message.txt"
             command = codex_command(
@@ -4024,13 +4111,11 @@ class EvaluationRunner:
                     ),
                 },
             )
+        plan_phases = [("planning", plan_usage)]
         if is_hermes:
-            try:
-                raw_blueprint = plan_blueprint_response.read_text(
-                    encoding="utf-8"
-                )
+            def _materialize_blueprint(raw_text: str) -> None:
                 blueprint = parse_frontier_delegation_blueprint(
-                    raw_blueprint,
+                    raw_text,
                     objective=case["objective"],
                     task_packet=task_packet,
                     repository=repository,
@@ -4064,7 +4149,7 @@ class EvaluationRunner:
                         {
                             "schemaVersion": 1,
                             "blueprintSha256": hashlib.sha256(
-                                raw_blueprint.encode("utf-8")
+                                raw_text.encode("utf-8")
                             ).hexdigest(),
                             "materializedPlanSha256": canonical_json_sha256(
                                 materialized_plan
@@ -4078,11 +4163,105 @@ class EvaluationRunner:
                     + "\n",
                     encoding="utf-8",
                 )
+
+            raw_blueprint = plan_blueprint_response.read_text(
+                encoding="utf-8"
+            )
+            blueprint_error: str | None = None
+            try:
+                _materialize_blueprint(raw_blueprint)
             except (EvaluationError, OSError, ValueError) as exc:
+                blueprint_error = str(exc)
                 (evidence_root / "plan-materialization.error.txt").write_text(
-                    str(exc) + "\n",
+                    blueprint_error + "\n",
                     encoding="utf-8",
                 )
+            if (
+                blueprint_error is not None
+                and plan_usage["usageStatus"] == "reported"
+            ):
+                # One bounded, honestly-accounted contract repair: the
+                # planning call succeeded but its blueprint failed
+                # validation. Both calls' receipts are reported as
+                # separate phases.
+                repair_prompt = compose_contract_repair_prompt(
+                    plan_prompt_text,
+                    error=blueprint_error,
+                    previous_response=raw_blueprint,
+                )
+                repair_prompt_file = (
+                    evidence_root / "plan-repair-prompt.txt"
+                )
+                repair_prompt_file.write_text(
+                    repair_prompt,
+                    encoding="utf-8",
+                )
+                repair_usage_file = (
+                    evidence_root / "plan-repair-usage.json"
+                )
+                repair_result = run_cached_completion(
+                    self.profile,
+                    frontier_command(
+                        self.profile,
+                        cwd=repository,
+                        sandbox="",
+                        output_last_message=plan_blueprint_response,
+                        usage_file=repair_usage_file,
+                        prompt_file=repair_prompt_file,
+                        request_timeout_seconds=(
+                            self.profile.frontier.planning_timeout_seconds
+                        ),
+                    ),
+                    cache_root=self.store.root,
+                    cwd=repository,
+                    timeout=(
+                        self.profile.frontier.planning_timeout_seconds
+                    ),
+                    prompt_text=repair_prompt,
+                    usage_file=repair_usage_file,
+                    evidence_root=evidence_root,
+                    label="planning-repair",
+                )
+                raw_repair_usage = ""
+                if repair_usage_file.is_file():
+                    raw_repair_usage = repair_usage_file.read_text(
+                        encoding="utf-8"
+                    )
+                (evidence_root / "plan-repair-usage-raw.json").write_text(
+                    raw_repair_usage,
+                    encoding="utf-8",
+                )
+                repair_usage = parse_hermes_usage_json(
+                    raw_repair_usage,
+                    expected_provider=self.profile.frontier.provider,
+                    expected_model=self.profile.frontier.model,
+                )
+                plan_phases.append(("planning-repair", repair_usage))
+                if (
+                    not repair_result.timed_out
+                    and repair_result.returncode == 0
+                    and repair_result.stdout.strip()
+                    and repair_usage["usageStatus"] == "reported"
+                ):
+                    raw_blueprint = repair_result.stdout[
+                        :_MAX_FRONTIER_RESPONSE_BYTES
+                    ]
+                    (
+                        evidence_root / "plan-blueprint-repair.raw.json"
+                    ).write_text(raw_blueprint, encoding="utf-8")
+                    try:
+                        _materialize_blueprint(raw_blueprint)
+                        blueprint_error = None
+                    except (EvaluationError, OSError, ValueError) as exc:
+                        blueprint_error = str(exc)
+                        (
+                            evidence_root
+                            / "plan-materialization-repair.error.txt"
+                        ).write_text(
+                            blueprint_error + "\n",
+                            encoding="utf-8",
+                        )
+            if blueprint_error is not None:
                 return make_arm_result(
                     case=case,
                     arm="mlx-swarm",
@@ -4091,9 +4270,7 @@ class EvaluationRunner:
                     score=0,
                     elapsed_seconds=time.perf_counter() - started,
                     phase_seconds={"planning": plan_elapsed},
-                    frontier_usage=usage_with_phases([
-                        ("planning", plan_usage),
-                    ]),
+                    frontier_usage=usage_with_phases(plan_phases),
                     local_usage=empty_local_usage(),
                     repairs=0,
                     model_loads=0,
@@ -4104,7 +4281,7 @@ class EvaluationRunner:
                         "exitCode": None,
                         "evidence": (
                             "Frontier delegation blueprint was rejected: "
-                            f"{exc}"
+                            f"{blueprint_error}"
                         ),
                     },
                 )
@@ -4138,9 +4315,7 @@ class EvaluationRunner:
                 score=0,
                 elapsed_seconds=time.perf_counter() - started,
                 phase_seconds={"planning": plan_elapsed},
-                frontier_usage=usage_with_phases([
-                    ("planning", plan_usage),
-                ]),
+                frontier_usage=usage_with_phases(plan_phases),
                 local_usage=empty_local_usage(),
                 repairs=0,
                 model_loads=0,
@@ -4245,9 +4420,7 @@ class EvaluationRunner:
                     "review": 0.0,
                     "oracle": 0.0,
                 },
-                frontier_usage=usage_with_phases([
-                    ("planning", plan_usage),
-                ]),
+                frontier_usage=usage_with_phases(plan_phases),
                 local_usage=local_usage,
                 repairs=repairs,
                 model_loads=int(local_usage.get("modelLoads", 0)),
@@ -4292,14 +4465,23 @@ class EvaluationRunner:
                         max(1, math.floor(deadline - time.perf_counter())),
                     ),
                 )
-                review_result = run_command(
+                (evidence_root / "review-prompt.txt").write_text(
+                    review_prompt_text,
+                    encoding="utf-8",
+                )
+                review_result = run_cached_completion(
+                    self.profile,
                     review_command,
+                    cache_root=self.store.root,
                     cwd=repository,
                     timeout=min(
                         self.profile.frontier.review_timeout_seconds,
                         max(1, math.floor(deadline - time.perf_counter())),
                     ),
-                    env=frontier_environment(),
+                    prompt_text=review_prompt_text,
+                    usage_file=review_usage_file,
+                    evidence_root=evidence_root,
+                    label="review",
                 )
                 review_seconds = review_result.elapsed_seconds
                 review_timed_out = review_result.timed_out
@@ -4412,7 +4594,7 @@ class EvaluationRunner:
                 ),
                 "timedOut": remaining <= 0,
             }
-        phases = [("planning", plan_usage)]
+        phases = list(plan_phases)
         if review_usage is not None:
             phases.append(("review", review_usage))
         usage = usage_with_phases(phases)
@@ -8882,6 +9064,259 @@ def hermes_command(
         str(request_timeout_seconds),
     ]
     return argv
+
+
+_WALL_CLOCK_TIMING = re.compile(
+    r"\b\d+\.\d+\s*(?:s|sec|secs|seconds)\b"
+)
+
+
+def normalized_cache_prompt(prompt_text: str) -> str:
+    """Collapse wall-clock timings so equivalent prompts share one key.
+
+    Captured verifier output embeds run durations ("Ran 1 test in 0.123s")
+    that vary per preparation while carrying no diagnostic content. Two
+    prompts differing only in those digits are measurement-equivalent.
+    """
+    return _WALL_CLOCK_TIMING.sub("N.NNs", prompt_text)
+
+
+def completion_cache_key(
+    profile: EvaluationProfile,
+    prompt_text: str,
+) -> str:
+    """Derive the deterministic transport-cache key for one completion."""
+    frontier = profile.frontier
+    payload = json.dumps(
+        {
+            "adapter": frontier.adapter,
+            "provider": frontier.provider,
+            "model": frontier.model,
+            "maxCompletionTokens": frontier.max_completion_tokens,
+            "reasoningEffort": frontier.reasoning_effort,
+            "promptSha256": hashlib.sha256(
+                normalized_cache_prompt(prompt_text).encode("utf-8")
+            ).hexdigest(),
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def store_completion_cache_entry(
+    cache_root: Path,
+    profile: EvaluationProfile,
+    *,
+    prompt_text: str,
+    response: str,
+    usage_raw: str,
+    source_label: str,
+) -> Path | None:
+    """Freeze one receipt-valid completion for zero-cost future replay."""
+    parsed = parse_hermes_usage_json(
+        usage_raw,
+        expected_provider=profile.frontier.provider,
+        expected_model=profile.frontier.model,
+    )
+    if parsed["usageStatus"] != "reported":
+        return None
+    if not response.strip():
+        return None
+    cache_dir = cache_root / _FRONTIER_CACHE_DIRNAME
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    entry_path = cache_dir / (
+        completion_cache_key(profile, prompt_text) + ".json"
+    )
+    if entry_path.is_file():
+        return entry_path
+    temporary = entry_path.with_name(f".{entry_path.name}.{os.getpid()}.tmp")
+    temporary.write_text(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "adapter": profile.frontier.adapter,
+                "provider": profile.frontier.provider,
+                "model": profile.frontier.model,
+                "maxCompletionTokens": (
+                    profile.frontier.max_completion_tokens
+                ),
+                "reasoningEffort": profile.frontier.reasoning_effort,
+                "promptSha256": hashlib.sha256(
+                    prompt_text.encode("utf-8")
+                ).hexdigest(),
+                "response": response[:_MAX_FRONTIER_RESPONSE_BYTES],
+                "usageRaw": usage_raw,
+                "sourceLabel": source_label,
+                "recordedAt": utc_now(),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, entry_path)
+    return entry_path
+
+
+def run_cached_completion(
+    profile: EvaluationProfile,
+    command: list[str],
+    *,
+    cache_root: Path,
+    cwd: Path,
+    timeout: int,
+    prompt_text: str,
+    usage_file: Path,
+    evidence_root: Path,
+    label: str,
+) -> CommandResult:
+    """Replay a frozen identical completion, or run and freeze this one."""
+    entry_path = (
+        cache_root
+        / _FRONTIER_CACHE_DIRNAME
+        / (completion_cache_key(profile, prompt_text) + ".json")
+    )
+    if entry_path.is_file():
+        try:
+            entry = json.loads(entry_path.read_text(encoding="utf-8"))
+            response = entry["response"]
+            usage_raw = entry["usageRaw"]
+        except (OSError, ValueError, KeyError):
+            entry = None
+        else:
+            usage_file.parent.mkdir(parents=True, exist_ok=True)
+            usage_file.write_text(usage_raw, encoding="utf-8")
+            (evidence_root / f"{label}-cache-hit.json").write_text(
+                json.dumps(
+                    {
+                        "cacheEntry": entry_path.name,
+                        "sourceLabel": entry.get("sourceLabel"),
+                        "recordedAt": entry.get("recordedAt"),
+                        "replayedAt": utc_now(),
+                    },
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            return CommandResult(
+                argv=tuple(command),
+                returncode=0,
+                stdout=response,
+                stderr="",
+                elapsed_seconds=0.0,
+                timed_out=False,
+            )
+    result = run_command(
+        command,
+        cwd=cwd,
+        timeout=timeout,
+        env=frontier_environment(),
+    )
+    if (
+        not result.timed_out
+        and result.returncode == 0
+        and usage_file.is_file()
+    ):
+        store_completion_cache_entry(
+            cache_root,
+            profile,
+            prompt_text=prompt_text,
+            response=result.stdout,
+            usage_raw=usage_file.read_text(encoding="utf-8"),
+            source_label=label,
+        )
+    return result
+
+
+def seed_frontier_cache(
+    store: "EvaluationStore",
+    profile: EvaluationProfile,
+    evaluation_id: str,
+) -> dict[str, Any]:
+    """Freeze already-purchased frontier responses from a prior evaluation.
+
+    Walks the evaluation's per-arm evidence and inserts every receipt-valid
+    (prompt, response, usage) triple into the shared transport cache, so a
+    later evaluation with identical prompts replays them at zero cost.
+    """
+    evaluation_dir = store.root / evaluation_id
+    if not evaluation_dir.is_dir():
+        raise EvaluationError(f"Unknown evaluation: {evaluation_id}")
+    triples = (
+        ("prompt.txt", "stdout.log", "usage-raw.json", "frontier-alone"),
+        (
+            "frontier-alone-repair-prompt.txt",
+            None,
+            "frontier-alone-repair-usage-raw.json",
+            "frontier-alone-repair",
+        ),
+        ("plan-prompt.txt", "plan-stdout.log", "plan-usage-raw.json", "planning"),
+        (
+            "plan-repair-prompt.txt",
+            "plan-blueprint-repair.raw.json",
+            "plan-repair-usage-raw.json",
+            "planning-repair",
+        ),
+        ("review-prompt.txt", "review-stdout.log", "review-usage-raw.json", "review"),
+    )
+    seeded: list[str] = []
+    skipped = 0
+    for evidence_root in sorted(evaluation_dir.glob("cases/*/arms/*/evidence")):
+        for prompt_name, response_name, usage_name, label in triples:
+            prompt_path = evidence_root / prompt_name
+            usage_path = evidence_root / usage_name
+            if not prompt_path.is_file() or not usage_path.is_file():
+                continue
+            response_text = ""
+            if response_name is not None:
+                response_path = evidence_root / response_name
+                if response_path.is_file():
+                    response_text = response_path.read_text(encoding="utf-8")
+            if not response_text.strip():
+                skipped += 1
+                continue
+            entry = store_completion_cache_entry(
+                store.root,
+                profile,
+                prompt_text=prompt_path.read_text(encoding="utf-8"),
+                response=response_text,
+                usage_raw=usage_path.read_text(encoding="utf-8"),
+                source_label=f"{evaluation_id}:{evidence_root.parent.name}:{label}",
+            )
+            if entry is None:
+                skipped += 1
+            else:
+                seeded.append(entry.name)
+    return {
+        "evaluationId": evaluation_id,
+        "seededEntries": sorted(set(seeded)),
+        "seededCount": len(set(seeded)),
+        "skipped": skipped,
+        "cacheDir": str(store.root / _FRONTIER_CACHE_DIRNAME),
+    }
+
+
+def compose_contract_repair_prompt(
+    original_prompt: str,
+    *,
+    error: str,
+    previous_response: str,
+) -> str:
+    """Ask the frontier to fix contract violations in its own response."""
+    return (
+        original_prompt
+        + "\n\nCONTRACT REPAIR\n"
+        + "Your previous response was rejected by the validator:\n- "
+        + error
+        + "\n\nPREVIOUS RESPONSE (rejected):\n"
+        + previous_response[:_CONTRACT_REPAIR_RESPONSE_LIMIT]
+        + "\n\nReturn the complete corrected JSON object. Fix every listed "
+        "violation, change nothing else, and follow every rule above. "
+        "No prose, no fences."
+    )
 
 
 def claude_command(

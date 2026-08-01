@@ -31,6 +31,7 @@ from .evaluation import (
     preliminary_evaluation_profile,
     profile_payload,
     run_local_replay_calibration,
+    seed_frontier_cache,
     update_readme_economics,
 )
 from .executor import execute_plan
@@ -353,6 +354,25 @@ def _parser() -> argparse.ArgumentParser:
         help="Inspect an evaluation ledger and paired progress.",
     )
     evaluation_status.add_argument("evaluation_id")
+    evaluation_seed = evaluation_sub.add_parser(
+        "seed-cache",
+        help=(
+            "Freeze a prior evaluation's receipt-valid frontier responses "
+            "into the shared transport cache for zero-cost replay."
+        ),
+    )
+    evaluation_seed.add_argument("evaluation_id")
+    evaluation_seed.add_argument(
+        "--profile",
+        type=Path,
+        required=True,
+        help="Profile whose adapter/model pins key the cache entries.",
+    )
+    evaluation_seed.add_argument(
+        "--preliminary",
+        action="store_true",
+        help="Derive the 2+6 preliminary profile before keying.",
+    )
     evaluation_replay = evaluation_sub.add_parser(
         "replay-local",
         help=(
@@ -548,6 +568,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return 0
             if args.evaluation_command == "status":
                 _print(evaluation_store.detail(args.evaluation_id))
+                return 0
+            if args.evaluation_command == "seed-cache":
+                profile = load_evaluation_profile(args.profile)
+                if args.preliminary:
+                    profile = preliminary_evaluation_profile(profile)
+                _print(
+                    seed_frontier_cache(
+                        evaluation_store,
+                        profile,
+                        args.evaluation_id,
+                    )
+                )
                 return 0
             if args.evaluation_command == "replay-local":
                 _print(

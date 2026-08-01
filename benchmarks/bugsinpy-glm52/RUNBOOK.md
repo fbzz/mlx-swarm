@@ -70,6 +70,20 @@ mlx-swarm --config $CONFIG eval report EVALUATION_ID --preliminary
 
 `EVALUATION_ID` is printed by prepare and listed under `.swarm/evaluations/`.
 
+## Token-frugal replay
+
+Before re-running after any harness change, freeze the prior evaluation's
+purchased responses so identical prompts replay free:
+
+```bash
+mlx-swarm --config $CONFIG eval seed-cache OLD_EVALUATION_ID --profile $PROFILE --preliminary
+```
+
+The shared cache lives at `.swarm/evaluations/_frontier-cache/` and keys
+prompts with wall-clock timings normalized, so re-prepared suites hit it.
+Receipt-valid responses that fail contract validation get one bounded,
+honestly-accounted repair call instead of failing the arm outright.
+
 ## Decision gate
 
 The preliminary report emits a decision gate: expansion to the sealed

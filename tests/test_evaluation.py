@@ -332,6 +332,185 @@ def test_claude_envelope_rejects_error_multiturn_and_wrong_model() -> None:
             )
 
 
+def _valid_receipt_json(model: str = "claude-sonnet-5") -> str:
+    return json.dumps({
+        "input_tokens": 100,
+        "output_tokens": 40,
+        "cache_read_tokens": 60,
+        "cache_write_tokens": 10,
+        "reasoning_tokens": 0,
+        "total_tokens": 140,
+        "api_calls": 1,
+        "model": model,
+        "provider": "claude-code",
+        "completed": True,
+        "failed": False,
+    })
+
+
+def test_normalized_cache_prompt_collapses_timings() -> None:
+    from mlx_swarm.evaluation import normalized_cache_prompt
+
+    left = "Ran 1 test in 0.123s\nFAILED in 2.5 seconds\ncode = 0.5"
+    right = "Ran 1 test in 0.987s\nFAILED in 9.1 seconds\ncode = 0.5"
+    assert normalized_cache_prompt(left) == normalized_cache_prompt(right)
+    assert "code = 0.5" in normalized_cache_prompt(left)
+
+
+def test_completion_cache_roundtrip_and_key_identity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mlx_swarm.evaluation import (
+        CommandResult,
+        completion_cache_key,
+        run_cached_completion,
+        store_completion_cache_entry,
+    )
+
+    profile = load_evaluation_profile(
+        _write_profile(tmp_path, _claude_profile_payload())
+    )
+    prompt_a = "Fix the bug.\nRan 1 test in 0.123s\n"
+    prompt_b = "Fix the bug.\nRan 1 test in 0.999s\n"
+    assert completion_cache_key(profile, prompt_a) == (
+        completion_cache_key(profile, prompt_b)
+    )
+
+    cache_root = tmp_path / "evaluations"
+    entry = store_completion_cache_entry(
+        cache_root,
+        profile,
+        prompt_text=prompt_a,
+        response='{"edits": []}',
+        usage_raw=_valid_receipt_json(),
+        source_label="test:planning",
+    )
+    assert entry is not None and entry.is_file()
+
+    calls: list[list[str]] = []
+
+    def fake_run_command(command, **kwargs):
+        calls.append(command)
+        return CommandResult(
+            argv=tuple(command),
+            returncode=1,
+            stdout="",
+            stderr="should not run",
+            elapsed_seconds=0.0,
+        )
+
+    monkeypatch.setattr(
+        "mlx_swarm.evaluation.run_command",
+        fake_run_command,
+    )
+    evidence = tmp_path / "evidence"
+    evidence.mkdir()
+    usage_file = tmp_path / "usage.json"
+    result = run_cached_completion(
+        profile,
+        ["claude-bridge"],
+        cache_root=cache_root,
+        cwd=tmp_path,
+        timeout=5,
+        prompt_text=prompt_b,
+        usage_file=usage_file,
+        evidence_root=evidence,
+        label="planning",
+    )
+
+    assert calls == []
+    assert result.returncode == 0
+    assert result.stdout == '{"edits": []}'
+    assert json.loads(usage_file.read_text())["total_tokens"] == 140
+    assert (evidence / "planning-cache-hit.json").is_file()
+
+
+def test_cache_rejects_invalid_receipts(tmp_path: Path) -> None:
+    from mlx_swarm.evaluation import store_completion_cache_entry
+
+    profile = load_evaluation_profile(
+        _write_profile(tmp_path, _claude_profile_payload())
+    )
+    entry = store_completion_cache_entry(
+        tmp_path / "evaluations",
+        profile,
+        prompt_text="prompt",
+        response="content",
+        usage_raw=json.dumps({"failed": True}),
+        source_label="test",
+    )
+    assert entry is None
+
+
+def test_seed_frontier_cache_freezes_prior_evidence(
+    tmp_path: Path,
+) -> None:
+    from mlx_swarm.evaluation import (
+        EvaluationStore,
+        run_cached_completion,
+        seed_frontier_cache,
+    )
+
+    profile = load_evaluation_profile(
+        _write_profile(tmp_path, _claude_profile_payload())
+    )
+    config = load_config(_write_config(tmp_path))
+    store = EvaluationStore(config, root=tmp_path / "evaluations")
+    evidence = (
+        store.root
+        / "old-eval"
+        / "cases"
+        / "black-11"
+        / "arms"
+        / "frontier-alone"
+        / "evidence"
+    )
+    evidence.mkdir(parents=True)
+    (evidence / "prompt.txt").write_text(
+        "Fix it.\nRan 1 test in 0.123s\n",
+        encoding="utf-8",
+    )
+    (evidence / "stdout.log").write_text(
+        '{"edits": [{"path": "a.py", "old": "x", "new": "y"}]}',
+        encoding="utf-8",
+    )
+    (evidence / "usage-raw.json").write_text(
+        _valid_receipt_json(),
+        encoding="utf-8",
+    )
+
+    summary = seed_frontier_cache(store, profile, "old-eval")
+
+    assert summary["seededCount"] == 1
+    result = run_cached_completion(
+        profile,
+        ["unused"],
+        cache_root=store.root,
+        cwd=tmp_path,
+        timeout=5,
+        prompt_text="Fix it.\nRan 1 test in 0.456s\n",
+        usage_file=tmp_path / "usage.json",
+        evidence_root=evidence,
+        label="frontier-alone",
+    )
+    assert result.stdout.startswith('{"edits"')
+
+
+def test_contract_repair_prompt_contains_error_and_response() -> None:
+    from mlx_swarm.evaluation import compose_contract_repair_prompt
+
+    prompt = compose_contract_repair_prompt(
+        "ORIGINAL",
+        error="edits[0].mustRemove assertion is not removed",
+        previous_response="{bad json",
+    )
+    assert prompt.startswith("ORIGINAL")
+    assert "CONTRACT REPAIR" in prompt
+    assert "mustRemove" in prompt
+    assert "{bad json" in prompt
+
+
 def _case(case_id: str, project: str, stratum: str) -> dict[str, Any]:
     number = int(case_id.rsplit("-", 1)[-1])
     return {

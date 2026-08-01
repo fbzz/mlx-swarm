@@ -191,6 +191,26 @@ before the executor switches to its isolated runtime `HOME`. Docker context,
 daemon, pinned-container, or verifier-root failures classify the arm as
 `invalid`; candidate assertion/import/test failures remain score zero.
 
+## Token-frugal replay (protocol 16)
+
+Identical frontier completions are transport-cached: every receipt-valid
+call freezes its response and usage receipt under
+`.swarm/evaluations/_frontier-cache/`, keyed by adapter, provider, model,
+completion ceiling, reasoning effort, and the prompt digest with wall-clock
+timing strings normalized (run durations vary per preparation and carry no
+diagnostic content). A later evaluation that composes an equivalent prompt
+replays the frozen response and receipt at zero marginal cost;
+`eval seed-cache EVALUATION_ID --profile ...` freezes a prior evaluation's
+already-purchased responses. Replayed arms report the original receipt —
+the cost of that frontier behavior — and record cache provenance in
+evidence.
+
+A receipt-valid response that fails schema or materialization validation
+earns exactly one contract-repair completion: the original prompt, the
+validator's error, and the rejected response, asking for the corrected JSON
+object. Both calls' receipts are reported as separate usage phases, so the
+arm's frontier cost is the honest sum. Infrastructure failures never retry.
+
 ## Evidence and economics
 
 Raw evidence lives below `.swarm/evaluations/<evaluationId>/`. Per-arm results
