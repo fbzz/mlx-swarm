@@ -1,0 +1,4 @@
+interface:
+  display_name: "MLX Swarm Skill Map"
+  short_description: "Map a workspace and point Swarm at a subgraph"
+  default_prompt: "Use $mlx-swarm-skill-map to refresh the codebase graph, read any New task focusPaths, and confine later commander planning to that subgraph."

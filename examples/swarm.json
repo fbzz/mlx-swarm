@@ -16,6 +16,7 @@
       "src",
       "tests",
       "examples",
+      "website",
       "README.md",
       "lat.md",
       "pyproject.toml"
@@ -25,6 +26,13 @@
         "argv": ["python", "-m", "pytest", "-q"],
         "cwd": ".",
         "timeoutSeconds": 600,
+        "inheritEnv": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
+        "environment": {}
+      },
+      "pytest-website": {
+        "argv": ["python", "-m", "pytest", "-q", "tests/test_website.py"],
+        "cwd": ".",
+        "timeoutSeconds": 120,
         "inheritEnv": ["PATH", "TMPDIR", "LANG", "LC_ALL"],
         "environment": {}
       },
@@ -45,8 +53,8 @@
     }
   },
   "worker": {
-    "mode": "direct",
-    "reasoningMaxTokens": 768,
+    "mode": "reasoning-edit",
+    "reasoningMaxTokens": 1536,
     "capabilities": {
       "parameterScale": "35B-A3B",
       "contextWindowTokens": 262144,
@@ -71,5 +79,6 @@
     }
   },
   "enableThinking": false,
+  "reasoningEffort": "low",
   "seed": 20260727
 }

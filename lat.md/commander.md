@@ -144,15 +144,21 @@ model calls or token accounting inside a frontier host.
 
 ## Agent Skill
 
-The bundled `mlx-swarm-commander` skill uses one portable `SKILL.md` across
-supported frontier hosts.
+The bundled `mlx-swarm-commander` and `mlx-swarm-skill-map` skills use one
+portable `SKILL.md` each across supported frontier hosts.
 
-Install it explicitly with `mlx-swarm skill install --host claude` or
-`mlx-swarm skill install --host codex`. Claude installations omit the
-Codex-only `agents/openai.yaml` metadata. Default personal roots respect
-`CLAUDE_CONFIG_DIR` and `CODEX_HOME`; `--skills-dir` overrides either.
+Install both with `mlx-swarm skill install --host claude` or
+`mlx-swarm skill install --host codex`. Pass `--skill NAME` to install one.
+Claude installations omit the Codex-only `agents/openai.yaml` metadata.
+Default personal roots respect `CLAUDE_CONFIG_DIR` and `CODEX_HOME`;
+`--skills-dir` overrides either.
 
-Before claiming a phase, the skill routes a one- or two-file cosmetic,
+`mlx-swarm-skill-map` refreshes `.mlx-swarm/codebase-map.json` via
+`mlx-swarm --config CONFIG map --format mermaid`, pastes that flowchart into
+the host reply, reads New task `focusPaths`, and confines later commander
+inspection to that subgraph. It never approves or launches.
+
+Before claiming a phase, the commander skill routes a one- or two-file cosmetic,
 copy/layout-only, or literal mechanical change directly when it crosses no
 behavioral, security, data, concurrency, public-API, or migration boundary.
 That direct path performs the edit and one relevant verification without

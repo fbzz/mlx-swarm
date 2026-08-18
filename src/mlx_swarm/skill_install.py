@@ -1,4 +1,4 @@
-"""Install the bundled MLX Swarm Commander Agent Skill."""
+"""Install bundled MLX Swarm Agent Skills."""
 # @lat: [[Commander]]
 
 from __future__ import annotations
@@ -9,17 +9,34 @@ import uuid
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
+from typing import Any, Iterable
 
-SKILL_NAME = "mlx-swarm-commander"
+COMMANDER_SKILL = "mlx-swarm-commander"
+MAP_SKILL = "mlx-swarm-skill-map"
+BUNDLED_SKILLS = (COMMANDER_SKILL, MAP_SKILL)
+SKILL_NAME = COMMANDER_SKILL
 SUPPORTED_SKILL_HOSTS = {"claude", "codex"}
 SKILL_ADAPTERS = {
     "claude": "claude-code-skill",
     "codex": "codex-skill",
 }
+SKILL_INVOKE = {
+    COMMANDER_SKILL: {
+        "claude": "/mlx-swarm-commander",
+        "codex": "$mlx-swarm-commander",
+    },
+    MAP_SKILL: {
+        "claude": "/mlx-swarm-skill-map",
+        "codex": "$mlx-swarm-skill-map",
+    },
+}
+PROJECT_CLAUDE_INSTALL_COMMAND = (
+    "mlx-swarm skill install --host claude --skills-dir .claude/skills"
+)
 
 
 class SkillInstallError(RuntimeError):
-    """Raised when the bundled skill cannot be safely installed."""
+    """Raised when a bundled skill cannot be safely installed."""
 
 
 def install_bundled_skill(
@@ -27,21 +44,23 @@ def install_bundled_skill(
     host: str,
     skills_dir: Path | None = None,
     force: bool = False,
+    skill: str = COMMANDER_SKILL,
 ) -> Path:
-    """Copy the validated bundled skill into a supported host directory."""
+    """Copy one validated bundled skill into a supported host directory."""
     normalized_host = host.strip().lower()
     if normalized_host not in SUPPORTED_SKILL_HOSTS:
         supported = ", ".join(sorted(SUPPORTED_SKILL_HOSTS))
         raise SkillInstallError(
             f"Unsupported skill host {host!r}; choose one of: {supported}."
         )
+    skill_name = _normalize_skill(skill)
     destination_root = (
         skills_dir.expanduser()
         if skills_dir is not None
-        else _default_skills_dir(normalized_host)
+        else default_skills_dir(normalized_host)
     ).resolve()
     destination_root.mkdir(parents=True, exist_ok=True)
-    destination = destination_root / SKILL_NAME
+    destination = destination_root / skill_name
     if destination.parent != destination_root:
         raise SkillInstallError("Invalid Agent Skill destination.")
     if destination.exists() and not force:
@@ -57,9 +76,9 @@ def install_bundled_skill(
             "Refusing to replace a non-directory skill destination."
         )
 
-    resource = files("mlx_swarm.bundled_skills").joinpath(SKILL_NAME)
-    _validate_skill_resource(resource, host=normalized_host)
-    staging = destination_root / f".{SKILL_NAME}-{uuid.uuid4().hex}.tmp"
+    resource = files("mlx_swarm.bundled_skills").joinpath(skill_name)
+    _validate_skill_resource(resource, host=normalized_host, skill=skill_name)
+    staging = destination_root / f".{skill_name}-{uuid.uuid4().hex}.tmp"
     try:
         staging.mkdir()
         _copy_resource_tree(
@@ -67,7 +86,7 @@ def install_bundled_skill(
             staging,
             include_openai_metadata=normalized_host == "codex",
         )
-        _validate_skill(staging, host=normalized_host)
+        _validate_skill(staging, host=normalized_host, skill=skill_name)
         if destination.exists():
             shutil.rmtree(destination)
         staging.replace(destination)
@@ -77,7 +96,28 @@ def install_bundled_skill(
     return destination
 
 
-def _default_skills_dir(host: str) -> Path:
+def install_bundled_skills(
+    *,
+    host: str,
+    skills_dir: Path | None = None,
+    force: bool = False,
+    skills: Iterable[str] | None = None,
+) -> list[Path]:
+    """Install one or every bundled skill for a host."""
+    names = tuple(skills) if skills is not None else BUNDLED_SKILLS
+    return [
+        install_bundled_skill(
+            host=host,
+            skills_dir=skills_dir,
+            force=force,
+            skill=name,
+        )
+        for name in names
+    ]
+
+
+def default_skills_dir(host: str) -> Path:
+    """Return the default Agent Skill directory for a supported host."""
     if host == "claude":
         claude_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
         if claude_config_dir:
@@ -89,7 +129,60 @@ def _default_skills_dir(host: str) -> Path:
     return Path.home() / ".codex" / "skills"
 
 
-def _validate_skill(path: Path, *, host: str) -> None:
+def skill_is_installed(
+    host: str,
+    *,
+    skills_dir: Path | None = None,
+    skill: str = COMMANDER_SKILL,
+) -> bool:
+    """Return whether a bundled skill exists in a host directory."""
+    skill_name = _normalize_skill(skill)
+    root = (
+        skills_dir.expanduser().resolve()
+        if skills_dir is not None
+        else default_skills_dir(host)
+    )
+    destination = root / skill_name
+    return destination.is_dir() and (destination / "SKILL.md").is_file()
+
+
+def skill_status_payload() -> dict[str, Any]:
+    """Return compact install status for every shipped skill."""
+    skills = []
+    for skill_name in BUNDLED_SKILLS:
+        hosts = []
+        for host in ("claude", "codex"):
+            hosts.append({
+                "id": host,
+                "installed": skill_is_installed(host, skill=skill_name),
+                "installCommand": f"mlx-swarm skill install --host {host}",
+                "invoke": SKILL_INVOKE[skill_name][host],
+            })
+        skills.append({
+            "skillName": skill_name,
+            "hosts": hosts,
+            "projectClaudeCommand": PROJECT_CLAUDE_INSTALL_COMMAND,
+        })
+    commander = skills[0]
+    return {
+        "skillName": commander["skillName"],
+        "hosts": commander["hosts"],
+        "projectClaudeCommand": commander["projectClaudeCommand"],
+        "skills": skills,
+    }
+
+
+def _normalize_skill(skill: str) -> str:
+    name = skill.strip()
+    if name not in BUNDLED_SKILLS:
+        supported = ", ".join(BUNDLED_SKILLS)
+        raise SkillInstallError(
+            f"Unknown bundled skill {skill!r}; choose one of: {supported}."
+        )
+    return name
+
+
+def _validate_skill(path: Path, *, host: str, skill: str) -> None:
     skill_file = path / "SKILL.md"
     metadata_file = path / "agents" / "openai.yaml"
     if not skill_file.is_file():
@@ -106,13 +199,18 @@ def _validate_skill(path: Path, *, host: str) -> None:
     if not content.startswith("---\n") or "\n---\n" not in content[4:]:
         raise SkillInstallError("Bundled skill frontmatter is invalid.")
     frontmatter = content.split("---", 2)[1]
-    if f"name: {SKILL_NAME}" not in frontmatter:
+    if f"name: {skill}" not in frontmatter:
         raise SkillInstallError("Bundled skill name does not match its folder.")
     if "description:" not in frontmatter:
         raise SkillInstallError("Bundled skill description is missing.")
 
 
-def _validate_skill_resource(resource: Traversable, *, host: str) -> None:
+def _validate_skill_resource(
+    resource: Traversable,
+    *,
+    host: str,
+    skill: str,
+) -> None:
     skill_file = resource.joinpath("SKILL.md")
     metadata_file = resource.joinpath("agents").joinpath("openai.yaml")
     if not skill_file.is_file():
@@ -122,7 +220,7 @@ def _validate_skill_resource(resource: Traversable, *, host: str) -> None:
             "Bundled skill is missing SKILL.md or agents/openai.yaml."
         )
     content = skill_file.read_text(encoding="utf-8")
-    if f"name: {SKILL_NAME}" not in content:
+    if f"name: {skill}" not in content:
         raise SkillInstallError("Bundled skill name does not match its folder.")
 
 

@@ -1248,9 +1248,10 @@ def validate_patch(
 
 def _strict_patch_paths(worktree: Path, payload: str) -> list[str]:
     """Parse every patch section without applying it."""
-    for marker in _FORBIDDEN_DIFF_MARKERS:
-        if marker in payload:
-            raise WorkspaceError(f"Diff contains forbidden metadata: {marker}")
+    for line in payload.splitlines():
+        for marker in _FORBIDDEN_DIFF_MARKERS:
+            if line.startswith(marker):
+                raise WorkspaceError(f"Diff contains forbidden metadata: {marker}")
     if _SPECIAL_GIT_MODE.search(payload):
         raise WorkspaceError(
             "Diff cannot modify symlinks or Git submodules."

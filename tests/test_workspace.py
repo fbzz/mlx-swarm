@@ -1261,6 +1261,31 @@ def test_patch_boundary_rejections(
         persist_artifact(session_dir, plan.tasks[0], payload, snapshot)
 
 
+def test_patch_file_content_may_mention_copy_to(tmp_path: Path) -> None:
+    repo, config_path = _repo(tmp_path)
+    config = load_config(config_path)
+    plan = load_plan(_plan_file(repo), config)
+    preview = execution_preview(config, plan)
+    snapshot = prepare_worktree(
+        config,
+        plan,
+        session_id="copy-to-content",
+        expected_execution_digest=preview["executionDigest"],
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / "copy-to-content"
+    session_dir.mkdir(parents=True)
+    payload = (
+        "diff --git a/src/value.py b/src/value.py\n"
+        "--- a/src/value.py\n"
+        "+++ b/src/value.py\n"
+        "@@ -1 +1,2 @@\n"
+        " VALUE = 1\n"
+        "+# copy to a frontier host\n"
+    )
+    manifest = persist_artifact(session_dir, plan.tasks[0], payload, snapshot)
+    assert manifest["affectedPaths"] == ["src/value.py"]
+
+
 class _Backend:
     def __init__(self):
         self.closed = False

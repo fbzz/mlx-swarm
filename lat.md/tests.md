@@ -356,18 +356,20 @@ binds review claims and receipts to its own digest. Evidence-changing tampering
 with either packet is rejected.
 
 ### Bundled skill
-The packaged Agent Skill validates, installs for Claude Code or Codex to an
-explicit skills root, omits Codex-only metadata from Claude installations, and
-refuses implicit overwrite.
+The packaged Agent Skills validate and install for Claude Code or Codex.
+Claude copies omit Codex-only metadata, and overwrite requires `--force`.
 
-The skill contract routes simple low-risk one- or two-file cosmetic or literal
-mechanical edits directly, while explicitly governed or decomposition-worthy
-work continues through Commander.
+Default install copies both `mlx-swarm-commander` and `mlx-swarm-skill-map`;
+`--skill` selects one. The commander contract routes simple low-risk one- or
+two-file cosmetic or literal mechanical edits directly, while explicitly
+governed work continues through Commander. The skill-map contract prints the
+mermaid graph from `mlx-swarm map --format mermaid`, then honors cockpit
+`focusPaths` instead of walking the tree ad hoc.
 
 ## UI
 
 [[UI]] server and serialization tests. See [[src/mlx_swarm/ui.py]] and the
-packaged assets under [[src/mlx_swarm/ui_static/app.js]].
+packaged assets under [[src/mlx_swarm/ui_static/index.html]].
 
 ### Plan catalog
 Only validated plans inside the approved root are launchable; artifact snapshots,

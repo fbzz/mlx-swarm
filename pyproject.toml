@@ -47,8 +47,11 @@ mlx_swarm = [
     "ui_static/*.html",
     "ui_static/*.css",
     "ui_static/*.js",
+    "ui_static/assets/*",
     "bundled_skills/mlx-swarm-commander/SKILL.md",
     "bundled_skills/mlx-swarm-commander/agents/*.yaml",
+    "bundled_skills/mlx-swarm-skill-map/SKILL.md",
+    "bundled_skills/mlx-swarm-skill-map/agents/*.yaml",
 ]
 
 [tool.pytest.ini_options]

@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Terms, MLX Swarm</title>
+    <meta name="description" content="MLX Swarm is MIT licensed alpha software. There is no paid plan and no account. Use is at your own risk." />
+    <meta name="robots" content="index,follow" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.min.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: { sans: ["Geist", "sans-serif"] },
+            colors: {
+              void: "#000000",
+              ink: { 2: "#181818" },
+              mist: "#9B9B9B",
+            },
+            maxWidth: { hero: "680px" },
+            transitionTimingFunction: { fluid: "cubic-bezier(0.32,0.72,0,1)" },
+          },
+        },
+      };
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="bg-void font-sans text-white antialiased">
+    <header>
+      <nav class="island-nav flex items-center gap-3 px-3 py-2" aria-label="Primary">
+        <a href="./index.html" class="flex items-center gap-2 rounded-full px-2 py-1 text-sm font-semibold">
+          <img src="./favicon.svg" width="20" height="20" alt="" />
+          MLX Swarm
+        </a>
+        <a href="./index.html" class="rounded-full px-3 py-1 text-sm font-semibold text-mist">Product</a>
+        <a href="./terms.html" class="nav-link rounded-full bg-ink-2 px-3 py-1 text-sm font-semibold" aria-current="page">Terms</a>
+      </nav>
+    </header>
+    <main id="content" class="mx-auto max-w-hero px-6 py-24">
+      <h1 class="headline mb-8 text-4xl font-semibold">Terms</h1>
+      <p class="mb-4 text-lg text-mist">MLX Swarm source code is offered under the MIT license in the repository. You may use, copy, modify, and distribute it under those terms.</p>
+      <p class="mb-4 text-lg text-mist">There is no paid subscription and no account to cancel. Closing the process stops the runtime.</p>
+      <p class="mb-4 text-lg text-mist">The software is alpha. It is provided as is, without warranty. You are responsible for reviewing plans, execution digests, and generated patches before you merge them.</p>
+      <p class="text-lg text-mist">The LICENSE file in the repository is the controlling legal text if this page and that file ever disagree.</p>
+      <p class="mt-12"><a class="btn btn-primary" href="./index.html">Back to MLX Swarm</a></p>
+    </main>
+  </body>
+</html>

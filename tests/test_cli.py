@@ -628,6 +628,41 @@ def test_cli_ui_rejects_invalid_port(tmp_path: Path) -> None:
     assert exc_info.value.code == 2
 
 
+def test_cli_app_registers_global_workspace_and_launches_electron(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = _write_config(tmp_path)
+    monkeypatch.setenv("MLX_SWARM_APP_HOME", str(tmp_path / "app-home"))
+    with (
+        patch("mlx_swarm.ui.serve_ui") as serve,
+        patch("mlx_swarm.desktop_app.launch_electron") as launch,
+    ):
+        result = main([
+            "--config",
+            str(config_path),
+            "app",
+            "--port",
+            "0",
+        ])
+
+    assert result == 0
+    config, plans_dir = serve.call_args.args
+    migrated = config_path.parent / ".mlx-swarm" / "swarm.json"
+    assert config.source == migrated.resolve()
+    assert plans_dir == migrated.resolve().parent
+    assert serve.call_args.kwargs == {
+        "host": "127.0.0.1",
+        "port": 0,
+        "open_browser": False,
+        "ready_callback": launch,
+    }
+    catalog = json.loads(
+        (tmp_path / "app-home" / "catalog.json").read_text()
+    )
+    assert catalog["workspaces"][0]["configPath"] == str(migrated.resolve())
+
+
 def test_cli_commander_create_claim_and_import(
     tmp_path: Path,
     capsys: pytest.CaptureFixture[str],
@@ -799,8 +834,43 @@ def test_cli_skill_install_does_not_require_config(
     assert payload["installed"] is True
     assert payload["host"] == "claude"
     assert payload["adapter"] == "claude-code-skill"
-    assert Path(payload["path"]).is_dir()
+    assert payload["skills"] == [
+        "mlx-swarm-commander",
+        "mlx-swarm-skill-map",
+    ]
+    assert Path(payload["path"]).name == "mlx-swarm-commander"
     assert not (Path(payload["path"]) / "agents").exists()
+    assert (skills_dir / "mlx-swarm-skill-map" / "SKILL.md").is_file()
+    assert not (skills_dir / "mlx-swarm-skill-map" / "agents").exists()
+
+
+def test_cli_map_writes_codebase_graph(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("print(1)\n", encoding="utf-8")
+    assert main(["--config", str(config_path), "map"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["truncated"] is False
+    assert any(node["path"] == "src" for node in payload["nodes"])
+    assert Path(payload["path"]).is_file()
+
+
+def test_cli_map_mermaid_prints_a_flowchart(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    config_path = _write_config(tmp_path)
+    (tmp_path / "pkg").mkdir()
+    (tmp_path / "pkg" / "mod.py").write_text("x = 1\n", encoding="utf-8")
+    assert main(["--config", str(config_path), "map", "--format", "mermaid"]) == 0
+    stdout = capsys.readouterr().out
+    assert stdout.startswith("```mermaid\n")
+    assert "flowchart LR" in stdout
+    assert "n_pkg" in stdout
+    assert (tmp_path / ".mlx-swarm" / "codebase-map.json").is_file()
 
 
 def test_cli_evaluation_prepare_status_and_run_use_pinned_profile(

@@ -1036,12 +1036,9 @@ class CommanderStore:
     def __init__(self, config: SwarmConfig):
         self.config = config
         self.artifacts_root = config.artifacts_dir.resolve()
-        if config.workspace is not None:
-            from .workspace import discover_git_root
+        from .app_storage import workspace_root_for_config
 
-            self.workspace_root = discover_git_root(config.source.parent)
-        else:
-            self.workspace_root = config.source.parent.resolve()
+        self.workspace_root = workspace_root_for_config(config)
         self.requests_root = (
             self.artifacts_root / "_commander" / "requests"
         ).resolve()

@@ -2,6 +2,28 @@
 
 All notable changes to MLX Swarm are documented in this file.
 
+## [Unreleased]
+
+### Added
+
+- Electron desktop app (`mlx-swarm app`): open a folder, live graph, Apply and
+  Reject in a task inspector, and a docked PTY. The browser cockpit still
+  serves the same API at `127.0.0.1:8765`.
+- Public landing page under `website/` with structural pytest coverage.
+- New task skill map: bounded workspace graph (`GET /api/workspace/map`,
+  `mlx-swarm map`, `mlx-swarm map --format mermaid`), `mlx-swarm-skill-map`
+  Agent Skill, and New task install cards. Clicking a graph node stores
+  `focusPaths` without rebinding the workspace or creating a commander request.
+- `reasoningEffort` on the swarm config (default `low`) so Qwen chat templates
+  do not spend the worker ceiling on hidden reasoning.
+
+### Changed
+
+- Forbidden diff-metadata detection matches line prefixes only, so patch
+  bodies may mention phrases such as "copy to " without failing the gate.
+- README describes the desktop app, Cursor skill install, and 400 collected
+  tests as the current product.
+
 ## [0.5.1] - 2026-08-01
 
 ### Added

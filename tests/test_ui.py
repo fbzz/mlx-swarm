@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import re
 import subprocess
 import threading
 from http.server import ThreadingHTTPServer
@@ -17,23 +19,11 @@ import pytest
 from mlx_swarm.contracts import load_config, load_plan
 from mlx_swarm.executor import execute_plan
 from mlx_swarm.session import Session
-from mlx_swarm.ui import APIError, CockpitApp, make_handler
+from mlx_swarm.ui import APIError, CockpitApp, make_handler, serve_ui
 from mlx_swarm.workspace import execution_preview, persist_artifact
 
 
-def test_packaged_styles_preserve_native_hidden_state() -> None:
-    styles = (
-        Path(__file__).parents[1]
-        / "src"
-        / "mlx_swarm"
-        / "ui_static"
-        / "styles.css"
-    ).read_text(encoding="utf-8")
-
-    assert "[hidden] { display: none !important; }" in styles
-
-
-def test_packaged_cockpit_exposes_incremental_revision_lineage() -> None:
+def test_packaged_react_app_is_built_for_cockpit_server() -> None:
     static = (
         Path(__file__).parents[1]
         / "src"
@@ -41,14 +31,43 @@ def test_packaged_cockpit_exposes_incremental_revision_lineage() -> None:
         / "ui_static"
     )
     html = (static / "index.html").read_text(encoding="utf-8")
-    script = (static / "app.js").read_text(encoding="utf-8")
 
-    assert 'id="commander-revision"' in html
-    assert 'revisionOf = el("commander-revision")' in script
-    assert "...(revisionOf ? {revisionOf} : {})" in script
-    assert "revision?.inspectionRoot" in script
-    assert "schemaVersion === 2" not in script
-    assert script.count("schemaVersion >= 2") == 4
+    assert 'id="root"' in html
+    assert "/assets/" in html
+    assert any((static / "assets").glob("*.js"))
+    assert any((static / "assets").glob("*.css"))
+    assert any((static / "assets").glob("*.woff2"))
+    css = next((static / "assets").glob("*.css")).read_text(encoding="utf-8")
+    assert "Geist Variable" in css
+    assert "Geist Mono Variable" in css
+
+
+def test_beautiful_ui_source_exposes_work_and_review_surfaces() -> None:
+    source = (
+        Path(__file__).parents[1]
+        / "desktop"
+        / "renderer"
+        / "src"
+        / "App.tsx"
+    )
+    script = source.read_text(encoding="utf-8")
+
+    assert "PlanReview" in script
+    assert "ProjectSidebar" in script
+    assert "NewTask" in script
+    assert "ApprovalCard" in script
+    assert "ContextCards" in script
+    assert "DiffReview" in script
+
+
+def test_renderer_self_hosts_geist() -> None:
+    root = Path(__file__).parents[1] / "desktop" / "renderer" / "src"
+    main = (root / "main.tsx").read_text(encoding="utf-8")
+    styles = (root / "styles.css").read_text(encoding="utf-8")
+    assert "@fontsource-variable/geist" in main
+    assert "@fontsource-variable/geist-mono" in main
+    assert "Geist Variable" in styles
+    assert "Geist Mono Variable" in styles
 
 
 def _write_workspace(tmp_path: Path) -> tuple[Path, Path]:
@@ -372,6 +391,62 @@ def test_plan_discovery_and_status(tmp_path: Path) -> None:
     assert status["reviewMode"] == "frontier-final-only"
     assert status["batch"]["maxBatchPromptTokens"] == 49152
     assert status["worker"]["capabilities"]["delegationLevel"] == "exact-edit"
+    assert status["skill"]["skillName"] == "mlx-swarm-commander"
+    assert {host["id"] for host in status["skill"]["hosts"]} == {"claude", "codex"}
+    assert status["skill"]["hosts"][0]["installCommand"] == (
+        "mlx-swarm skill install --host claude"
+    )
+    assert status["skill"]["projectClaudeCommand"] == (
+        "mlx-swarm skill install --host claude --skills-dir .claude/skills"
+    )
+    assert [item["skillName"] for item in status["skills"]] == [
+        "mlx-swarm-commander",
+        "mlx-swarm-skill-map",
+    ]
+    map_hosts = {
+        item["id"]: item for item in status["skills"][1]["hosts"]
+    }
+    assert map_hosts["claude"]["invoke"] == "/mlx-swarm-skill-map"
+    assert map_hosts["codex"]["invoke"] == "$mlx-swarm-skill-map"
+
+
+def test_status_reports_commander_skill_install_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    claude = tmp_path / "claude"
+    codex = tmp_path / "codex"
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(claude))
+    monkeypatch.setenv("CODEX_HOME", str(codex))
+    app = _app(tmp_path)
+    hosts = {item["id"]: item for item in app.status_payload()["skill"]["hosts"]}
+    assert hosts["claude"]["installed"] is False
+    assert hosts["claude"]["invoke"] == "/mlx-swarm-commander"
+    assert hosts["codex"]["installed"] is False
+    assert hosts["codex"]["invoke"] == "$mlx-swarm-commander"
+    skill_dir = claude / "skills" / "mlx-swarm-commander"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: mlx-swarm-commander\n---\n",
+        encoding="utf-8",
+    )
+    hosts = {item["id"]: item for item in app.status_payload()["skill"]["hosts"]}
+    assert hosts["claude"]["installed"] is True
+    assert hosts["codex"]["installed"] is False
+
+
+def test_workspace_map_is_confined_to_the_opened_project(tmp_path: Path) -> None:
+    app = _app(tmp_path)
+    outside = tmp_path.parent / f"outside-secret-{tmp_path.name}"
+    outside.mkdir()
+    (outside / "secret.py").write_text("hidden = True\n", encoding="utf-8")
+    payload = app.workspace_map_payload()
+    paths = {node["path"] for node in payload["nodes"]}
+    assert payload["workspaceRoot"] == str(app.commander.workspace_root)
+    assert not any("secret.py" in path for path in paths)
+    assert (
+        Path(app.config.source).parent / ".mlx-swarm" / "codebase-map.json"
+    ).is_file() or (tmp_path / ".mlx-swarm" / "codebase-map.json").is_file()
 
 
 def test_plan_discovery_excludes_artifacts_and_duplicates(
@@ -1041,10 +1116,15 @@ def test_http_static_assets_and_api(http_cockpit) -> None:
     _app_instance, base = http_cockpit
     status, content, headers = _get(base + "/")
     assert status == 200
-    assert b"MLX Swarm Cockpit" in content
+    assert b"<title>MLX Swarm</title>" in content
     assert "default-src 'self'" in headers["Content-Security-Policy"]
-    assert _get(base + "/styles.css")[0] == 200
-    assert _get(base + "/app.js")[0] == 200
+    assert "font-src 'self'" in headers["Content-Security-Policy"]
+    assets = re.findall(rb'(?:src|href)="(/assets/[^"]+)"', content)
+    assert len(assets) == 2
+    assert all(_get(base + asset.decode())[0] == 200 for asset in assets)
+    with pytest.raises(HTTPError) as error:
+        _get(base + "/__init__.py")
+    assert error.value.code == 404
     status_payload = json.loads(_get(base + "/api/status")[1])
     assert status_payload["reviewMode"] == "frontier-final-only"
     plans_payload = json.loads(_get(base + "/api/plans")[1])
@@ -1053,6 +1133,99 @@ def test_http_static_assets_and_api(http_cockpit) -> None:
         _get(base + "/api/commander/requests")[1]
     )
     assert commander_payload == {"requests": []}
+
+
+def test_http_open_workspace_rebinds_project_store(http_cockpit, tmp_path: Path) -> None:
+    _app_instance, base = http_cockpit
+    other = tmp_path / "opened-project"
+    other.mkdir()
+    (other / "src").mkdir()
+    status, payload = _post(
+        base + "/api/workspace/open",
+        json.dumps({"path": str(other)}).encode(),
+    )
+
+    assert status == 200
+    assert payload["activeWorkspace"]["projectRoot"] == str(other.resolve())
+    assert (other / ".mlx-swarm" / "swarm.json").is_file()
+    library = json.loads(_get(base + "/api/library")[1])
+    assert library["activeWorkspace"]["projectRoot"] == str(other.resolve())
+    ui_state = json.loads(_get(base + "/api/ui-state")[1])
+    assert ui_state["terminalVisible"] is True
+    assert ui_state["terminalSplit"] == 0.5
+    hidden_status, hidden = _post(
+        base + "/api/ui-state",
+        json.dumps({"terminalVisible": False}).encode(),
+    )
+    assert hidden_status == 200
+    assert hidden["terminalVisible"] is False
+    assert hidden["terminalSplit"] == 0.5
+    split_status, split = _post(
+        base + "/api/ui-state",
+        json.dumps({"terminalSplit": 0.2}).encode(),
+    )
+    assert split_status == 200
+    assert split["terminalVisible"] is False
+    assert split["terminalSplit"] == 0.25
+    assert split["focusPaths"] == []
+    focus_status, focused = _post(
+        base + "/api/ui-state",
+        json.dumps({"focusPaths": ["src/mlx_swarm"]}).encode(),
+    )
+    assert focus_status == 200
+    assert focused["focusPaths"] == ["src/mlx_swarm"]
+    mapped = json.loads(_get(base + "/api/workspace/map")[1])
+    assert mapped["workspaceRoot"]
+    assert isinstance(mapped["nodes"], list)
+
+
+def test_http_open_workspace_rejects_missing_folder(http_cockpit, tmp_path: Path) -> None:
+    _app_instance, base = http_cockpit
+    status, payload = _post(
+        base + "/api/workspace/open",
+        json.dumps({"path": str(tmp_path / "missing")}).encode(),
+    )
+    assert status == 400
+    assert "not found" in payload["error"].lower()
+
+
+def test_serve_ui_terminates_desktop_process_when_server_stops(
+    tmp_path: Path,
+) -> None:
+    app = _app(tmp_path)
+
+    class FakeServer:
+        server_address = ("127.0.0.1", 43210)
+
+        def __init__(self, *_args, **_kwargs):
+            self.closed = False
+
+        def serve_forever(self, **_kwargs):
+            return None
+
+        def server_close(self):
+            self.closed = True
+
+    class FakeProcess:
+        terminated = False
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            self.terminated = True
+
+    process = FakeProcess()
+    serve_ui(
+        app.config,
+        app.plans_dir,
+        port=0,
+        open_browser=False,
+        ready_callback=lambda _url: process,
+        server_factory=FakeServer,
+    )
+
+    assert process.terminated is True
 
 
 def test_http_commander_request_and_unknown_fields(http_cockpit) -> None:
@@ -1079,6 +1252,14 @@ def test_http_commander_request_and_unknown_fields(http_cockpit) -> None:
     assert "Use the mlx-swarm-commander skill" in (
         detail["handoff"]["planCommand"]
     )
+    prompt = json.loads(
+        _get(
+            f"{base}/api/commander/requests/{request_id}/prompt"
+        )[1]
+    )
+    assert prompt["requestId"] == request_id
+    assert len(prompt["sha256"]) == 64
+    assert "WORKER CAPABILITY CONTRACT" in prompt["prompt"]
 
     status, payload = _post(
         base + "/api/commander/requests",
@@ -1090,6 +1271,65 @@ def test_http_commander_request_and_unknown_fields(http_cockpit) -> None:
     )
     assert status == 400
     assert "Unknown fields" in payload["error"]
+
+
+def test_http_review_endpoints_return_sha_bound_prompts_and_diff(
+    http_cockpit,
+) -> None:
+    app, base = http_cockpit
+    plan_id = "review-plan"
+    session_id = "review-session"
+    task_id = "edit"
+    session = app.artifacts_dir / plan_id / session_id
+    attempt = session / "attempts" / task_id / "attempt-001.json"
+    attempt.parent.mkdir(parents=True)
+    prompt = "Apply the exact edit."
+    output = '{"edits":[]}'
+    prompt_sha = hashlib.sha256(prompt.encode()).hexdigest()
+    output_sha = hashlib.sha256(output.encode()).hexdigest()
+    attempt.write_text(json.dumps({
+        "attempt": 1,
+        "phase": "generation",
+        "prompt": prompt,
+        "output": output,
+        "normalizedOutput": output,
+    }), encoding="utf-8")
+    (session / "session.json").write_text(json.dumps({
+        "sessionId": session_id,
+        "planId": plan_id,
+        "objective": "Review a local edit",
+        "status": "completed",
+        "tasks": {
+            task_id: {
+                "status": "completed",
+                "generationAttempts": [{
+                    "path": f"attempts/{task_id}/attempt-001.json",
+                    "promptSha256": prompt_sha,
+                    "outputSha256": output_sha,
+                }],
+            },
+        },
+    }), encoding="utf-8")
+    (session / "frontier-result.json").write_text(json.dumps({
+        "workspace": {
+            "finalDiff": (
+                "diff --git a/src/a.py b/src/a.py\n"
+                "--- a/src/a.py\n+++ b/src/a.py\n"
+                "@@ -1 +1 @@\n-old\n+new\n"
+            ),
+        },
+    }), encoding="utf-8")
+
+    attempts = json.loads(_get(
+        f"{base}/api/runs/{plan_id}/{session_id}/attempts/{task_id}"
+    )[1])
+    diff = json.loads(_get(
+        f"{base}/api/runs/{plan_id}/{session_id}/diff"
+    )[1])
+
+    assert attempts["attempts"][0]["promptSha256"] == prompt_sha
+    assert attempts["attempts"][0]["prompt"] == prompt
+    assert diff["summary"] == {"files": 1, "additions": 1, "deletions": 1}
 
 
 def test_http_malformed_oversized_and_cross_origin_requests(

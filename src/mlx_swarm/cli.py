@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -38,9 +39,11 @@ from .executor import execute_plan
 from .model_identity import model_metadata
 from .session import Session, _run_id, _utc_now
 from .skill_install import (
+    BUNDLED_SKILLS,
+    COMMANDER_SKILL,
     SKILL_ADAPTERS,
     SkillInstallError,
-    install_bundled_skill,
+    install_bundled_skills,
 )
 from .workspace import (
     APPROVAL_MODES,
@@ -229,6 +232,43 @@ def _parser() -> argparse.ArgumentParser:
         "--no-open",
         action="store_true",
         help="Do not open the cockpit in the default browser.",
+    )
+    app_parser = sub.add_parser(
+        "app",
+        help="Launch the standalone MLX Swarm desktop app.",
+    )
+    app_parser.add_argument(
+        "--plans-dir",
+        type=Path,
+        default=None,
+        help="Approved plan directory (defaults to the config directory).",
+    )
+    app_parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Local bind host (127.0.0.1, localhost, or ::1).",
+    )
+    app_parser.add_argument(
+        "--port",
+        type=_port,
+        default=0,
+        help="Local API port (default: select a free port).",
+    )
+    map_parser = sub.add_parser(
+        "map",
+        help="Write a bounded codebase graph for the opened workspace.",
+    )
+    map_parser.add_argument(
+        "--output",
+        type=Path,
+        default=None,
+        help="Override the codebase-map.json destination.",
+    )
+    map_parser.add_argument(
+        "--format",
+        choices=("json", "mermaid"),
+        default="json",
+        help="Print JSON (default) or a mermaid flowchart for host-chat display.",
     )
 
     commander_parser = sub.add_parser(
@@ -461,7 +501,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     install_parser = skill_sub.add_parser(
         "install",
-        help="Install the bundled mlx-swarm-commander skill.",
+        help="Install bundled Agent Skills for Claude Code or Codex.",
     )
     install_parser.add_argument(
         "--skills-dir",
@@ -474,6 +514,12 @@ def _parser() -> argparse.ArgumentParser:
         choices=sorted(SKILL_ADAPTERS),
         required=True,
         help="Install for Claude Code or Codex.",
+    )
+    install_parser.add_argument(
+        "--skill",
+        choices=list(BUNDLED_SKILLS),
+        default=None,
+        help="Install one skill (default: install every bundled skill).",
     )
     install_parser.add_argument(
         "--force",
@@ -553,23 +599,58 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "skill":
             if args.skill_command == "install":
-                installed = install_bundled_skill(
+                names = (args.skill,) if args.skill else BUNDLED_SKILLS
+                installed = install_bundled_skills(
                     skills_dir=args.skills_dir,
                     force=args.force,
                     host=args.host,
+                    skills=names,
+                )
+                commander_path = next(
+                    (
+                        path
+                        for path in installed
+                        if path.name == COMMANDER_SKILL
+                    ),
+                    installed[0],
                 )
                 _print({
                     "installed": True,
-                    "skill": "mlx-swarm-commander",
+                    "skill": names[0] if len(names) == 1 else COMMANDER_SKILL,
+                    "skills": list(names),
                     "host": args.host,
                     "adapter": SKILL_ADAPTERS[args.host],
-                    "path": str(installed),
+                    "path": str(commander_path),
+                    "paths": [str(path) for path in installed],
                 })
                 return 0
 
+        if args.config is None and args.command == "app":
+            from .app_storage import discover_app_config, ensure_project_store
+
+            args.config = discover_app_config()
+            if args.config is None:
+                args.config = ensure_project_store(Path.cwd())
         if args.config is None:
             parser.error("--config is required for this command.")
         config = load_config(args.config)
+        if args.command == "app":
+            from .app_storage import (
+                config_for_app,
+                ensure_project_store,
+                project_root_for_config,
+                register_workspace,
+            )
+
+            nested = args.config.parent.name == ".mlx-swarm"
+            if not nested and args.config.name == "swarm.json":
+                args.config = ensure_project_store(args.config.parent)
+                config = load_config(args.config)
+            config = config_for_app(config)
+            register_workspace(config)
+            os.environ["MLX_SWARM_WORKSPACE_ROOT"] = str(
+                project_root_for_config(config)
+            )
 
         if args.command == "eval":
             evaluation_store = EvaluationStore(config)
@@ -1090,6 +1171,43 @@ def main(argv: Sequence[str] | None = None) -> int:
             _print(sessions)
             return 0
 
+        if args.command == "map":
+            from .app_storage import (
+                project_root_for_config,
+                workspace_root_for_config,
+            )
+            from .codebase_map import (
+                CodebaseMapError,
+                build_codebase_map,
+                persist_codebase_map,
+                render_mermaid,
+            )
+
+            try:
+                payload = build_codebase_map(workspace_root_for_config(config))
+                destination = (
+                    args.output.expanduser().resolve()
+                    if args.output is not None
+                    else persist_codebase_map(
+                        project_root_for_config(config),
+                        payload,
+                    )
+                )
+            except (OSError, CodebaseMapError) as exc:
+                print(f"Error: {exc}", file=sys.stderr)
+                return 1
+            if args.output is not None:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+            if args.format == "mermaid":
+                print(render_mermaid(payload), end="")
+            else:
+                _print({**payload, "path": str(destination)})
+            return 0
+
         if args.command == "ui":
             from .ui import serve_ui
 
@@ -1104,6 +1222,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 host=args.host,
                 port=args.port,
                 open_browser=not args.no_open,
+            )
+            return 0
+
+        if args.command == "app":
+            from .desktop_app import launch_electron
+            from .ui import serve_ui
+
+            plans_dir = (
+                args.plans_dir
+                if args.plans_dir is not None
+                else config.source.parent
+            )
+            serve_ui(
+                config,
+                plans_dir,
+                host=args.host,
+                port=args.port,
+                open_browser=False,
+                ready_callback=launch_electron,
             )
             return 0
 

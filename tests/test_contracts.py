@@ -113,6 +113,29 @@ def test_load_config_rejects_non_boolean_thinking(tmp_path: Path) -> None:
         load_config(p)
 
 
+def test_load_config_defaults_reasoning_effort_to_low(tmp_path: Path) -> None:
+    # The Qwen3.8 chat template defaults to "xhigh", which would spend a
+    # bounded worker's entire token ceiling on hidden reasoning.
+    config = load_config(_write_config(tmp_path))
+    assert config.reasoning_effort == "low"
+
+
+def test_load_config_accepts_known_reasoning_efforts(tmp_path: Path) -> None:
+    for effort in ("low", "medium", "xhigh"):
+        config = load_config(
+            _write_config(tmp_path, {"reasoningEffort": effort})
+        )
+        assert config.reasoning_effort == effort
+
+
+def test_load_config_rejects_unknown_reasoning_effort(tmp_path: Path) -> None:
+    # "high" is a plausible-looking value the template itself rejects inside
+    # Jinja; validation must fail at load time, not mid-generation.
+    p = _write_config(tmp_path, {"reasoningEffort": "high"})
+    with pytest.raises(ContractError, match="reasoningEffort must be one of"):
+        load_config(p)
+
+
 def test_load_config_reasoning_edit_worker_is_strict(tmp_path: Path) -> None:
     config = load_config(_write_config(tmp_path, {
         "worker": {

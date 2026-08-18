@@ -1,1 +1,1 @@
-"""Packaged MLX Swarm dashboard assets."""
+"""Packaged production assets for the MLX Swarm app."""

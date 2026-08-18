@@ -1379,6 +1379,16 @@ def test_bundled_skill_installs_and_refuses_overwrite(
     assert "name: mlx-swarm-commander" in (
         installed / "SKILL.md"
     ).read_text(encoding="utf-8")
+    mapped = install_bundled_skill(
+        skills_dir=skills_dir,
+        host="codex",
+        skill="mlx-swarm-skill-map",
+    )
+    assert mapped.name == "mlx-swarm-skill-map"
+    assert (mapped / "agents" / "openai.yaml").is_file()
+    skill_text = (mapped / "SKILL.md").read_text(encoding="utf-8")
+    assert "focusPaths" in skill_text
+    assert "map --format mermaid" in skill_text
     assert (installed / "agents" / "openai.yaml").is_file()
     with pytest.raises(SkillInstallError, match="already exists"):
         install_bundled_skill(skills_dir=skills_dir, host="codex")
@@ -1399,6 +1409,13 @@ def test_bundled_skill_installs_for_claude_without_codex_metadata(
     skill_text = (installed / "SKILL.md").read_text(encoding="utf-8")
     assert "Claude Code: `claude-code-skill`" in skill_text
     assert not (installed / "agents").exists()
+    mapped = install_bundled_skill(
+        skills_dir=tmp_path / "claude-skills",
+        host="claude",
+        skill="mlx-swarm-skill-map",
+        force=True,
+    )
+    assert not (mapped / "agents").exists()
 
 
 def test_bundled_skill_teaches_topology_sizing_and_reimport() -> None:

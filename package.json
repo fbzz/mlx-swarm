@@ -1,0 +1,52 @@
+{
+  "name": "mlx-swarm-desktop",
+  "version": "0.5.1",
+  "description": "Standalone Beautiful UI desktop shell for MLX Swarm",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "dev": "vite --config desktop/vite.config.ts",
+    "build": "vite build --config desktop/vite.config.ts",
+    "test": "vitest run --config desktop/vite.config.ts",
+    "desktop": "electron desktop/main.cjs",
+    "postinstall": "electron-rebuild -f -w node-pty"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fbzz/mlx-swarm.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/fbzz/mlx-swarm/issues"
+  },
+  "homepage": "https://github.com/fbzz/mlx-swarm#readme",
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "electron": "^43.4.0",
+    "node-pty": "^1.0.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.0.1",
+    "@fontsource-variable/geist": "^5.3.0",
+    "@fontsource-variable/geist-mono": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.3",
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "concurrently": "^10.0.5",
+    "jsdom": "^29.1.1",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "vitest": "^4.1.10",
+    "wait-on": "^9.1.0"
+  }
+}

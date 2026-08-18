@@ -137,6 +137,7 @@ def _role_generation_config(task: TaskDef, config: SwarmConfig) -> dict[str, Any
     result.setdefault("top_p", 0.9)
     result.setdefault("max_tokens", ROLE_DEFAULTS["general"]["max_tokens"])
     result.setdefault("enable_thinking", config.enable_thinking)
+    result.setdefault("reasoning_effort", config.reasoning_effort)
     result.setdefault("seed", config.seed)
     return result
 
@@ -149,6 +150,7 @@ def _render_prompt(tokenizer: Any, prompt: str, gen_cfg: dict[str, Any]) -> list
             tokenize=False,
             add_generation_prompt=True,
             enable_thinking=gen_cfg["enable_thinking"],
+            reasoning_effort=gen_cfg.get("reasoning_effort", "low"),
         )
         # Some distilled Qwen templates unconditionally end the generation
         # prefix with "<think>" and ignore enable_thinking=False. Close that

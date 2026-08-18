@@ -49,6 +49,11 @@ WORKER_DELEGATION_LEVELS = {
     "autonomous",
 }
 WORKER_CALIBRATION_STATUSES = {"unmeasured", "passed", "failed"}
+# Qwen3.8 chat templates accept exactly these reasoning-effort levels and
+# raise inside Jinja on any other value. The template's own default is
+# "xhigh", which would spend a bounded worker's whole token ceiling on
+# hidden reasoning, so the runtime default is deliberately "low".
+REASONING_EFFORTS = {"low", "medium", "xhigh"}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
@@ -152,6 +157,7 @@ class SwarmConfig:
     batch: BatchConfig = field(default_factory=BatchConfig)
     artifacts_dir: Path = field(default_factory=lambda: Path(".swarm/runs"))
     enable_thinking: bool = False
+    reasoning_effort: str = "low"
     seed: int = 20260727
     workspace: WorkspaceConfig | None = None
     worker: WorkerConfig = field(default_factory=WorkerConfig)
@@ -165,7 +171,7 @@ def load_config(path: Path) -> SwarmConfig:
     schema_version = _integer(raw.get("schemaVersion", 1), "config.schemaVersion", 1, 100)
     if schema_version not in SUPPORTED_CONFIG_SCHEMA_VERSIONS:
         raise ContractError(f"Unsupported config schema version: {schema_version}")
-    optional = {"enableThinking", "seed", "worker"}
+    optional = {"enableThinking", "reasoningEffort", "seed", "worker"}
     if schema_version == 2:
         optional.add("workspace")
     _exact_keys(
@@ -290,6 +296,10 @@ def load_config(path: Path) -> SwarmConfig:
         batch=batch,
         artifacts_dir=artifacts_dir,
         enable_thinking=_boolean(raw.get("enableThinking", False), "config.enableThinking"),
+        reasoning_effort=_reasoning_effort(
+            raw.get("reasoningEffort", "low"),
+            "config.reasoningEffort",
+        ),
         seed=_integer(raw.get("seed", 20260727), "config.seed", 0, 2**31 - 1),
         workspace=workspace,
         worker=worker,
@@ -1393,7 +1403,14 @@ def _parse_generation_override(raw: Any, name: str) -> dict[str, Any]:
         value,
         name,
         set(),
-        {"temperature", "top_p", "max_tokens", "seed", "enable_thinking"},
+        {
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "seed",
+            "enable_thinking",
+            "reasoning_effort",
+        },
     )
     result: dict[str, Any] = {}
     if "temperature" in value:
@@ -1426,6 +1443,11 @@ def _parse_generation_override(raw: Any, name: str) -> dict[str, Any]:
         result["enable_thinking"] = _boolean(
             value["enable_thinking"],
             f"{name}.enable_thinking",
+        )
+    if "reasoning_effort" in value:
+        result["reasoning_effort"] = _reasoning_effort(
+            value["reasoning_effort"],
+            f"{name}.reasoning_effort",
         )
     return result
 
@@ -1524,6 +1546,15 @@ def _number(
     if not minimum <= result <= maximum:
         raise ContractError(f"{name} must be between {minimum} and {maximum}.")
     return result
+
+
+def _reasoning_effort(value: Any, name: str) -> str:
+    effort = _text(value, name)
+    if effort not in REASONING_EFFORTS:
+        raise ContractError(
+            f"{name} must be one of: " + ", ".join(sorted(REASONING_EFFORTS))
+        )
+    return effort
 
 
 def _boolean(value: Any, name: str) -> bool:

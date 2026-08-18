@@ -14,8 +14,15 @@ launch. Non-local bind hosts are rejected.
 ## API
 
 - `GET /api/status` reports model/config readiness, checkpoint context and
-  quantization metadata, batch/worker limits, approved roots, and available
-  execution-policy choices.
+  quantization metadata, batch/worker limits, approved roots, available
+  execution-policy choices, and compact install status for bundled skills.
+- `GET /api/library` returns the opened project's requests, runs, and UI state.
+- `GET /api/ui-state` and `POST /api/ui-state` persist terminal visibility, the
+  New task split ratio, and `focusPaths` from the skill map.
+- `POST /api/workspace/open` creates or opens `<folder>/.mlx-swarm` and rebinds
+  the live cockpit.
+- `GET /api/workspace/map` scans the opened workspace into a bounded
+  parent/child graph and writes `.mlx-swarm/codebase-map.json`.
 - `GET /api/plans` discovers and validates frontier-authored plan files.
 - `GET /api/commander/requests` lists frontier planning requests.
 - `GET /api/commander/requests/{requestId}` returns its prompt, validation,
@@ -53,6 +60,18 @@ True resume reuses the session, preserves completed tasks, and continues pending
 or interrupted work with the original repair cap. A partial or failed session is
 never reset in place: Retry creates a new session whose `retryOf` field points to
 the original.
+
+## New task
+
+The packaged interface is a React app from
+[[src/mlx_swarm/ui_static/index.html]]. The desktop shell (`mlx-swarm app`)
+uses the same API.
+
+New task shows the SVG codebase graph first, then commander and skill-map
+install cards. Clicking a node stores `focusPaths` in `.mlx-swarm/ui-state.json`.
+It does not rebind the workspace or create a commander request.
+`mlx-swarm --config CONFIG map` writes the same graph; `--format mermaid`
+prints a fenced flowchart for `/mlx-swarm-skill-map`.
 
 ## Dashboard
 

@@ -30,8 +30,9 @@ src/mlx_swarm/
   workspace.py       — Git worktrees, typed artifacts, decisions, and verification profiles
   ui.py              — localhost-only HTTP API, run launcher, and history serialization
   ui_static/         — packaged HTML, CSS, and JavaScript operator cockpit
-  skill_install.py   — host-aware installation of the bundled Agent Skill
-  cli.py             — runtime, commander, cockpit, and skill commands
+  skill_install.py   — host-aware installation of bundled Agent Skills
+  codebase_map.py    — bounded workspace graph for the New task skill map
+  cli.py             — runtime, commander, cockpit, map, and skill commands
 ```
 
 ## Data Flow

@@ -20,6 +20,20 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import unquote, urlparse
 
+from .app_storage import (
+    load_catalog,
+    load_ui_state,
+    normalize_focus_paths,
+    open_project_config,
+    project_root_for_config,
+    register_workspace,
+    save_ui_state,
+)
+from .codebase_map import (
+    CodebaseMapError,
+    build_codebase_map,
+    persist_codebase_map,
+)
 from .backend import _resolve_model_path
 from .commander import (
     CommanderError,
@@ -38,8 +52,10 @@ from .contracts import (
     worker_capabilities_payload,
 )
 from .evaluation import EvaluationError, EvaluationStore
-from .session import Session, _run_id, _utc_now
 from .model_identity import model_metadata
+from .review import load_attempts, parse_unified_diff
+from .session import Session, _run_id, _utc_now
+from .skill_install import skill_status_payload
 from .workspace import (
     WorkspaceError,
     cleanup_session_worktree,
@@ -89,6 +105,67 @@ class CockpitApp:
             raise RuntimeError(f"Plans directory not found: {self.plans_dir}")
         self.artifacts_dir.mkdir(parents=True, exist_ok=True)
 
+    def rebind(self, config: SwarmConfig, plans_dir: Path | None = None) -> None:
+        """Switch the cockpit to another project without restarting the server."""
+        with self._lock:
+            self.config = config
+            self.plans_dir = (plans_dir or config.source.parent).resolve()
+            self.artifacts_dir = config.artifacts_dir.resolve()
+            self.commander = CommanderStore(config)
+            self.evaluations = EvaluationStore(config)
+            if not self.plans_dir.is_dir():
+                raise RuntimeError(f"Plans directory not found: {self.plans_dir}")
+            self.artifacts_dir.mkdir(parents=True, exist_ok=True)
+
+    def open_workspace(self, folder: str) -> dict[str, Any]:
+        """Create or open `<folder>/.mlx-swarm` and rebind the live cockpit."""
+        path = Path(folder).expanduser()
+        try:
+            path = path.resolve()
+        except OSError as exc:
+            raise APIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        if not path.is_dir():
+            raise APIError(HTTPStatus.BAD_REQUEST, "Project folder not found.")
+        try:
+            config = open_project_config(path)
+        except (OSError, ValueError, ContractError) as exc:
+            raise APIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        try:
+            register_workspace(config)
+            self.rebind(config)
+        except (OSError, RuntimeError, ContractError) as exc:
+            raise APIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        return self.library_payload()
+
+    def ui_state_payload(self) -> dict[str, Any]:
+        return load_ui_state(project_root_for_config(self.config))
+
+    def update_ui_state(
+        self,
+        terminal_visible: bool | None = None,
+        terminal_split: float | None = None,
+        focus_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            return save_ui_state(
+                project_root_for_config(self.config),
+                terminal_visible=terminal_visible,
+                terminal_split=terminal_split,
+                focus_paths=focus_paths,
+            )
+        except ValueError as exc:
+            raise APIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+
+    def workspace_map_payload(self) -> dict[str, Any]:
+        """Scan the opened workspace and persist the New task skill map."""
+        project_root = project_root_for_config(self.config)
+        try:
+            payload = build_codebase_map(self.commander.workspace_root)
+            persist_codebase_map(project_root, payload)
+        except (OSError, CodebaseMapError) as exc:
+            raise APIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+        return payload
+
     def status_payload(self) -> dict[str, Any]:
         try:
             model_path = _resolve_model_path(self.config)
@@ -113,6 +190,7 @@ class CockpitApp:
             not workspace.get("enabled")
             or workspace.get("ready") is True
         )
+        skill = skill_status_payload()
         return {
             "ready": ready,
             "model": {
@@ -149,10 +227,29 @@ class CockpitApp:
             "workspace": workspace,
             "brand": "MLX Swarm",
             "reviewMode": "frontier-final-only",
+            "skill": skill,
+            "skills": skill["skills"],
         }
 
     def commander_requests_payload(self) -> dict[str, Any]:
         return {"requests": self.commander.list_requests()}
+
+    def library_payload(self) -> dict[str, Any]:
+        """Return the global workspace catalog and the active workspace data."""
+        catalog = load_catalog()
+        return {
+            "schemaVersion": 1,
+            "activeWorkspace": {
+                "workspaceRoot": str(self.commander.workspace_root),
+                "configPath": str(self.config.source),
+                "artifactsDir": str(self.artifacts_dir),
+                "projectRoot": str(project_root_for_config(self.config)),
+            },
+            "workspaces": catalog.get("workspaces", []),
+            "requests": self.commander.list_requests(),
+            "runs": self.runs_payload()["runs"],
+            "uiState": load_ui_state(project_root_for_config(self.config)),
+        }
 
     def evaluations_payload(self) -> dict[str, Any]:
         return {"evaluations": self.evaluations.list()}
@@ -175,6 +272,20 @@ class CockpitApp:
                 else HTTPStatus.CONFLICT
             )
             raise APIError(status, str(exc)) from exc
+
+    def commander_prompt_payload(self, request_id: str) -> dict[str, Any]:
+        _validate_identifier(request_id, "requestId")
+        path = (self.commander.requests_root / request_id / "plan-prompt.txt").resolve()
+        if not _is_within(path, self.commander.requests_root) or not path.is_file():
+            raise APIError(HTTPStatus.NOT_FOUND, "Commander prompt not found.")
+        prompt = path.read_text(encoding="utf-8")
+        import hashlib
+
+        return {
+            "requestId": request_id,
+            "prompt": prompt,
+            "sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        }
 
     def create_commander_request(
         self,
@@ -398,6 +509,54 @@ class CockpitApp:
             },
             "runnerLogAvailable": (session_dir / "runner.log").is_file(),
         }
+
+    def run_attempts_payload(
+        self,
+        plan_id: str,
+        session_id: str,
+        task_id: str,
+    ) -> dict[str, Any]:
+        _validate_identifier(task_id, "taskId")
+        session_dir, state = self._load_run_state(plan_id, session_id)
+        task_state = state.get("tasks", {}).get(task_id)
+        if not isinstance(task_state, dict):
+            raise APIError(HTTPStatus.NOT_FOUND, "Task not found.")
+        return load_attempts(session_dir, task_id, task_state)
+
+    def run_diff_payload(
+        self,
+        plan_id: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        session_dir, state = self._load_run_state(plan_id, session_id)
+        diff = ""
+        frontier_path = session_dir / "frontier-result.json"
+        if frontier_path.is_file():
+            try:
+                frontier = _read_json_file(frontier_path)
+                workspace = frontier.get("workspace")
+                if isinstance(workspace, dict) and isinstance(
+                    workspace.get("finalDiff"), str
+                ):
+                    diff = workspace["finalDiff"]
+            except (OSError, ValueError):
+                pass
+        if not diff:
+            payloads: list[str] = []
+            for task_id, task_state in state.get("tasks", {}).items():
+                manifest = task_state.get("artifact")
+                if not isinstance(manifest, dict):
+                    continue
+                if manifest.get("artifactType") not in {"patch", "test-suite"}:
+                    continue
+                try:
+                    _, payload = load_artifact(session_dir, task_id)
+                except WorkspaceError:
+                    continue
+                if payload:
+                    payloads.append(payload)
+            diff = "\n".join(payloads)
+        return parse_unified_diff(diff)
 
     def launch_run(
         self,
@@ -1337,6 +1496,7 @@ def _serialize_artifacts(
                 "verify": status == "verification_failed",
             },
         }
+
     return artifacts
 
 
@@ -1545,6 +1705,15 @@ class CockpitHandler(BaseHTTPRequestHandler):
             if path == "/api/status":
                 self._send_json(self.app.status_payload())
                 return
+            if path == "/api/library":
+                self._send_json(self.app.library_payload())
+                return
+            if path == "/api/ui-state":
+                self._send_json(self.app.ui_state_payload())
+                return
+            if path == "/api/workspace/map":
+                self._send_json(self.app.workspace_map_payload())
+                return
             if path == "/api/plans":
                 self._send_json(self.app.plans_payload())
                 return
@@ -1571,6 +1740,27 @@ class CockpitHandler(BaseHTTPRequestHandler):
                         self.app.commander_request_detail(request_id)
                     )
                     return
+                if action == "prompt":
+                    self._send_json(
+                        self.app.commander_prompt_payload(request_id)
+                    )
+                    return
+            review_parts = _api_run_review_parts(path)
+            if review_parts is not None:
+                plan_id, session_id, action, task_id = review_parts
+                if action == "diff":
+                    self._send_json(
+                        self.app.run_diff_payload(plan_id, session_id)
+                    )
+                else:
+                    self._send_json(
+                        self.app.run_attempts_payload(
+                            plan_id,
+                            session_id,
+                            task_id or "",
+                        )
+                    )
+                return
             parts = _api_run_parts(path)
             if parts is not None:
                 plan_id, session_id, action = parts
@@ -1593,6 +1783,56 @@ class CockpitHandler(BaseHTTPRequestHandler):
             self._check_origin()
             path = urlparse(self.path).path
             body = self._read_json_body()
+            if path == "/api/workspace/open":
+                _validate_body_keys(body, {"path"}, set())
+                self._send_json(
+                    self.app.open_workspace(_required_text(body, "path"))
+                )
+                return
+            if path == "/api/ui-state":
+                _validate_body_keys(
+                    body,
+                    set(),
+                    {"terminalVisible", "terminalSplit", "focusPaths"},
+                )
+                if (
+                    "terminalVisible" not in body
+                    and "terminalSplit" not in body
+                    and "focusPaths" not in body
+                ):
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "terminalVisible, terminalSplit, or focusPaths is required.",
+                    )
+                visible = body.get("terminalVisible")
+                split = body.get("terminalSplit")
+                focus_paths = None
+                if "focusPaths" in body:
+                    try:
+                        focus_paths = normalize_focus_paths(body.get("focusPaths"))
+                    except ValueError as exc:
+                        raise APIError(HTTPStatus.BAD_REQUEST, str(exc)) from exc
+                if visible is not None and not isinstance(visible, bool):
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "terminalVisible must be a boolean.",
+                    )
+                if split is not None and (
+                    isinstance(split, bool)
+                    or not isinstance(split, (int, float))
+                ):
+                    raise APIError(
+                        HTTPStatus.BAD_REQUEST,
+                        "terminalSplit must be a number.",
+                    )
+                self._send_json(
+                    self.app.update_ui_state(
+                        None if visible is None else bool(visible),
+                        None if split is None else float(split),
+                        focus_paths,
+                    )
+                )
+                return
             if path == "/api/commander/requests":
                 _validate_body_keys(
                     body,
@@ -1796,16 +2036,25 @@ class CockpitHandler(BaseHTTPRequestHandler):
             raise APIError(HTTPStatus.FORBIDDEN, "Mutation is not localhost-bound.")
 
     def _serve_static(self, path: str) -> None:
-        asset_name = {
-            "/": "index.html",
-            "/index.html": "index.html",
-            "/app.js": "app.js",
-            "/styles.css": "styles.css",
-        }.get(path)
-        if asset_name is None:
+        if path in {"/", "/index.html"}:
+            asset_name = "index.html"
+        elif path.startswith("/assets/"):
+            asset_name = path.lstrip("/")
+        else:
             raise APIError(HTTPStatus.NOT_FOUND, "Not found.")
-        asset = files("mlx_swarm.ui_static").joinpath(asset_name)
-        content = asset.read_bytes()
+        if (
+            not asset_name
+            or ".." in Path(asset_name).parts
+            or re.fullmatch(r"[A-Za-z0-9._/-]+", asset_name) is None
+        ):
+            raise APIError(HTTPStatus.NOT_FOUND, "Not found.")
+        asset = files("mlx_swarm.ui_static")
+        for part in asset_name.split("/"):
+            asset = asset.joinpath(part)
+        try:
+            content = asset.read_bytes()
+        except (FileNotFoundError, IsADirectoryError):
+            raise APIError(HTTPStatus.NOT_FOUND, "Not found.") from None
         content_type = mimetypes.guess_type(asset_name)[0] or "application/octet-stream"
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", f"{content_type}; charset=utf-8")
@@ -1865,9 +2114,22 @@ def _api_commander_request_parts(
     ):
         return None
     action = parts[4] if len(parts) == 5 else None
-    if action not in {None, "approve-run"}:
+    if action not in {None, "approve-run", "prompt"}:
         return None
     return parts[3], action
+
+
+def _api_run_review_parts(
+    path: str,
+) -> tuple[str, str, str, str | None] | None:
+    parts = [unquote(part) for part in path.strip("/").split("/")]
+    if parts[:2] != ["api", "runs"]:
+        return None
+    if len(parts) == 5 and parts[4] == "diff":
+        return parts[2], parts[3], "diff", None
+    if len(parts) == 6 and parts[4] == "attempts":
+        return parts[2], parts[3], "attempts", parts[5]
+    return None
 
 
 def _api_artifact_parts(
@@ -1929,6 +2191,7 @@ def _content_security_policy() -> str:
         "default-src 'self'; "
         "script-src 'self'; "
         "style-src 'self'; "
+        "font-src 'self'; "
         "img-src 'self' data:; "
         "connect-src 'self'; "
         "object-src 'none'; "
@@ -1952,6 +2215,7 @@ def serve_ui(
     host: str = "127.0.0.1",
     port: int = 8765,
     open_browser: bool = True,
+    ready_callback: Callable[[str], Any] | None = None,
     server_factory: Callable[..., ThreadingHTTPServer] = ThreadingHTTPServer,
 ) -> None:
     if host not in LOCAL_HOSTS:
@@ -1969,11 +2233,20 @@ def serve_ui(
         "plansDir": str(app.plans_dir),
         "artifactsDir": str(app.artifacts_dir),
     }, indent=2))
+    desktop_process = None
     if open_browser:
         webbrowser.open(url)
+    if ready_callback is not None:
+        desktop_process = ready_callback(url)
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
+        if (
+            desktop_process is not None
+            and callable(getattr(desktop_process, "poll", None))
+            and desktop_process.poll() is None
+        ):
+            desktop_process.terminate()

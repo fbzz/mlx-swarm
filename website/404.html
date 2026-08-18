@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Page not found, MLX Swarm</title>
+    <meta name="description" content="That path is not part of the MLX Swarm site. Return to the product page to install on your Mac." />
+    <meta name="robots" content="noindex" />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/geist@1.3.1/dist/fonts/geist-sans/style.min.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: { sans: ["Geist", "sans-serif"] },
+            colors: {
+              void: "#000000",
+              ink: { 2: "#181818", 4: "#272727", 5: "#313131" },
+              mist: "#9B9B9B",
+            },
+            maxWidth: { hero: "680px" },
+            transitionTimingFunction: { fluid: "cubic-bezier(0.32,0.72,0,1)" },
+          },
+        },
+      };
+    </script>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="bg-void font-sans text-white antialiased">
+    <header>
+      <nav class="island-nav flex items-center gap-3 px-3 py-2" aria-label="Primary">
+        <a href="./index.html" class="flex items-center gap-2 rounded-full px-2 py-1 text-sm font-semibold">
+          <img src="./favicon.svg" width="20" height="20" alt="" />
+          MLX Swarm
+        </a>
+        <a href="./index.html" class="nav-link rounded-full px-3 py-1 text-sm font-semibold text-mist" aria-current="page">Product</a>
+      </nav>
+    </header>
+    <main id="content" class="mx-auto max-w-6xl px-6 py-24">
+      <p class="mb-6 text-sm font-semibold text-mist">404</p>
+      <h1 class="hero-title headline mb-6 text-5xl font-semibold">
+        This path is not<br />
+        in the product
+      </h1>
+      <p class="hero-copy mb-8 text-lg text-mist">
+        The page you asked for is missing. The landing page, privacy policy, and terms are still here.
+      </p>
+      <a class="btn btn-primary" href="./index.html">Back to MLX Swarm</a>
+    </main>
+  </body>
+</html>
