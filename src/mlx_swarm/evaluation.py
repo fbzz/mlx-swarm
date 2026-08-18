@@ -72,7 +72,12 @@ RESULT_SCHEMA_VERSION = 1
 # when the executed-line map is empty (asyncio/timeout cases), and stops
 # telling the planner that a traced type's field annotation is out of
 # scope as a "class-wide policy".
-FAIR_EVALUATION_PROTOCOL_VERSION = 17
+# Version 18 matches SOURCE paths by exact path prefix rather than
+# substring, accepts path:L1-60 as path:L1-L60, reviews produced patches
+# even when local verification failed, retries invalid infrastructure
+# results, splits planner vs worker decision gates, highlights assertion
+# keys against traced type fields, and pins 1-hop traceback callees.
+FAIR_EVALUATION_PROTOCOL_VERSION = 18
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -94,6 +99,16 @@ _DIFF_HEADER = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
 _TRACEBACK_FILE_LINE = re.compile(
     r'File "(?P<quoted>[^"]+)", line (?P<quoted_line>\d+)'
     r"|[ \t]at (?P<at>\S+):(?P<at_line>\d+)"
+)
+_SOURCE_RANGE_LABEL = re.compile(
+    r"^(?P<path>.+):L(?P<start>[1-9][0-9]*)-L?(?P<end>[1-9][0-9]*)$"
+)
+_APPROVED_EDIT_OLD_LABEL = re.compile(
+    r"^approved-edit-[1-9][0-9]*-old:(?P<path>.+)$"
+)
+_PLANNER_REJECT_PREFIXES = (
+    "Frontier plan was rejected:",
+    "Frontier delegation blueprint was rejected:",
 )
 _SHELL_META = ("&&", "||", ">", "<", "|", ";", "$(", "`")
 _SAFE_BENCHMARK_COMMANDS = {
@@ -1940,6 +1955,55 @@ def aggregate_results(
     return summary
 
 
+def planner_plan_rejected(result: dict[str, Any]) -> bool:
+    """True when Swarm never launched a worker because the plan was rejected."""
+    if result.get("arm") != "mlx-swarm":
+        return False
+    evidence = str((result.get("oracle") or {}).get("evidence") or "")
+    return evidence.startswith(_PLANNER_REJECT_PREFIXES)
+
+
+def swarm_oracle_failed_after_patch(result: dict[str, Any]) -> bool:
+    """True when a worker produced a patch that the executable oracle rejected."""
+    if result.get("arm") != "mlx-swarm" or int(result.get("score") or 0) != 0:
+        return False
+    if planner_plan_rejected(result):
+        return False
+    patch = result.get("patch") if isinstance(result.get("patch"), dict) else {}
+    return int(patch.get("changedFiles") or 0) > 0
+
+
+def arm_result_is_durable(result: dict[str, Any]) -> bool:
+    """Infrastructure-invalid rows are not measurements and must be retried."""
+    return result.get("status") != "invalid"
+
+
+def durable_recorded_arms(
+    results: Sequence[dict[str, Any]],
+) -> set[tuple[str, str]]:
+    return {
+        (str(result["caseId"]), str(result["arm"]))
+        for result in results
+        if arm_result_is_durable(result)
+    }
+
+
+def reset_retryable_arm_workspace(
+    evaluation_dir: Path,
+    case_id: str,
+    arm: str,
+) -> None:
+    """Drop leftover commander/evidence files so an invalid arm can rerun."""
+    arm_root = evaluation_dir / "cases" / case_id / "arms" / arm
+    for name in ("artifacts", "evidence"):
+        target = arm_root / name
+        if target.exists():
+            shutil.rmtree(target)
+    result_path = evaluation_dir / "results" / case_id / f"{arm}.json"
+    if result_path.exists():
+        result_path.unlink()
+
+
 def mark_preliminary_summary(
     summary: dict[str, Any],
     *,
@@ -1958,23 +2022,91 @@ def mark_preliminary_summary(
     frontier_score = summary["frontierAlone"]["score"]
     swarm_score = summary["mlxSwarm"]["score"]
     measured_cases = int(summary["measuredCases"])
-    summary["decisionGate"] = {
-        "status": (
-            "continue_to_full_study"
-            if swarm_score >= frontier_score
-            else "stop_and_improve_workers"
-        ),
-        "text": (
+    planner_rejects = 0
+    worker_oracle_fails = 0
+    planner_gaps = 0
+    worker_gaps = 0
+    for row in summary.get("rows") or []:
+        if not isinstance(row, dict):
+            continue
+        swarm_row = row.get("swarm")
+        frontier_row = row.get("frontier")
+        if not isinstance(swarm_row, dict) or not isinstance(frontier_row, dict):
+            continue
+        planner_rejected = planner_plan_rejected(swarm_row)
+        worker_failed = swarm_oracle_failed_after_patch(swarm_row)
+        if planner_rejected:
+            planner_rejects += 1
+        elif worker_failed:
+            worker_oracle_fails += 1
+        if int(frontier_row.get("score") or 0) > int(swarm_row.get("score") or 0):
+            if planner_rejected:
+                planner_gaps += 1
+            else:
+                worker_gaps += 1
+    if swarm_score >= frontier_score:
+        gate_status = "continue_to_full_study"
+        gate_text = (
+            "Acceptance is not behind in this preliminary set; "
+            "a full 30-pair study may be considered."
+        )
+    elif planner_gaps and worker_gaps:
+        gate_status = "stop_and_improve_planner_and_workers"
+        gate_text = (
+            "Acceptance is materially behind "
+            f"({swarm_score}/{measured_cases} vs "
+            f"{frontier_score}/{measured_cases}): {planner_gaps} "
+            "planner-rejected gap(s) and "
+            f"{worker_gaps} worker-oracle gap(s). Improve both before "
+            "the 30-pair study."
+        )
+    elif planner_gaps:
+        gate_status = "stop_and_improve_planner"
+        gate_text = (
+            "Acceptance is materially behind "
+            f"({swarm_score}/{measured_cases} vs "
+            f"{frontier_score}/{measured_cases}) because "
+            f"{planner_gaps} Swarm loss(es) never reached a worker "
+            "(planner/SOURCE validation). Improve the planner contract "
+            "before running the 30-pair study."
+        )
+    else:
+        gate_status = "stop_and_improve_workers"
+        gate_text = (
             "Acceptance is materially behind "
             f"({swarm_score}/{measured_cases} vs "
             f"{frontier_score}/{measured_cases}). Improve local worker patch "
             "quality before running the 30-pair study."
-            if swarm_score < frontier_score
-            else "Acceptance is not behind in this preliminary set; "
-            "a full 30-pair study may be considered."
-        ),
+        )
+    summary["decisionGate"] = {
+        "status": gate_status,
+        "text": gate_text,
+        "plannerRejected": planner_rejects,
+        "workerOracleFailed": worker_oracle_fails,
+        "acceptanceGaps": {
+            "planner": planner_gaps,
+            "worker": worker_gaps,
+        },
     }
     return summary
+
+
+def selected_evaluation_cases(
+    phase_cases: Sequence[dict[str, Any]],
+    case_ids: Sequence[str] | None,
+) -> list[dict[str, Any]]:
+    """Restrict a phase to explicit case IDs without changing suite order."""
+    if not case_ids:
+        return list(phase_cases)
+    available = {str(case["caseId"]): case for case in phase_cases}
+    requested = list(dict.fromkeys(str(case_id) for case_id in case_ids))
+    missing = [case_id for case_id in requested if case_id not in available]
+    if missing:
+        raise EvaluationError(
+            "Requested evaluation cases are not in this phase: "
+            + ", ".join(missing)
+        )
+    return [available[case_id] for case_id in requested]
 
 
 def apply_protocol_audit(
@@ -2996,6 +3128,8 @@ class EvaluationRunner:
         self,
         evaluation_id: str,
         phase: str,
+        *,
+        case_ids: Sequence[str] | None = None,
     ) -> dict[str, Any]:
         if phase not in {"pilot", "measured"}:
             raise EvaluationError("Evaluation phase must be pilot or measured.")
@@ -3066,11 +3200,11 @@ class EvaluationRunner:
                 )
         evaluation_dir = self.store._dir(evaluation_id)
         suite = validate_suite(detail["suite"], self.profile)
-        existing = {
-            (result["caseId"], result["arm"])
-            for result in detail["results"]
-        }
-        cases = [case for case in suite["cases"] if case["phase"] == phase]
+        existing = durable_recorded_arms(detail["results"])
+        phase_cases = [
+            case for case in suite["cases"] if case["phase"] == phase
+        ]
+        cases = selected_evaluation_cases(phase_cases, case_ids)
         for case in cases:
             missing_arms = [
                 arm
@@ -3079,6 +3213,12 @@ class EvaluationRunner:
             ]
             if not missing_arms:
                 continue
+            for arm in missing_arms:
+                reset_retryable_arm_workspace(
+                    evaluation_dir,
+                    case["caseId"],
+                    arm,
+                )
             with exclusive_case_lock(evaluation_dir, case["caseId"]):
                 self.store._check_storage(self.profile)
                 try:
@@ -3113,14 +3253,24 @@ class EvaluationRunner:
                             f"Arm execution failed: {exc}",
                         )
                     self.store.record_result(evaluation_id, result)
+        recorded = durable_recorded_arms(self.store.load_results(evaluation_id))
+        expected = {
+            (case["caseId"], arm)
+            for case in phase_cases
+            for arm in ("frontier-alone", "mlx-swarm")
+        }
+        if expected - recorded:
+            if case_ids:
+                return self.store.detail(evaluation_id)
+            return self.store.finalize_phase(evaluation_id, phase)
         if phase == "pilot":
             pilot_results = [
                 result
                 for result in self.store.load_results(evaluation_id)
                 if result["phase"] == "pilot"
             ]
-            expected = len(cases) * 2
-            if len(pilot_results) == expected and any(
+            expected_count = len(phase_cases) * 2
+            if len(pilot_results) == expected_count and any(
                 result["status"] == "invalid"
                 or result["frontierUsage"]["usageStatus"] != "reported"
                 for result in pilot_results
@@ -3137,7 +3287,7 @@ class EvaluationRunner:
                 )
             validate_pilot_evidence(
                 evaluation_dir,
-                cases,
+                phase_cases,
                 pilot_results,
                 self.profile,
                 self.store,
@@ -4410,7 +4560,12 @@ class EvaluationRunner:
             for task in session.state.get("tasks", {}).values()
         )
         workspace = load_workspace_snapshot(session_dir)
-        diff, _ = final_workspace_diff(workspace)
+        diff = ""
+        if workspace is not None:
+            try:
+                diff, _ = final_workspace_diff(workspace)
+            except WorkspaceError:
+                diff = ""
         candidate_diff = diff or retained_session_candidate_diff(session)
         patch = persist_candidate_patch(evidence_root, candidate_diff)
         structural_error = validate_candidate_diff(
@@ -4452,141 +4607,154 @@ class EvaluationRunner:
         review_verdict = None
         review_seconds = 0.0
         review_timed_out = False
+        reviewable_patch = bool(candidate_diff)
         if (
-            session.state.get("status") == "completed"
+            (
+                session.state.get("status") == "completed"
+                or reviewable_patch
+            )
             and time.perf_counter() < deadline
         ):
-            review_claim = store.claim_review(
-                session_dir,
-                adapter=self.profile.frontier.adapter,
-            )
-            review_prompt_text = Path(
-                review_claim["promptPath"]
-            ).read_text(encoding="utf-8")
-            if is_hermes:
-                review_usage_file = evidence_root / "review-usage.json"
-                review_response = evidence_root / "review-response.json"
-                review_command = frontier_command(
-                    self.profile,
-                    cwd=repository,
-                    sandbox="",
-                    output_last_message=review_response,
-                    usage_file=review_usage_file,
-                    prompt_file=Path(review_claim["promptPath"]),
-                    request_timeout_seconds=min(
-                        self.profile.frontier.review_timeout_seconds,
-                        max(1, math.floor(deadline - time.perf_counter())),
-                    ),
+            if reviewable_patch and session.state.get("status") != "completed":
+                session.write_frontier_result(
+                    include_workspace_diff=True,
+                    workspace_diff=candidate_diff,
                 )
-                (evidence_root / "review-prompt.txt").write_text(
-                    review_prompt_text,
-                    encoding="utf-8",
+            try:
+                review_claim = store.claim_review(
+                    session_dir,
+                    adapter=self.profile.frontier.adapter,
                 )
-                review_result = run_cached_completion(
-                    self.profile,
-                    review_command,
-                    cache_root=self.store.root,
-                    cwd=repository,
-                    timeout=min(
-                        self.profile.frontier.review_timeout_seconds,
-                        max(1, math.floor(deadline - time.perf_counter())),
-                    ),
-                    prompt_text=review_prompt_text,
-                    usage_file=review_usage_file,
-                    evidence_root=evidence_root,
-                    label="review",
-                )
-                review_seconds = review_result.elapsed_seconds
-                review_timed_out = review_result.timed_out
-                (evidence_root / "review-stdout.log").write_text(
-                    review_result.stdout,
-                    encoding="utf-8",
-                )
-                (evidence_root / "review-stderr.log").write_text(
-                    review_result.stderr,
-                    encoding="utf-8",
-                )
-                raw_review_usage = ""
-                if review_usage_file.is_file():
-                    raw_review_usage = review_usage_file.read_text(
-                        encoding="utf-8"
-                    )
-                (evidence_root / "review-usage-raw.json").write_text(
-                    raw_review_usage,
-                    encoding="utf-8",
-                )
-                review_usage = parse_hermes_usage_json(
-                    raw_review_usage,
-                    expected_provider=self.profile.frontier.provider,
-                    expected_model=self.profile.frontier.model,
-                )
-                if (
-                    not review_result.timed_out
-                    and review_result.returncode == 0
-                    and review_usage["usageStatus"] == "reported"
-                    and review_result.stdout.strip()
-                ):
-                    review_response.write_text(
-                        strip_one_json_fence(review_result.stdout),
-                        encoding="utf-8",
-                    )
-                    imported_review = store.import_review(
-                        session_dir,
-                        review_response,
-                        claim_id=review_claim["claimId"],
-                        adapter=self.profile.frontier.adapter,
-                        provider=self.profile.frontier.provider,
-                        model=self.profile.frontier.model,
-                        prompt_tokens=review_usage.get("promptTokens"),
-                        completion_tokens=review_usage.get(
-                            "completionTokens"
-                        ),
-                        total_tokens=review_usage.get("totalTokens"),
-                    )
-                    review_verdict = imported_review["review"]["verdict"]
-            else:
-                review_response = evidence_root / "review-response.json"
-                review_result = run_command(
-                    codex_command(
+            except CommanderError:
+                review_claim = None
+            if review_claim is not None:
+                review_prompt_text = Path(
+                    review_claim["promptPath"]
+                ).read_text(encoding="utf-8")
+                if is_hermes:
+                    review_usage_file = evidence_root / "review-usage.json"
+                    review_response = evidence_root / "review-response.json"
+                    review_command = frontier_command(
                         self.profile,
                         cwd=repository,
-                        sandbox="read-only",
+                        sandbox="",
                         output_last_message=review_response,
-                    ),
-                    cwd=repository,
-                    timeout=min(
-                        self.profile.frontier.review_timeout_seconds,
-                        max(1, math.floor(deadline - time.perf_counter())),
-                    ),
-                    env=frontier_environment(),
-                    input_text=review_prompt_text,
-                )
-                review_seconds = review_result.elapsed_seconds
-                review_timed_out = review_result.timed_out
-                (evidence_root / "review-events.jsonl").write_text(
-                    review_result.stdout,
-                    encoding="utf-8",
-                )
-                review_usage = parse_codex_usage_jsonl(review_result.stdout)
-                if (
-                    not review_result.timed_out
-                    and review_result.returncode == 0
-                    and review_response.is_file()
-                ):
-                    imported_review = store.import_review(
-                        session_dir,
-                        review_response,
-                        claim_id=review_claim["claimId"],
-                        adapter="codex-cli-evaluation",
-                        provider="openai-codex",
-                        model=self.profile.frontier.model,
-                        prompt_tokens=review_usage.get("promptTokens"),
-                        completion_tokens=review_usage.get(
-                            "completionTokens"
+                        usage_file=review_usage_file,
+                        prompt_file=Path(review_claim["promptPath"]),
+                        request_timeout_seconds=min(
+                            self.profile.frontier.review_timeout_seconds,
+                            max(1, math.floor(deadline - time.perf_counter())),
                         ),
-                        total_tokens=review_usage.get("totalTokens"),
                     )
-                    review_verdict = imported_review["review"]["verdict"]
+                    (evidence_root / "review-prompt.txt").write_text(
+                        review_prompt_text,
+                        encoding="utf-8",
+                    )
+                    review_result = run_cached_completion(
+                        self.profile,
+                        review_command,
+                        cache_root=self.store.root,
+                        cwd=repository,
+                        timeout=min(
+                            self.profile.frontier.review_timeout_seconds,
+                            max(1, math.floor(deadline - time.perf_counter())),
+                        ),
+                        prompt_text=review_prompt_text,
+                        usage_file=review_usage_file,
+                        evidence_root=evidence_root,
+                        label="review",
+                    )
+                    review_seconds = review_result.elapsed_seconds
+                    review_timed_out = review_result.timed_out
+                    (evidence_root / "review-stdout.log").write_text(
+                        review_result.stdout,
+                        encoding="utf-8",
+                    )
+                    (evidence_root / "review-stderr.log").write_text(
+                        review_result.stderr,
+                        encoding="utf-8",
+                    )
+                    raw_review_usage = ""
+                    if review_usage_file.is_file():
+                        raw_review_usage = review_usage_file.read_text(
+                            encoding="utf-8"
+                        )
+                    (evidence_root / "review-usage-raw.json").write_text(
+                        raw_review_usage,
+                        encoding="utf-8",
+                    )
+                    review_usage = parse_hermes_usage_json(
+                        raw_review_usage,
+                        expected_provider=self.profile.frontier.provider,
+                        expected_model=self.profile.frontier.model,
+                    )
+                    if (
+                        not review_result.timed_out
+                        and review_result.returncode == 0
+                        and review_usage["usageStatus"] == "reported"
+                        and review_result.stdout.strip()
+                    ):
+                        review_response.write_text(
+                            strip_one_json_fence(review_result.stdout),
+                            encoding="utf-8",
+                        )
+                        imported_review = store.import_review(
+                            session_dir,
+                            review_response,
+                            claim_id=review_claim["claimId"],
+                            adapter=self.profile.frontier.adapter,
+                            provider=self.profile.frontier.provider,
+                            model=self.profile.frontier.model,
+                            prompt_tokens=review_usage.get("promptTokens"),
+                            completion_tokens=review_usage.get(
+                                "completionTokens"
+                            ),
+                            total_tokens=review_usage.get("totalTokens"),
+                        )
+                        review_verdict = imported_review["review"]["verdict"]
+                else:
+                    review_response = evidence_root / "review-response.json"
+                    review_result = run_command(
+                        codex_command(
+                            self.profile,
+                            cwd=repository,
+                            sandbox="read-only",
+                            output_last_message=review_response,
+                        ),
+                        cwd=repository,
+                        timeout=min(
+                            self.profile.frontier.review_timeout_seconds,
+                            max(1, math.floor(deadline - time.perf_counter())),
+                        ),
+                        env=frontier_environment(),
+                        input_text=review_prompt_text,
+                    )
+                    review_seconds = review_result.elapsed_seconds
+                    review_timed_out = review_result.timed_out
+                    (evidence_root / "review-events.jsonl").write_text(
+                        review_result.stdout,
+                        encoding="utf-8",
+                    )
+                    review_usage = parse_codex_usage_jsonl(review_result.stdout)
+                    if (
+                        not review_result.timed_out
+                        and review_result.returncode == 0
+                        and review_response.is_file()
+                    ):
+                        imported_review = store.import_review(
+                            session_dir,
+                            review_response,
+                            claim_id=review_claim["claimId"],
+                            adapter="codex-cli-evaluation",
+                            provider="openai-codex",
+                            model=self.profile.frontier.model,
+                            prompt_tokens=review_usage.get("promptTokens"),
+                            completion_tokens=review_usage.get(
+                                "completionTokens"
+                            ),
+                            total_tokens=review_usage.get("totalTokens"),
+                        )
+                        review_verdict = imported_review["review"]["verdict"]
         remaining = deadline - time.perf_counter()
         if structural_error is None and candidate_diff and remaining > 0:
             oracle = self._score_candidate(
@@ -6392,6 +6560,26 @@ def build_task_packet(
 ) -> str:
     roots = "\n".join(f"- {path}" for path in approved_write_roots)
     tree, sources = deterministic_case_context(case, runtime)
+    base = Path(str(runtime.get("baseSnapshot", ""))).resolve()
+    context_files = [
+        child
+        for child in sorted(base.rglob("*"))
+        if (
+            base.is_dir()
+            and child.is_file()
+            and not child.is_symlink()
+            and ".git" not in child.relative_to(base).parts
+        )
+    ] if base.is_dir() else []
+    context_relative = [
+        child.relative_to(base).as_posix() for child in context_files
+    ]
+    hints = _asserted_field_diagnosis_hints(
+        case,
+        runtime,
+        context_files,
+        context_relative,
+    )
     execution_map = _render_executed_line_map(
         runtime.get("executedSourceLines", {}),
         source_context=sources,
@@ -6419,6 +6607,8 @@ def build_task_packet(
         f"{runtime_state}\n"
         "FROZEN RELEVANT TEST AND TRACEBACK SOURCE CONTEXT:\n"
         f"{sources}\n"
+        "FROZEN ASSERTED-FIELD DIAGNOSIS HINTS:\n"
+        f"{hints}\n"
         "INITIAL FAILURE EVIDENCE:\n"
         f"{runtime['failureEvidence'][:20_000]}"
     )
@@ -7246,6 +7436,25 @@ def deterministic_case_context(
                 break
     remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
     if remaining > 0:
+        for path, start, end, content in _traceback_callee_source_windows(
+            files,
+            relative,
+            failure,
+        ):
+            label = f"{path}:L{start}-L{end}"
+            header = f"SOURCE {label}\n"
+            footer = f"\nEND SOURCE {label}\n"
+            block = header + content + footer
+            if len(block) > remaining:
+                continue
+            blocks.append(block)
+            used += len(block)
+            remaining -= len(block)
+            query_parts.append(content)
+            if remaining < 500:
+                break
+    remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
+    if remaining > 0:
         traced_functions = _rank_traced_function_windows(
             files,
             relative,
@@ -7474,6 +7683,356 @@ def _traceback_source_windows(
             ),
         ))
     return selected
+
+
+def _canonical_source_range_label(value: str) -> str | None:
+    """Accept both path:L1-L60 and the common path:L1-60 citation form."""
+    text = value.removeprefix("SOURCE ") if value.startswith("SOURCE ") else value
+    match = _SOURCE_RANGE_LABEL.fullmatch(text)
+    if match is None:
+        return None
+    start = int(match.group("start"))
+    end = int(match.group("end"))
+    if start > end:
+        return None
+    return f"{match.group('path')}:L{start}-L{end}"
+
+
+def _source_label_declares_path(label: str, path: str) -> bool:
+    """True only when label names this exact repository path."""
+    text = (
+        label.removeprefix("SOURCE ").strip()
+        if label.startswith("SOURCE ")
+        else label
+    )
+    prefix = "VERBATIM FILE:"
+    if text.startswith(prefix):
+        return text[len(prefix):].strip() == path
+    approved = _APPROVED_EDIT_OLD_LABEL.fullmatch(text)
+    if approved is not None:
+        return approved.group("path") == path
+    return text == path or text.startswith(path + ":")
+
+
+def _text_mentions_repository_path(text: str, path: str) -> bool:
+    """Match a complete path token, not a suffix of tests/test_black.py."""
+    start = 0
+    while True:
+        found = text.find(path, start)
+        if found < 0:
+            return False
+        before = text[found - 1] if found else ""
+        after_index = found + len(path)
+        after = text[after_index] if after_index < len(text) else ""
+        before_ok = found == 0 or before in {
+            "",
+            " ",
+            "\t",
+            "\n",
+            "\r",
+            '"',
+            "'",
+            "`",
+            "[",
+            "{",
+            "(",
+            ",",
+            "=",
+            ":",
+        }
+        after_ok = after_index >= len(text) or after in {
+            "",
+            " ",
+            "\t",
+            "\n",
+            "\r",
+            '"',
+            "'",
+            "`",
+            "]",
+            "}",
+            ")",
+            ",",
+            ":",
+            ".",
+        }
+        if before_ok and after_ok:
+            return True
+        start = found + 1
+
+
+def _module_file_candidates(module: str) -> list[str]:
+    dotted = module.replace(".", "/").strip("/")
+    if not dotted:
+        return []
+    return [f"{dotted}.py", f"{dotted}/__init__.py"]
+
+
+def _imported_production_paths(
+    importer_path: str,
+    tree: ast.AST,
+    relative: Sequence[str],
+) -> dict[str, str]:
+    """Map imported names in a traceback file to production repository paths."""
+    available = set(relative)
+    importer_parts = Path(importer_path).parts
+    resolved: dict[str, str] = {}
+
+    def bind(name: str, path: str) -> None:
+        if (
+            path in available
+            and path != importer_path
+            and not _is_non_production_path(path)
+            and name
+            and name != "*"
+        ):
+            resolved.setdefault(name, path)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                for candidate in _module_file_candidates(alias.name):
+                    bind(alias.asname or alias.name.rsplit(".", 1)[-1], candidate)
+        elif isinstance(node, ast.ImportFrom):
+            prefix_parts = list(importer_parts[:-1])
+            if node.level:
+                prefix_parts = prefix_parts[: max(0, len(prefix_parts) - (node.level - 1))]
+            module_parts = []
+            if node.module:
+                module_parts = node.module.split(".")
+            base = "/".join([*prefix_parts, *module_parts] if node.level else module_parts)
+            for alias in node.names:
+                name = alias.asname or alias.name
+                candidates = [
+                    f"{base}/{alias.name}.py" if base else f"{alias.name}.py",
+                    *(_module_file_candidates(base) if base else []),
+                ]
+                for candidate in candidates:
+                    bind(name, candidate)
+    return resolved
+
+
+def _enclosing_function(tree: ast.AST, line: int) -> ast.AST | None:
+    best: ast.AST | None = None
+    best_start = -1
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        start = int(node.lineno)
+        end = int(getattr(node, "end_lineno", start) or start)
+        if start <= line <= end and start >= best_start:
+            best = node
+            best_start = start
+    return best
+
+
+def _names_referenced_in(node: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for child in ast.walk(node):
+        if isinstance(child, ast.Name):
+            names.add(child.id)
+        elif isinstance(child, ast.Attribute):
+            names.add(child.attr)
+            if isinstance(child.value, ast.Name):
+                names.add(child.value.id)
+    return names
+
+
+def _definition_window(
+    lines: Sequence[str],
+    tree: ast.AST,
+    symbol: str,
+    *,
+    radius_lines: int = 40,
+    fallback_end: int = 120,
+) -> tuple[int, int]:
+    for node in ast.walk(tree):
+        if isinstance(
+            node,
+            (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef),
+        ) and node.name == symbol:
+            start = max(1, int(node.lineno) - radius_lines)
+            end = min(
+                len(lines),
+                int(getattr(node, "end_lineno", node.lineno) or node.lineno)
+                + radius_lines,
+            )
+            return start, end
+    return 1, min(len(lines), fallback_end)
+
+
+def _traceback_callee_source_windows(
+    files: Sequence[Path],
+    relative: Sequence[str],
+    failure_evidence: str,
+    *,
+    maximum_files: int = 4,
+) -> list[tuple[str, int, int, str]]:
+    """Pin 1-hop production imports of traceback frames, not just the frame file."""
+    by_relative = dict(zip(relative, files))
+    selected: list[tuple[str, int, int, str]] = []
+    seen_paths: set[str] = set()
+    for path, line in _traceback_production_refs(failure_evidence, relative):
+        child = by_relative.get(path)
+        if child is None:
+            continue
+        try:
+            content = child.read_text(encoding="utf-8")
+            tree = ast.parse(content)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        imported = _imported_production_paths(path, tree, relative)
+        enclosing = _enclosing_function(tree, line)
+        referenced = (
+            _names_referenced_in(enclosing)
+            if enclosing is not None
+            else set(imported)
+        )
+        for name, callee_path in imported.items():
+            if name not in referenced and callee_path.split("/")[-1].removesuffix(".py") not in referenced:
+                continue
+            if callee_path in seen_paths or callee_path == path:
+                continue
+            callee = by_relative.get(callee_path)
+            if callee is None:
+                continue
+            try:
+                callee_content = callee.read_text(encoding="utf-8")
+                callee_lines = callee_content.splitlines()
+                callee_tree = ast.parse(callee_content)
+            except (OSError, UnicodeDecodeError, SyntaxError):
+                continue
+            if not callee_lines:
+                continue
+            start, end = _definition_window(callee_lines, callee_tree, name)
+            seen_paths.add(callee_path)
+            selected.append((
+                callee_path,
+                start,
+                end,
+                _numbered_source_lines(callee_lines, start, end),
+            ))
+            if len(selected) >= maximum_files:
+                return selected
+    return selected
+
+
+def _identifier_key_variants(raw: str) -> set[str]:
+    parts = [part for part in re.split(r"[^A-Za-z0-9]+", raw) if part]
+    variants = {raw, *parts}
+    if len(parts) >= 2:
+        variants.add("_".join(parts))
+        variants.add(parts[0] + "".join(part[:1].upper() + part[1:] for part in parts[1:]))
+    return {value for value in variants if len(value) >= 3}
+
+
+def _assertion_identifier_keys(*texts: str) -> set[str]:
+    keys: set[str] = set()
+    quoted = re.compile(r"""(?<![A-Za-z0-9_])['"]([A-Za-z_][A-Za-z0-9_]{2,})['"]""")
+    identifier = re.compile(r"\btest_([A-Za-z0-9_]+)\b")
+    for text in texts:
+        keys.update(quoted.findall(text))
+        for match in identifier.finditer(text):
+            keys.update(_identifier_key_variants(match.group(1)))
+    return keys
+
+
+def _class_field_annotations(
+    files: Sequence[Path],
+    relative: Sequence[str],
+    paths: Iterable[str],
+) -> list[tuple[str, str, str, int]]:
+    by_relative = dict(zip(relative, files))
+    fields: list[tuple[str, str, str, int]] = []
+    for path in paths:
+        child = by_relative.get(path)
+        if child is None or _is_non_production_path(path):
+            continue
+        try:
+            content = child.read_text(encoding="utf-8")
+            tree = ast.parse(content)
+        except (OSError, UnicodeDecodeError, SyntaxError):
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef):
+                continue
+            for statement in node.body:
+                target = None
+                if isinstance(statement, ast.AnnAssign) and isinstance(
+                    statement.target,
+                    ast.Name,
+                ):
+                    target = statement.target.id
+                elif (
+                    isinstance(statement, ast.Assign)
+                    and len(statement.targets) == 1
+                    and isinstance(statement.targets[0], ast.Name)
+                ):
+                    target = statement.targets[0].id
+                if target:
+                    fields.append((target, node.name, path, int(statement.lineno)))
+    return fields
+
+
+def _asserted_field_diagnosis_hints(
+    case: dict[str, Any],
+    runtime: dict[str, Any],
+    files: Sequence[Path],
+    relative: Sequence[str],
+) -> str:
+    """Point planners at traced type fields that match assertion/test keys."""
+    failure = str(runtime.get("failureEvidence", ""))
+    test_files = [
+        str(value)
+        for value in case.get("testFiles", [])
+        if isinstance(value, str)
+    ]
+    test_text = []
+    by_relative = dict(zip(relative, files))
+    for path in test_files:
+        child = by_relative.get(path)
+        if child is None:
+            continue
+        try:
+            test_text.append(child.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+    keys = _assertion_identifier_keys(failure, *test_text, *test_files)
+    scan_paths: list[str] = []
+    executed = runtime.get("executedSourceLines", {})
+    if isinstance(executed, dict):
+        scan_paths.extend(
+            path
+            for path in executed
+            if isinstance(path, str) and not _is_non_production_path(path)
+        )
+    scan_paths.extend(
+        path
+        for path, _line in _traceback_production_refs(failure, relative)
+    )
+    fields = _class_field_annotations(files, relative, dict.fromkeys(scan_paths))
+    rows: list[str] = []
+    seen: set[tuple[str, str, str]] = set()
+    for field, class_name, path, lineno in fields:
+        if field not in keys:
+            continue
+        signature = (field, class_name, path)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        rows.append(
+            f"- assertion key \"{field}\" matches field `{field}` on "
+            f"{class_name} at {path}:L{lineno}"
+        )
+        if len(rows) >= 12:
+            break
+    if not rows:
+        return "(none)"
+    return (
+        "A test or assertion named after one field does not make a different "
+        "matching field on the same traced type out of scope.\n"
+        + "\n".join(rows)
+    )
 
 
 def _rank_traced_function_windows(
@@ -7807,7 +8366,11 @@ def frontier_alone_response_prompt(task_packet: str) -> str:
         "expected test fixtures. If the assertion delta names a field that "
         "exists on a traced type in SOURCE, that field annotation is a valid "
         "candidate even when it is a class attribute. Do not invent a nearby "
-        "branch-local insert to avoid editing a traced type.\n"
+        "branch-local insert to avoid editing a traced type. If "
+        "ASSERTED-FIELD DIAGNOSIS HINTS lists a key that matches a traced "
+        "type field, that annotation is in scope even when a test is named "
+        "after a different field on the same type. Imported production "
+        "callees of a traceback frame are in scope.\n"
         "- Use matching runtime-local samples to evaluate every new predicate "
         "on the failing call. Samples are observations from distinct calls; "
         "match their path, line, function, and identifying scalar values "
@@ -7926,7 +8489,8 @@ def frontier_delegation_blueprint_prompt(
         "emit deliberation, analysis, or a second candidate.\n"
         "- Use exactly the listed keys; unknown fields are rejected.\n"
         "- evidenceSources must copy the text after `SOURCE ` exactly, without "
-        "including the literal `SOURCE ` display prefix. Never invent a file, "
+        "including the literal `SOURCE ` display prefix. `path:L1-60` is the "
+        "same label as `path:L1-L60`. Never invent a file, "
         "symbol, API, source excerpt, or test result.\n"
         "- Do not copy SOURCE contents into the diagnosis. Each edit must "
         "identify the smallest sufficient complete-line range inside its "
@@ -7958,11 +8522,16 @@ def frontier_delegation_blueprint_prompt(
         "annotation is a valid candidate even when it is a class attribute. "
         "Do not invent a nearby branch-local insert to avoid editing a traced "
         "type. Prefer a narrower predicate only when SOURCE shows that "
-        "predicate on the failing path and it would produce the same delta.\n"
+        "predicate on the failing path and it would produce the same delta. "
+        "If ASSERTED-FIELD DIAGNOSIS HINTS lists a key that matches a traced "
+        "type field, that annotation is in scope even when a test is named "
+        "after a different field on the same type.\n"
         "- A traceback File/line citation is authoritative when the "
         "executed-line map is empty. If SOURCE includes that file, propose "
         "the grounded edit there; do not return zero edits as insufficient "
-        "grounding.\n"
+        "grounding. Imported production callees of that frame are in scope; "
+        "do not stop at the traceback file if a 1-hop helper implements the "
+        "failing behavior.\n"
         "- Runtime-local samples are bounded observations from distinct calls. "
         "Match path, line, function, and identifying scalar values before "
         "using a sample. Every new predicate must evaluate true for a supplied "
@@ -8587,25 +9156,30 @@ def _normalize_evidence_source_label(
     known_sources: set[str],
 ) -> str | None:
     """Canonicalize an exact label or a uniquely contained sealed subrange."""
-    if value.startswith("SOURCE "):
-        value = value.removeprefix("SOURCE ")
-    if value in known_sources:
-        return value
-    match = re.fullmatch(r"(.+):L(\d+)-L(\d+)", value)
+    canonical = _canonical_source_range_label(value)
+    if canonical is None:
+        text = (
+            value.removeprefix("SOURCE ")
+            if value.startswith("SOURCE ")
+            else value
+        )
+        return text if text in known_sources else None
+    if canonical in known_sources:
+        return canonical
+    match = _SOURCE_RANGE_LABEL.fullmatch(canonical)
     if match is None:
         return None
-    path, raw_start, raw_end = match.groups()
-    start = int(raw_start)
-    end = int(raw_end)
-    if start <= 0 or end < start:
-        return None
+    path = match.group("path")
+    start = int(match.group("start"))
+    end = int(match.group("end"))
     parents: list[str] = []
     for candidate in known_sources:
-        parent = re.fullmatch(r"(.+):L(\d+)-L(\d+)", candidate)
-        if parent is None or parent.group(1) != path:
+        parent_label = _canonical_source_range_label(candidate) or candidate
+        parent = _SOURCE_RANGE_LABEL.fullmatch(parent_label)
+        if parent is None or parent.group("path") != path:
             continue
-        parent_start = int(parent.group(2))
-        parent_end = int(parent.group(3))
+        parent_start = int(parent.group("start"))
+        parent_end = int(parent.group("end"))
         if parent_start <= start and end <= parent_end:
             parents.append(candidate)
     return parents[0] if len(parents) == 1 else None
@@ -8726,6 +9300,9 @@ def materialize_frontier_delegation_plan(
 
 
 def _read_labeled_source(repository: Path, label: str) -> str:
+    canonical = _canonical_source_range_label(label)
+    if canonical is not None:
+        label = canonical
     match = re.fullmatch(r"(.+):L([1-9][0-9]*)-L([1-9][0-9]*)", label)
     if match is None:
         raise EvaluationError(f"Invalid frozen SOURCE label: {label}")
@@ -9061,7 +9638,7 @@ def validate_evaluation_plan(
             declared = [
                 path
                 for path in files
-                if path in source.label
+                if _source_label_declares_path(source.label, path)
             ]
         for path in declared:
             try:
@@ -9083,7 +9660,9 @@ def validate_evaluation_plan(
         )
     for task in mutating:
         mentioned = {
-            path for path in files if path in task.prompt
+            path
+            for path in files
+            if _text_mentions_repository_path(task.prompt, path)
         }
         unverified = sorted(mentioned - verified_sources)
         if unverified:

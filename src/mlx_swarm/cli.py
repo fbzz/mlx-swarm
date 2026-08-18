@@ -360,6 +360,15 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Use the derived 2+6 profile frozen by prepare --preliminary.",
     )
+    evaluation_run.add_argument(
+        "--cases",
+        nargs="+",
+        metavar="CASE_ID",
+        help=(
+            "Run only these case IDs in the selected phase. "
+            "Does not seal the phase until every case has durable results."
+        ),
+    )
     evaluation_status = evaluation_sub.add_parser(
         "status",
         help="Inspect an evaluation ledger and paired progress.",
@@ -620,10 +629,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                     evaluation_store,
                     profile,
                 )
+                run_kwargs: dict[str, Any] = {}
+                if args.cases:
+                    run_kwargs["case_ids"] = args.cases
                 _print(
                     runner.run_phase(
                         args.evaluation_id,
                         args.phase,
+                        **run_kwargs,
                     )
                 )
                 return 0

@@ -770,6 +770,8 @@ class Session:
         self,
         *,
         status_override: str | None = None,
+        include_workspace_diff: bool | None = None,
+        workspace_diff: str | None = None,
     ) -> Path:
         """Persist the single compact packet intended for final frontier review."""
         from .commander import (
@@ -778,19 +780,21 @@ class Session:
             canonical_json_sha256,
             write_frontier_usage,
         )
+        from .workspace import WorkspaceError
 
         path = self.dir / "frontier-result.json"
         effective_status = status_override or self.state.get("status")
         packet = self.export_results(status_override=status_override)
         workspace = self.workspace_snapshot()
+        attach_diff = (
+            include_workspace_diff
+            if include_workspace_diff is not None
+            else effective_status == "completed"
+        )
         packet["schemaVersion"] = 3 if workspace is not None else 2
         packet["reviewMode"] = "frontier-final-only"
-        packet["requiresFrontierReview"] = effective_status == "completed"
-        packet["reviewStatus"] = (
-            "awaiting_review"
-            if effective_status == "completed"
-            else self.state.get("reviewStatus", "not_eligible")
-        )
+        packet["requiresFrontierReview"] = False
+        packet["reviewStatus"] = self.state.get("reviewStatus", "not_eligible")
         packet["planSha256"] = canonical_json_sha256(self.plan.raw)
         packet["planContract"] = self.plan.raw
         packet["planApproval"] = self.state.get("planApproval")
@@ -1005,21 +1009,43 @@ class Session:
                 "verificationReceipts": verification_receipts,
                 "nonMutatingOutputs": non_mutating_outputs,
             }
-            if effective_status == "completed":
-                final_diff, final_digest = final_workspace_diff(workspace)
-                workspace_packet["finalDiff"] = final_diff
-                workspace_packet["finalDiffSha256"] = final_digest
+            if attach_diff:
+                attached = False
+                if workspace_diff is not None:
+                    workspace_packet["finalDiff"] = workspace_diff
+                    workspace_packet["finalDiffSha256"] = hashlib.sha256(
+                        workspace_diff.encode("utf-8")
+                    ).hexdigest()
+                    attached = True
+                else:
+                    try:
+                        final_diff, final_digest = final_workspace_diff(
+                            workspace
+                        )
+                    except WorkspaceError:
+                        if include_workspace_diff is not True:
+                            raise
+                    else:
+                        workspace_packet["finalDiff"] = final_diff
+                        workspace_packet["finalDiffSha256"] = final_digest
+                        attached = True
+                if attached:
+                    packet["requiresFrontierReview"] = True
+                    packet["reviewStatus"] = "awaiting_review"
             packet["workspace"] = workspace_packet
             packet["executionApproval"] = self.state.get(
                 "executionApproval"
             )
+        if effective_status == "completed":
+            packet["requiresFrontierReview"] = True
+            packet["reviewStatus"] = "awaiting_review"
         temp_path = self.dir / "frontier-result.json.tmp"
         temp_path.write_text(
             json.dumps(packet, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         temp_path.replace(path)
-        if effective_status == "completed":
+        if packet["requiresFrontierReview"]:
             _atomic_json(
                 self.dir / FRONTIER_REVIEW_INPUT_NAME,
                 build_review_input(packet),

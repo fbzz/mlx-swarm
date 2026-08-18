@@ -1166,8 +1166,43 @@ def test_partial_session_is_not_review_eligible(tmp_path: Path) -> None:
     session.set_status("partial")
     session.write_frontier_result()
 
-    with pytest.raises(CommanderError, match="Only completed"):
+    with pytest.raises(CommanderError, match="produced candidate patch"):
         store.claim_review(session_dir)
+
+
+def test_failed_session_with_patch_is_review_eligible(tmp_path: Path) -> None:
+    config = _workspace(tmp_path)
+    store = CommanderStore(config)
+    _request_id, detail = _import_plan(store, tmp_path)
+    plan, plan_path, _approval, _receipt, _request = store.approved_plan(
+        detail["request"]["requestId"],
+        detail["request"]["planDigest"],
+    )
+    session_dir = config.artifacts_dir / plan.plan_id / "session-failed-patch"
+    session = Session(session_dir, plan, session_id="session-failed-patch")
+    session.set_sources(config_source=config.source, plan_source=plan_path)
+    session.set_status("partial")
+    result_path = session.write_frontier_result()
+    packet = json.loads(result_path.read_text(encoding="utf-8"))
+    packet["workspace"] = {
+        "finalDiff": (
+            "diff --git a/src/value.py b/src/value.py\n"
+            "--- a/src/value.py\n"
+            "+++ b/src/value.py\n"
+            "@@ -1 +1 @@\n"
+            "-VALUE = 1\n"
+            "+VALUE = 2\n"
+        ),
+    }
+    result_path.write_text(
+        json.dumps(packet, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    claim = store.claim_review(session_dir)
+
+    assert claim["sessionId"] == "session-failed-patch"
+    assert Path(claim["promptPath"]).is_file()
 
 
 def test_invalid_review_is_recorded_and_seals_phase(tmp_path: Path) -> None:

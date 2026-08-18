@@ -2170,9 +2170,10 @@ class CommanderStore:
     ) -> dict[str, Any]:
         """Claim final review while excluding revision snapshot creation."""
         session_dir, state = self._load_session(session_dir)
-        if state.get("status") != "completed":
+        if not _session_is_review_eligible(state, session_dir):
             raise CommanderError(
-                "Only completed local runs are eligible for frontier review."
+                "Frontier review requires a completed local run or a "
+                "produced candidate patch."
             )
         if state.get("supersededByRequestId") is not None:
             raise CommanderError(
@@ -2260,9 +2261,10 @@ class CommanderStore:
         total_tokens: int | None = None,
     ) -> dict[str, Any]:
         session_dir, state = self._load_session(session_dir)
-        if state.get("status") != "completed":
+        if not _session_is_review_eligible(state, session_dir):
             raise CommanderError(
-                "Only completed local runs are eligible for frontier review."
+                "Frontier review requires a completed local run or a "
+                "produced candidate patch."
             )
         claim = _required_json(session_dir / "frontier-review.claim.json")
         self._require_claim(claim, claim_id, "review")
@@ -3175,6 +3177,27 @@ def _optional_json(path: Path) -> dict[str, Any] | None:
     if not path.is_file():
         return None
     return _required_json(path)
+
+
+def _frontier_result_has_candidate_patch(result: dict[str, Any] | None) -> bool:
+    if not isinstance(result, dict):
+        return False
+    workspace = result.get("workspace")
+    if not isinstance(workspace, dict):
+        return False
+    diff = workspace.get("finalDiff")
+    return isinstance(diff, str) and bool(diff.strip())
+
+
+def _session_is_review_eligible(
+    state: dict[str, Any],
+    session_dir: Path,
+) -> bool:
+    if state.get("status") == "completed":
+        return True
+    return _frontier_result_has_candidate_patch(
+        _optional_json(session_dir / "frontier-result.json")
+    )
 
 
 def _object(value: Any, name: str) -> dict[str, Any]:

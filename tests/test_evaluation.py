@@ -25,6 +25,7 @@ from mlx_swarm.contracts import (
 from mlx_swarm.evaluation import (
     FAIR_EVALUATION_PROTOCOL_VERSION,
     _executed_lines_from_trace_cover,
+    _normalize_evidence_source_label,
     _rank_traced_function_windows,
     _remove_timed_out_docker_container,
     _render_executed_line_map,
@@ -35,6 +36,7 @@ from mlx_swarm.evaluation import (
     EvaluationStore,
     aggregate_results,
     apply_protocol_audit,
+    arm_result_is_durable,
     bootstrap_mean_interval,
     build_task_packet,
     capability_diagnostic_gate,
@@ -46,6 +48,7 @@ from mlx_swarm.evaluation import (
     directory_size,
     docker_connection_environment,
     docker_runtime_argv,
+    durable_recorded_arms,
     empty_local_usage,
     ensure_pair_contract,
     evaluation_write_roots,
@@ -62,6 +65,7 @@ from mlx_swarm.evaluation import (
     is_dependency_or_project_install,
     load_evaluation_profile,
     local_replay_promotion_gate,
+    mark_preliminary_summary,
     make_arm_result,
     materialize_frontier_edit_manifest,
     materialize_frontier_delegation_plan,
@@ -79,6 +83,8 @@ from mlx_swarm.evaluation import (
     replayable_pilot_status,
     remove_sensitive_preparation_sources,
     render_readme_economics,
+    reset_retryable_arm_workspace,
+    selected_evaluation_cases,
     retained_session_candidate_diff,
     run_command,
     run_swarm_with_synthetic_operator,
@@ -1039,10 +1045,12 @@ def _evaluation_plan(
     *,
     allowed_paths: tuple[str, ...],
     source_content: str,
+    sources: tuple[ContextSource, ...] | None = None,
+    prompt: str | None = None,
 ) -> Plan:
     context = TaskContext(
         objective="Repair value",
-        authoritative_sources=(
+        authoritative_sources=sources or (
             ContextSource(
                 label="VERBATIM FILE: src/value.py",
                 content=source_content,
@@ -1056,7 +1064,7 @@ def _evaluation_plan(
     task = TaskDef(
         id="repair",
         role="implementation",
-        prompt="Repair src/value.py.",
+        prompt=prompt or "Repair src/value.py.",
         artifact_type="patch",
         allowed_paths=allowed_paths,
         verification=("bugsinpy-acceptance",),
@@ -1115,6 +1123,241 @@ def test_evaluation_plan_requires_symmetric_roots_and_verbatim_sources(
     )
     with pytest.raises(EvaluationError, match="exact contiguous excerpt"):
         validate_evaluation_plan(rewritten, repository, ["src"])
+
+
+def test_evaluation_plan_matches_source_path_not_path_substring(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repo"
+    (repository / "tests").mkdir(parents=True)
+    (repository / "black.py").write_text(
+        "def format_str(src):\n    if leaf.value:\n        return src\n",
+        encoding="utf-8",
+    )
+    (repository / "tests" / "test_black.py").write_text(
+        "from black import format_str\n\n"
+        "def test_format():\n    assert format_str('x') == 'x'\n",
+        encoding="utf-8",
+    )
+    plan = _evaluation_plan(
+        tmp_path,
+        allowed_paths=("black.py",),
+        source_content="unused",
+        sources=(
+            ContextSource(
+                label="black.py:L1-L3",
+                content=(
+                    "def format_str(src):\n"
+                    "    if leaf.value:\n"
+                    "        return src\n"
+                ),
+                sha256="unused",
+            ),
+            ContextSource(
+                label="tests/test_black.py:L1-L4",
+                content=(
+                    "from black import format_str\n\n"
+                    "def test_format():\n"
+                    "    assert format_str('x') == 'x'\n"
+                ),
+                sha256="unused",
+            ),
+        ),
+        prompt="Repair black.py using tests/test_black.py.",
+    )
+    validate_evaluation_plan(plan, repository, ["black.py"])
+
+
+def test_normalize_source_label_accepts_missing_second_l() -> None:
+    known = {"luigi/file.py:L1-L60"}
+    assert _normalize_evidence_source_label(
+        "luigi/file.py:L1-60",
+        known,
+    ) == "luigi/file.py:L1-L60"
+    assert _normalize_evidence_source_label(
+        "SOURCE luigi/file.py:L1-60",
+        known,
+    ) == "luigi/file.py:L1-L60"
+
+
+def test_decision_gate_splits_planner_rejects_from_worker_oracle_failures() -> None:
+    planner_loss = {
+        "caseId": "black-7",
+        "frontier": {"score": 1, "arm": "frontier-alone"},
+        "swarm": {
+            "arm": "mlx-swarm",
+            "score": 0,
+            "oracle": {
+                "evidence": (
+                    "Frontier plan was rejected: exact contiguous excerpt: "
+                    "black.py"
+                ),
+            },
+            "patch": {"changedFiles": 0},
+        },
+    }
+    worker_loss = {
+        "caseId": "fastapi-14",
+        "frontier": {"score": 1, "arm": "frontier-alone"},
+        "swarm": {
+            "arm": "mlx-swarm",
+            "score": 0,
+            "oracle": {"evidence": "AssertionError: schema mismatch"},
+            "patch": {"changedFiles": 2},
+        },
+    }
+    both_zero = {
+        "caseId": "tornado-2",
+        "frontier": {"score": 0, "arm": "frontier-alone"},
+        "swarm": {
+            "arm": "mlx-swarm",
+            "score": 0,
+            "oracle": {"evidence": "TimeoutError"},
+            "patch": {"changedFiles": 1},
+        },
+    }
+
+    planner_only = mark_preliminary_summary(
+        {
+            "frontierAlone": {"score": 3},
+            "mlxSwarm": {"score": 1},
+            "measuredCases": 6,
+            "rows": [
+                planner_loss,
+                {
+                    **planner_loss,
+                    "caseId": "luigi-13",
+                    "swarm": {
+                        **planner_loss["swarm"],
+                        "oracle": {
+                            "evidence": (
+                                "Frontier delegation blueprint was rejected: "
+                                "luigi/file.py:L1-60"
+                            ),
+                        },
+                    },
+                },
+                both_zero,
+                {
+                    "caseId": "sanic-5",
+                    "frontier": {"score": 1, "arm": "frontier-alone"},
+                    "swarm": {
+                        "arm": "mlx-swarm",
+                        "score": 1,
+                        "oracle": {"evidence": "ok"},
+                        "patch": {"changedFiles": 1},
+                    },
+                },
+            ],
+        },
+        source_evaluation_id="eval-protocol-17",
+    )
+    assert planner_only["decisionGate"]["status"] == "stop_and_improve_planner"
+    assert planner_only["decisionGate"]["plannerRejected"] == 2
+    assert planner_only["decisionGate"]["acceptanceGaps"] == {
+        "planner": 2,
+        "worker": 0,
+    }
+
+    worker_only = mark_preliminary_summary(
+        {
+            "frontierAlone": {"score": 2},
+            "mlxSwarm": {"score": 1},
+            "measuredCases": 2,
+            "rows": [worker_loss, {
+                "caseId": "sanic-5",
+                "frontier": {"score": 1, "arm": "frontier-alone"},
+                "swarm": {
+                    "arm": "mlx-swarm",
+                    "score": 1,
+                    "oracle": {"evidence": "ok"},
+                    "patch": {"changedFiles": 1},
+                },
+            }],
+        },
+        source_evaluation_id="eval-workers",
+    )
+    assert worker_only["decisionGate"]["status"] == "stop_and_improve_workers"
+    assert worker_only["decisionGate"]["acceptanceGaps"] == {
+        "planner": 0,
+        "worker": 1,
+    }
+
+    mixed = mark_preliminary_summary(
+        {
+            "frontierAlone": {"score": 2},
+            "mlxSwarm": {"score": 0},
+            "measuredCases": 2,
+            "rows": [planner_loss, worker_loss],
+        },
+        source_evaluation_id="eval-both",
+    )
+    assert mixed["decisionGate"]["status"] == (
+        "stop_and_improve_planner_and_workers"
+    )
+
+    parity = mark_preliminary_summary(
+        {
+            "frontierAlone": {"score": 2},
+            "mlxSwarm": {"score": 2},
+            "measuredCases": 2,
+            "rows": [],
+        },
+        source_evaluation_id="eval-parity",
+    )
+    assert parity["decisionGate"]["status"] == "continue_to_full_study"
+
+
+def test_invalid_arm_results_are_not_durable_and_can_be_reset(
+    tmp_path: Path,
+) -> None:
+    valid = {
+        "caseId": "black-7",
+        "arm": "frontier-alone",
+        "status": "completed",
+    }
+    poisoned = {
+        "caseId": "black-11",
+        "arm": "mlx-swarm",
+        "status": "invalid",
+    }
+    assert arm_result_is_durable(valid) is True
+    assert arm_result_is_durable(poisoned) is False
+    assert durable_recorded_arms([valid, poisoned]) == {
+        ("black-7", "frontier-alone"),
+    }
+
+    arm_root = tmp_path / "cases" / "black-11" / "arms" / "mlx-swarm"
+    (arm_root / "artifacts").mkdir(parents=True)
+    (arm_root / "evidence").mkdir(parents=True)
+    (arm_root / "artifacts" / "leftover.txt").write_text("stale")
+    result_path = tmp_path / "results" / "black-11" / "mlx-swarm.json"
+    result_path.parent.mkdir(parents=True)
+    result_path.write_text("{}")
+
+    reset_retryable_arm_workspace(tmp_path, "black-11", "mlx-swarm")
+
+    assert not (arm_root / "artifacts").exists()
+    assert not (arm_root / "evidence").exists()
+    assert not result_path.exists()
+
+
+def test_selected_evaluation_cases_keep_requested_phase_order() -> None:
+    phase_cases = [
+        {"caseId": "black-7"},
+        {"caseId": "tornado-2"},
+        {"caseId": "fastapi-14"},
+    ]
+    assert selected_evaluation_cases(phase_cases, None) == phase_cases
+    assert [
+        case["caseId"]
+        for case in selected_evaluation_cases(
+            phase_cases,
+            ["tornado-2"],
+        )
+    ] == ["tornado-2"]
+    with pytest.raises(EvaluationError, match="not in this phase"):
+        selected_evaluation_cases(phase_cases, ["black-11"])
 
 
 def test_candidate_diff_cannot_escape_shared_arm_roots(tmp_path: Path) -> None:
@@ -2930,6 +3173,44 @@ def test_frontier_delegation_blueprint_normalizes_contained_source_range(
     }]
 
 
+def test_frontier_delegation_blueprint_normalizes_missing_second_l(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "luigi").mkdir()
+    (tmp_path / "luigi" / "file.py").write_text(
+        "def value():\n    return 1\n"
+        + "".join(f"padding_{index} = {index}\n" for index in range(3, 61)),
+        encoding="utf-8",
+    )
+    payload = _delegation_blueprint(source_label="luigi/file.py:L1-60")
+    payload["edits"][0]["path"] = "luigi/file.py"
+    payload["edits"][0]["sourceLabel"] = "luigi/file.py:L1-60"
+    payload["edits"][0]["startLine"] = 2
+    payload["edits"][0]["endLine"] = 2
+
+    parsed = parse_frontier_delegation_blueprint(
+        json.dumps(payload),
+        objective="Repair the frozen failure.",
+        task_packet=(
+            "SOURCE luigi/file.py:L1-L60\n"
+            "00001 | def value():\n"
+            "00002 |     return 1\n"
+            + "\n".join(
+                f"{index:05d} | padding_{index}"
+                for index in range(3, 61)
+            )
+            + "\nEND SOURCE luigi/file.py:L1-L60\n"
+        ),
+        repository=tmp_path,
+        approved_write_roots=["luigi/file.py"],
+        maximum_manifest_characters=3_200,
+    )
+
+    assert parsed["diagnosis"]["evidenceSources"] == [
+        "luigi/file.py:L1-L60",
+    ]
+
+
 def test_frontier_delegation_blueprint_normalizes_source_display_prefix(
     tmp_path: Path,
 ) -> None:
@@ -3171,9 +3452,24 @@ def test_case_context_pins_traceback_file_without_execution_trace(
 ) -> None:
     package = tmp_path / "tornado"
     package.mkdir()
+    httpclient_lines = [
+        "from tornado.http1connection import HTTP1Connection",
+        "",
+        "def fetch_redirect():",
+    ]
+    while len(httpclient_lines) < 653:
+        httpclient_lines.append(f"    x_{len(httpclient_lines) + 1} = 0")
+    httpclient_lines.append("    return HTTP1Connection()")
+    while len(httpclient_lines) < 800:
+        httpclient_lines.append(f"    y_{len(httpclient_lines) + 1} = 0")
     (package / "simple_httpclient.py").write_text(
-        "\n".join(f"line_{index} = {index}" for index in range(1, 801))
-        + "\n",
+        "\n".join(httpclient_lines) + "\n",
+        encoding="utf-8",
+    )
+    (package / "http1connection.py").write_text(
+        "class HTTP1Connection:\n"
+        "    def __init__(self):\n"
+        "        self.stream = None\n",
         encoding="utf-8",
     )
     (package / "ioloop.py").write_text(
@@ -3212,7 +3508,9 @@ def test_case_context_pins_traceback_file_without_execution_trace(
     _tree, context = deterministic_case_context(case, runtime)
 
     assert "SOURCE tornado/simple_httpclient.py:L" in context
-    assert "00654 | line_654 = 654" in context
+    assert "00654 |     return HTTP1Connection()" in context
+    assert "SOURCE tornado/http1connection.py:L" in context
+    assert "class HTTP1Connection:" in context
 
 
 def test_case_context_pins_asyncio_handle_traceback_path(
@@ -3246,6 +3544,51 @@ def test_case_context_pins_asyncio_handle_traceback_path(
 
     assert "SOURCE pkg/simple_httpclient.py:L" in context
     assert "00654 | callback_654 = 654" in context
+
+
+def test_task_packet_highlights_asserted_fields_on_traced_types(
+    tmp_path: Path,
+) -> None:
+    models = tmp_path / "fastapi" / "openapi" / "models.py"
+    models.parent.mkdir(parents=True)
+    models.write_text(
+        "from typing import Any, Dict, Optional\n\n"
+        "class SchemaBase:\n"
+        "    properties: Optional[Dict[str, 'SchemaBase']]\n"
+        "    additionalProperties: Optional[bool]\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_schema.py").write_text(
+        "def test_additional_properties_schema():\n"
+        "    assert model['properties'] == {}\n",
+        encoding="utf-8",
+    )
+    case = {
+        "caseId": "fastapi-14",
+        "project": "fastapi",
+        "objective": "Repair the OpenAPI schema field type.",
+        "verificationArgv": [["pytest", "-q"]],
+        "testFiles": ["tests/test_schema.py"],
+    }
+    runtime = {
+        "baseSnapshot": str(tmp_path),
+        "failureEvidence": (
+            "AssertionError: assert {'additionalProperties': {}} "
+            "== {'properties': {}}\n"
+        ),
+        "executedSourceLines": {
+            "fastapi/openapi/models.py": [4, 5],
+        },
+    }
+
+    packet = build_task_packet(case, runtime, ["fastapi"])
+
+    assert "FROZEN ASSERTED-FIELD DIAGNOSIS HINTS:" in packet
+    assert "matches field `properties`" in packet
+    assert "SchemaBase" in packet
+    assert "fastapi/openapi/models.py" in packet
 
 
 def test_requested_source_windows_prioritize_exact_test_identifier() -> None:
@@ -3757,6 +4100,14 @@ def test_frontier_delegation_prompt_exposes_small_worker_limits() -> None:
     assert "class-wide policy" not in prompt
     assert "field annotation is a valid candidate" in prompt
     assert "do not return zero edits as insufficient" in prompt
+    assert "ASSERTED-FIELD DIAGNOSIS HINTS" in prompt
+    assert "path:L1-60" in prompt
+    assert "1-hop helper" in prompt
+
+    alone = frontier_alone_response_prompt("SOURCE module.py:L1-L2\n")
+    assert "field annotation is a valid candidate" in alone
+    assert "ASSERTED-FIELD DIAGNOSIS HINTS" in alone
+    assert "Imported production callees" in alone
 
 
 def test_directory_size_counts_files_without_following_symlinks(
