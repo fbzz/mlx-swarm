@@ -3166,6 +3166,88 @@ def test_context_ranking_uses_buggy_execution_trace(
     assert "00245 | value_245 = 245" in context
 
 
+def test_case_context_pins_traceback_file_without_execution_trace(
+    tmp_path: Path,
+) -> None:
+    package = tmp_path / "tornado"
+    package.mkdir()
+    (package / "simple_httpclient.py").write_text(
+        "\n".join(f"line_{index} = {index}" for index in range(1, 801))
+        + "\n",
+        encoding="utf-8",
+    )
+    (package / "ioloop.py").write_text(
+        "timeout = 5\n" * 400,
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tornado" / "test"
+    tests.mkdir()
+    (tests / "httpclient_test.py").write_text(
+        "def test_redirect_put_without_body():\n"
+        "    raise TimeoutError('timeout timeout timeout')\n",
+        encoding="utf-8",
+    )
+    runtime = {
+        "baseSnapshot": str(tmp_path),
+        "failureEvidence": (
+            "ERROR: test_redirect_put_without_body\n"
+            "File \"/evaluation/cases/tornado-2/base/tornado/"
+            "simple_httpclient.py\", line 654, in <lambda>\n"
+            "    fut.add_done_callback(lambda f: final_callback(f.result()))\n"
+            "TimeoutError: Operation timed out after 5 seconds\n"
+        ),
+        "executedSourceLines": {},
+    }
+    case = {
+        "testFiles": ["tornado/test/httpclient_test.py"],
+        "verificationArgv": [[
+            "python",
+            "-m",
+            "unittest",
+            "tornado.test.httpclient_test."
+            "HTTPClientCommonTestCase.test_redirect_put_without_body",
+        ]],
+    }
+
+    _tree, context = deterministic_case_context(case, runtime)
+
+    assert "SOURCE tornado/simple_httpclient.py:L" in context
+    assert "00654 | line_654 = 654" in context
+
+
+def test_case_context_pins_asyncio_handle_traceback_path(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "pkg" / "simple_httpclient.py"
+    source.parent.mkdir()
+    source.write_text(
+        "\n".join(f"callback_{index} = {index}" for index in range(1, 701))
+        + "\n",
+        encoding="utf-8",
+    )
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    (tests / "test_client.py").write_text("def test_x():\n    assert False\n")
+    runtime = {
+        "baseSnapshot": str(tmp_path),
+        "failureEvidence": (
+            "handle: <Handle _HTTPConnection.finish.<locals>.<lambda>"
+            "(<Future finis...Stream closed>) at /evaluation/cases/"
+            "tornado-2/base/pkg/simple_httpclient.py:654>\n"
+        ),
+        "executedSourceLines": {},
+    }
+    case = {
+        "testFiles": ["tests/test_client.py"],
+        "verificationArgv": [["pytest", "tests/test_client.py"]],
+    }
+
+    _tree, context = deterministic_case_context(case, runtime)
+
+    assert "SOURCE pkg/simple_httpclient.py:L" in context
+    assert "00654 | callback_654 = 654" in context
+
+
 def test_requested_source_windows_prioritize_exact_test_identifier() -> None:
     lines = [
         f"def generic_case_{index}():\n    assert value == {index}"
@@ -3672,6 +3754,9 @@ def test_frontier_delegation_prompt_exposes_small_worker_limits() -> None:
     assert '"mustAdd"' in prompt
     assert "invalid Python syntax" not in prompt
     assert "Mentally splice new into the complete file" in prompt
+    assert "class-wide policy" not in prompt
+    assert "field annotation is a valid candidate" in prompt
+    assert "do not return zero edits as insufficient" in prompt
 
 
 def test_directory_size_counts_files_without_following_symlinks(

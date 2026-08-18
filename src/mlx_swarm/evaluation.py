@@ -68,7 +68,11 @@ RESULT_SCHEMA_VERSION = 1
 # calls replay their frozen response and receipt instead of re-spending
 # tokens) and one bounded, honestly-accounted contract-repair retry when a
 # receipt-valid response fails schema or materialization validation.
-FAIR_EVALUATION_PROTOCOL_VERSION = 16
+# Version 17 pins traceback File/line citations into SOURCE windows even
+# when the executed-line map is empty (asyncio/timeout cases), and stops
+# telling the planner that a traced type's field annotation is out of
+# scope as a "class-wide policy".
+FAIR_EVALUATION_PROTOCOL_VERSION = 17
 DEFAULT_EVALUATIONS_DIR = ".swarm/evaluations"
 DEFAULT_PUBLIC_RESULTS_DIR = "benchmarks/results"
 README_START = "<!-- BEGIN MLX-SWARM-ECONOMICS -->"
@@ -87,6 +91,10 @@ _INFO_VALUE = re.compile(
     r'^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"(.*)"$'
 )
 _DIFF_HEADER = re.compile(r"^diff --git a/(\S+) b/(\S+)$")
+_TRACEBACK_FILE_LINE = re.compile(
+    r'File "(?P<quoted>[^"]+)", line (?P<quoted_line>\d+)'
+    r"|[ \t]at (?P<at>\S+):(?P<at_line>\d+)"
+)
 _SHELL_META = ("&&", "||", ">", "<", "|", ";", "$(", "`")
 _SAFE_BENCHMARK_COMMANDS = {
     "pip",
@@ -7219,6 +7227,25 @@ def deterministic_case_context(
 
     remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
     if remaining > 0:
+        for path, start, end, content in _traceback_source_windows(
+            files,
+            relative,
+            failure,
+        ):
+            label = f"{path}:L{start}-L{end}"
+            header = f"SOURCE {label}\n"
+            footer = f"\nEND SOURCE {label}\n"
+            block = header + content + footer
+            if len(block) > remaining:
+                continue
+            blocks.append(block)
+            used += len(block)
+            remaining -= len(block)
+            query_parts.append(content)
+            if remaining < 500:
+                break
+    remaining = MAX_TASK_PACKET_SOURCE_CHARS - used
+    if remaining > 0:
         traced_functions = _rank_traced_function_windows(
             files,
             relative,
@@ -7361,6 +7388,92 @@ def _context_term_counts(text: str) -> dict[str, int]:
             if singular != term and singular not in _CONTEXT_STOP_WORDS:
                 counts[singular] = counts.get(singular, 0) + 1
     return counts
+
+
+def _resolve_traceback_path(
+    raw: str,
+    relative: Sequence[str],
+) -> str | None:
+    """Map a traceback filesystem path onto a sealed relative source path."""
+    normalized = raw.replace("\\", "/").rstrip(">")
+    matches = [
+        path
+        for path in relative
+        if not _is_non_production_path(path)
+        and (
+            normalized == path
+            or normalized.endswith("/" + path)
+            or normalized.endswith(path)
+        )
+    ]
+    if not matches:
+        return None
+    return max(matches, key=len)
+
+
+def _traceback_production_refs(
+    evidence: str,
+    relative: Sequence[str],
+) -> list[tuple[str, int]]:
+    """Collect unique production File/line citations from failure evidence."""
+    refs: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for match in _TRACEBACK_FILE_LINE.finditer(evidence):
+        raw = match.group("quoted") or match.group("at")
+        line_text = match.group("quoted_line") or match.group("at_line")
+        if raw is None or line_text is None:
+            continue
+        path = _resolve_traceback_path(raw, relative)
+        line = int(line_text)
+        if path is None or line <= 0:
+            continue
+        key = (path, line)
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(key)
+    return refs
+
+
+def _traceback_source_windows(
+    files: Sequence[Path],
+    relative: Sequence[str],
+    failure_evidence: str,
+    *,
+    radius_lines: int = 40,
+) -> list[tuple[str, int, int, str]]:
+    """Pin SOURCE windows around traceback lines, even without a trace map."""
+    by_relative = dict(zip(relative, files))
+    selected: list[tuple[str, int, int, str]] = []
+    occupied: dict[str, list[tuple[int, int]]] = {}
+    for path, line in _traceback_production_refs(failure_evidence, relative):
+        child = by_relative.get(path)
+        if child is None:
+            continue
+        try:
+            lines = child.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if not lines:
+            continue
+        start = max(1, line - radius_lines)
+        end = min(len(lines), line + radius_lines)
+        if any(
+            start <= prior_end and end >= prior_start
+            for prior_start, prior_end in occupied.get(path, [])
+        ):
+            continue
+        occupied.setdefault(path, []).append((start, end))
+        selected.append((
+            path,
+            start,
+            end,
+            "\n".join(
+                f"{start + index:05d} | {line_text}"
+                for index, line_text in enumerate(lines[start - 1:end])
+            ),
+        ))
+    return selected
 
 
 def _rank_traced_function_windows(
@@ -7597,14 +7710,24 @@ def _rank_production_windows(
             eligible_paths.add(path)
         if len(matching_terms_by_path.get(path, set())) >= 2:
             eligible_paths.add(path)
-    selected_path_order = [
-        path
-        for path, _score in sorted(
-            best_by_path.items(),
-            key=lambda item: (-item[1], item[0]),
-        )
-        if path in eligible_paths
-    ][:4]
+    traceback_paths: list[str] = []
+    for path, _line in _traceback_production_refs(query, relative):
+        if path in best_by_path and path not in traceback_paths:
+            best_by_path[path] += 10_000.0
+            eligible_paths.add(path)
+            traceback_paths.append(path)
+    selected_path_order: list[str] = [
+        path for path in traceback_paths if path in eligible_paths
+    ]
+    for path, _score in sorted(
+        best_by_path.items(),
+        key=lambda item: (-item[1], item[0]),
+    ):
+        if path not in eligible_paths or path in selected_path_order:
+            continue
+        selected_path_order.append(path)
+        if len(selected_path_order) >= 4:
+            break
     by_path: dict[
         str,
         list[tuple[float, str, int, int, list[str]]],
@@ -7679,9 +7802,12 @@ def frontier_alone_response_prompt(task_packet: str) -> str:
         "- Copy each old anchor from one supplied SOURCE window, remove only "
         "the five-digit line-number and ` | ` display prefixes, and verify "
         "that the resulting text is contiguous and unique in that file.\n"
-        "- Use the executed-line map to locate the earliest branch that sends "
-        "the failing input down the wrong path. Prefer a narrow edit at that "
-        "branch over mutating upstream object state or a class-wide policy.\n"
+        "- Use the executed-line map as the primary locator for the failing "
+        "path. A file listed there outranks a file that only appears in "
+        "expected test fixtures. If the assertion delta names a field that "
+        "exists on a traced type in SOURCE, that field annotation is a valid "
+        "candidate even when it is a class attribute. Do not invent a nearby "
+        "branch-local insert to avoid editing a traced type.\n"
         "- Use matching runtime-local samples to evaluate every new predicate "
         "on the failing call. Samples are observations from distinct calls; "
         "match their path, line, function, and identifying scalar values "
@@ -7825,11 +7951,18 @@ def frontier_delegation_blueprint_prompt(
         "one preserved control, and (3) re-read every edit range directly "
         "from that cited window. Do not use a symbol or API remembered from "
         "another revision.\n"
-        "- Use the executed-line map to identify the earliest branch that "
-        "sends the failing input down the wrong path. Prefer the narrowest "
-        "local predicate or transformation at that branch; do not mutate "
-        "upstream object state or a class-wide policy unless the supplied "
-        "source proves a branch-local repair is impossible.\n"
+        "- Use the executed-line map as the primary locator for the failing "
+        "path. A file listed there outranks a file that only appears in "
+        "expected test fixtures or helper constants. If the assertion delta "
+        "names a field that exists on a traced type in SOURCE, that field "
+        "annotation is a valid candidate even when it is a class attribute. "
+        "Do not invent a nearby branch-local insert to avoid editing a traced "
+        "type. Prefer a narrower predicate only when SOURCE shows that "
+        "predicate on the failing path and it would produce the same delta.\n"
+        "- A traceback File/line citation is authoritative when the "
+        "executed-line map is empty. If SOURCE includes that file, propose "
+        "the grounded edit there; do not return zero edits as insufficient "
+        "grounding.\n"
         "- Runtime-local samples are bounded observations from distinct calls. "
         "Match path, line, function, and identifying scalar values before "
         "using a sample. Every new predicate must evaluate true for a supplied "

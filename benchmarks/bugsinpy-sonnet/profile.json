@@ -38,7 +38,7 @@
   "frontier": {
     "adapter": "claude-cli",
     "command": "claude",
-    "commandVersion": "2.1.220 (Claude Code)",
+    "commandVersion": "2.1.234 (Claude Code)",
     "provider": "claude-code",
     "model": "claude-sonnet-5",
     "contextWindowTokens": 200000,
