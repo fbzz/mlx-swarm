@@ -48,9 +48,9 @@ Tasks are classified as:
 - `invalid_json`: Model output was not valid JSON.
 - `invalid_schema`: JSON did not match the expected edit manifest schema.
 - `wrong_edit`: The edit was semantically correct but not an exact character-for-character match.
-- `suspected_token_limit`: The prompt exceeded the configured rendered-token tolerance or the model hit its context guard.
+- `suspected_token_limit`: A non-passing completion ended at or near its generation ceiling.
 - `inference_error`: Backend failure (e.g., OOM, crash).
-- `invalid_fit`: The prompt could not be tokenized within the configured tolerance.
+- `token_fit_out_of_tolerance`: The real rendered prompt could not be fitted within --tolerance-tokens.
 
 ### Highest All-Pass Tier
 The highest tier in the `--tiers` list where **all** trials for **all** positions resulted in `pass` status. If no tier achieves 100% pass rate, this field will be null.
