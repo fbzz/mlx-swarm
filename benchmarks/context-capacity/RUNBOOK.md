@@ -17,20 +17,22 @@ Before running the full promotion matrix, ensure the following conditions are me
 A quick validation of the benchmark infrastructure and basic model responsiveness.
 ```bash
 python -m mlx_swarm.context_benchmark \
+  --config .mlx-swarm/swarm.json \
   --tiers 2048,8192 \
   --positions start,end \
   --trials 1 \
-  --output ./results/smoke
+  --output-dir ./results/smoke
 ```
 
 ### Promotion Matrix
 The full benchmark suite for verifying context limits across all defined tiers and positions.
 ```bash
 python -m mlx_swarm.context_benchmark \
+  --config .mlx-swarm/swarm.json \
   --tiers 2048,4096,8192,16384,32768 \
   --positions start,middle,end \
   --trials 3 \
-  --output ./results/promotion
+  --output-dir ./results/promotion
 ```
 
 ## Output Interpretation
