@@ -25,8 +25,8 @@ DEFAULT_MAX_PROMPT_CHARS = 80_000
 DEFAULT_MAX_BATCH_PROMPT_TOKENS = 49_152
 DEFAULT_REASONING_MAX_TOKENS = 768
 DEFAULT_MAX_GENERATION_TOKENS = 2048
-EXACT_EDIT_MAX_TOKENS = 1024
-EXACT_EDIT_EXPECTED_MAX_TOKENS = 700
+EXACT_EDIT_MAX_TOKENS = 2048
+EXACT_EDIT_EXPECTED_MAX_TOKENS = 1400
 MAX_PROMPT_CHARS = 120_000
 MAX_TASKS_PER_PLAN = 128
 MAX_REPAIR_ATTEMPTS = 0
@@ -57,8 +57,8 @@ REASONING_EFFORTS = {"low", "medium", "xhigh"}
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
-    "implementation": {"temperature": 0.15, "top_p": 0.9, "max_tokens": 1024},
-    "test": {"temperature": 0.10, "top_p": 0.95, "max_tokens": 1024},
+    "implementation": {"temperature": 0.15, "top_p": 0.9, "max_tokens": 2048},
+    "test": {"temperature": 0.10, "top_p": 0.95, "max_tokens": 2048},
     "review": {"temperature": 0.0, "top_p": 1.0, "max_tokens": 768},
     "general": {"temperature": 0.2, "top_p": 0.9, "max_tokens": 1536},
 }

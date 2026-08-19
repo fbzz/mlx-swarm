@@ -10,10 +10,11 @@ All notable changes to MLX Swarm are documented in this file.
   Reject in a task inspector, and a docked PTY. The browser cockpit still
   serves the same API at `127.0.0.1:8765`.
 - Public landing page under `website/` with structural pytest coverage.
-- New task skill map: bounded workspace graph (`GET /api/workspace/map`,
-  `mlx-swarm map`, `mlx-swarm map --format mermaid`), `mlx-swarm-skill-map`
-  Agent Skill, and New task install cards. Clicking a graph node stores
-  `focusPaths` without rebinding the workspace or creating a commander request.
+- New task skill map: React Flow feature graph from `lat.md` / `@lat` (package
+  graph otherwise), `GET /api/workspace/map`, `mlx-swarm map --format mermaid`,
+  `mlx-swarm-skill-map` Agent Skill, and New task install cards. Clicking a
+  feature stores implementing `focusPaths` without rebinding the workspace or
+  creating a commander request.
 - `reasoningEffort` on the swarm config (default `low`) so Qwen chat templates
   do not spend the worker ceiling on hidden reasoning.
 
@@ -23,6 +24,13 @@ All notable changes to MLX Swarm are documented in this file.
   bodies may mention phrases such as "copy to " without failing the gate.
 - README describes the desktop app, Cursor skill install, and 400 collected
   tests as the current product.
+- Commander defaults mutating work to local-agent: the frontier plans and
+  assembles the DAG; the local model renders the edit-manifest. Live
+  allowed-path files are attached to worker prompts. `deterministic-edit`
+  remains only for tiny literals.
+- The shipped Qwen3.6 35B-A3B profile uses `direct` generation, a 2,048-token
+  exact-edit ceiling, and 1,400 expected-output preflight. `reasoning-edit`
+  stays an explicit opt-in.
 
 ## [0.5.1] - 2026-08-01
 

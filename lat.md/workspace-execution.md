@@ -74,12 +74,14 @@ The runtime applies edits in memory, derives a unified diff, and then uses the
 normal immutable artifact, digest approval, `git apply --check`, and
 verification lifecycle. The worktree is not changed during materialization.
 
-Schema-v3 local mutations must use edit manifests. If the frontier already
-knows the exact bytes, `executionMode: deterministic-edit` stores the manifest
-in the plan and materializes it with zero model calls or repair attempts.
-Otherwise `executionMode: local-agent` permits bounded agent repair only when
-the task and CLI both opt in with positive budgets, and preflights expected
-output at no more than 70% of the generation ceiling.
+Schema-v3 local mutations must use edit manifests. Default mutating work is
+`executionMode: local-agent`: the runtime attaches the live allowed-path files
+and the local model renders the manifest. `executionMode: deterministic-edit`
+stores a tiny already-known literal in the plan and materializes it with zero
+model calls; do not use it for whole files. Local-agent permits bounded agent
+repair only when the task and CLI both opt in with positive budgets, and
+preflights expected output at no more than 70% of the generation ceiling
+(1,400 tokens when the task uses the shipped 2,048-token exact-edit budget).
 `contextRefs` limits each prompt to its owned authoritative sources and
 `interfaceContract` freezes the boundary it must preserve.
 

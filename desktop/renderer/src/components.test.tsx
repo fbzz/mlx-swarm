@@ -618,9 +618,10 @@ test("new task skill map click highlights a path without creating a plan", () =>
       onSplitCommit={() => undefined}
       map={{
         workspaceRoot: "/tmp/proj",
+        mode: "packages",
         nodes: [
           { id: ".", path: ".", name: "proj", kind: "dir", parentId: null, fileCount: 0 },
-          { id: "src", path: "src", name: "src", kind: "dir", parentId: ".", fileCount: 2 },
+          { id: "src", path: "src", name: "src", kind: "dir", parentId: ".", fileCount: 2, sourcePaths: ["src"] },
         ],
         edges: [{ source: ".", target: "src", kind: "contains" }],
       }}
@@ -631,4 +632,47 @@ test("new task skill map click highlights a path without creating a plan", () =>
   expect(focused.at(-1)).toEqual(["src"]);
   expect(screen.getByText("Focus")).toBeVisible();
   expect(screen.getByRole("button", { name: "Copy path" })).toBeVisible();
+});
+
+test("new task feature click stores implementing files as focus paths", () => {
+  const focused: string[][] = [];
+  render(
+    <NewTask
+      desktop={false}
+      terminalVisible={false}
+      terminalSplit={0.5}
+      onSplitChange={() => undefined}
+      onSplitCommit={() => undefined}
+      map={{
+        workspaceRoot: "/tmp/proj",
+        mode: "features",
+        nodes: [
+          {
+            id: "feature:commander",
+            path: "lat.md/commander.md",
+            name: "Commander",
+            kind: "feature",
+            parentId: null,
+            summary: "Frontier planning requests.",
+            sourcePaths: ["lat.md/commander.md", "src/mlx_swarm/commander.py"],
+          },
+          {
+            id: "feature:plans",
+            path: "lat.md/plans.md",
+            name: "Plans",
+            kind: "feature",
+            parentId: null,
+            sourcePaths: ["lat.md/plans.md"],
+          },
+        ],
+        edges: [{ source: "feature:commander", target: "feature:plans", kind: "related" }],
+      }}
+      onFocusPaths={(paths) => focused.push(paths)}
+    />,
+  );
+  fireEvent.click(document.querySelector('[data-node="lat.md/commander.md"]') as HTMLElement);
+  expect(focused.at(-1)).toEqual(["lat.md/commander.md", "src/mlx_swarm/commander.py"]);
+  expect(screen.getByText("Frontier planning requests.")).toBeVisible();
+  expect(screen.getByText("src/mlx_swarm/commander.py")).toBeVisible();
+  expect(screen.getByText("Features")).toBeVisible();
 });

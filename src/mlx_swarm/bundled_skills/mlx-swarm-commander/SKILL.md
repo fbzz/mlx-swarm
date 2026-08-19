@@ -30,11 +30,11 @@ continue its durable workflow rather than rerouting it mid-session.
 
 Swarm delegation also has an upper bound. Never delegate discovery, API
 inference, causal-fix selection, or a multi-asset bundle to the local worker:
-diagnosis and edit design stay in this frontier call, and each mutating task
+diagnosis and the DAG stay in this frontier call, and each mutating task
 carries exactly one asset or source anchor. Estimate the literal characters of
 each expected artifact at roughly 3.5 characters per token; if the estimate
-exceeds 70% of the task's generation ceiling, split the task or embed the
-known bytes as a deterministic edit.
+exceeds 70% of the task's generation ceiling, split into more local-agent
+tasks. Do not embed leftover file bodies as deterministic edits.
 
 ## Identify the frontier host
 
@@ -59,18 +59,20 @@ belongs to each request; never divide it into fixed per-agent slices. Give each
 task only its authoritative context and let the runtime serialize a wave when
 the aggregate budget would be exceeded.
 
-Use deterministic edits when bytes are known, consuming zero model tokens. For
-local patch or test tasks, keep expected output at or below 700 tokens and
-`max_tokens` at or below 1,024. Use 768 for normal reviews, up to 1,024 only
-when evidence-heavy; use 1,536 for reports, up to 2,048 only when genuinely
+Default mutating work to `local-agent` so the resident model renders the
+edit-manifest. Keep expected output at or below 1,400 tokens and `max_tokens`
+at or below 2,048. Use 768 for normal reviews, up to 1,024 only when
+evidence-heavy; use 1,536 for reports, up to 2,048 only when genuinely
 indivisible. Set `maxRepairAttempts` to 1 for local-agent tasks so one
-gate-feedback repair can run; deterministic-edit tasks require 0. If an
-artifact could exceed 70% of its ceiling, split it before execution. On
-`hitTokenLimit` the runtime escalates the bounded ceiling once within the
-capability maximum and skips repairs that would deterministically replay a
-prior attempt; if the artifact is still truncated, split it in a new plan.
-Keep global thinking off; use a configured local reasoning stage only as a
-selective fallback.
+gate-feedback repair can run. Use `deterministic-edit` only for a tiny already-
+known literal (one config key, one constant); those tasks require
+`maxRepairAttempts` 0. If an artifact could exceed 70% of its ceiling, split
+it into more local-agent tasks before execution. Do not dump a whole file into
+`deterministicEdits`. On `hitTokenLimit` the runtime escalates the bounded
+ceiling once within the capability maximum and skips repairs that would
+deterministically replay a prior attempt; if the artifact is still truncated,
+split it in a new plan. Keep global thinking off; use a configured local
+reasoning stage only as a selective fallback.
 
 Size every `gate.maxCharacters` to the full expected artifact: for a
 deterministic-edit task at least the length of the compact serialized
@@ -103,10 +105,11 @@ a reason to chain independent tasks behind each other.
    `workerOutputProtocol`, `executionMode`, `contextRefs`,
    `interfaceContract`, `expectedOutputTokens`, `allowedPaths`, and
    verification profile IDs for every task. Patch and test-suite agents must
-   use `edit-manifest-v1`: agents return strict exact search/replace JSON and
-   MLX Swarm materializes the operator-visible unified diff. Use
-   `deterministic-edit` with an inline manifest when the exact bytes are already
-   known and no agent judgment is required. Review and report tasks are
+   use    `edit-manifest-v1`: agents return strict exact search/replace JSON and
+   MLX Swarm materializes the operator-visible unified diff. Default mutating
+   tasks to `local-agent`. Use `deterministic-edit` only for a tiny already-
+   known literal; do not embed whole files, pages, or tests. Review and report
+   tasks are
    non-mutating. Assign disjoint path ceilings to independent mutating tasks so
    they can share a wave; serialize overlapping ownership. Select only the
    authoritative source labels each task needs, freeze its interface boundary,
@@ -122,9 +125,10 @@ a reason to chain independent tasks behind each other.
    It describes local model scale, specialization, measured calibration, and
    the maximum safe delegation level. Its numbers override the shipped-profile
    numbers in this skill. Never infer stronger capability from the model name.
-   Treat `calibration: unmeasured` as exact-edit-only conservatism. For `exact-edit`, retain diagnosis and edit design in this
+   Treat `calibration: unmeasured` as exact-edit-only conservatism. For `exact-edit`, retain diagnosis and the DAG in this
    frontier call, then give each mutating agent one mechanical transformation
-   with exact file, symbol, source anchors, and old-to-new instructions.
+   with exact file, symbol, source anchors, and old-to-new instructions. The
+   local worker renders the edit-manifest; do not pre-author the file body.
    Complete the mandatory candidate-change specificity gate before emitting the
    plan. Trace the literal proposed edit through the observed failing path and
    at least one named passing or non-target control path. Explain why the

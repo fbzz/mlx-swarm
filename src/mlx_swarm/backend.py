@@ -113,9 +113,10 @@ def _role_generation_config(task: TaskDef, config: SwarmConfig) -> dict[str, Any
             and task.gate.output_format == "json"
         )
     )
-    # Deterministic structured outputs are both more reliable for the
-    # calibrated 4B exact editor and sampler-compatible for true MLX batching.
-    # Explicit plan overrides remain authoritative experiments.
+    # Deterministic structured outputs stay sampler-compatible for true MLX
+    # batching. The exact-edit ceiling follows the 35B-A3B profile's declared
+    # generation maximum unless a smaller capability is configured. Explicit
+    # plan overrides remain authoritative experiments.
     if strict_json:
         if "temperature" not in task.generation_override:
             result["temperature"] = 0.0

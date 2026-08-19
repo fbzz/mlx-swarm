@@ -117,13 +117,16 @@ export type CodebaseMapNode = {
   id: string;
   path: string;
   name: string;
-  kind: "dir" | "file" | "package" | string;
+  kind: "dir" | "file" | "package" | "feature" | string;
   parentId: string | null;
   fileCount?: number;
+  summary?: string;
+  sourcePaths?: string[];
 };
 
 export type CodebaseMap = {
   workspaceRoot: string;
+  mode?: "features" | "packages" | string;
   truncated?: boolean;
   nodes: CodebaseMapNode[];
   edges: Array<{ source: string; target: string; kind?: string }>;

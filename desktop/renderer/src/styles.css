@@ -282,6 +282,18 @@ kbd { padding: 1px 4px; border: 1px solid var(--line-strong); border-radius: 4px
 .busy-overlay { position: fixed; z-index: 20; top: 14px; right: 18px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); box-shadow: var(--shadow-card); }
 .error-banner { position: fixed; z-index: 30; top: 14px; left: 50%; max-width: 600px; transform: translateX(-50%); padding: 9px 12px; border: 1px solid var(--red); border-radius: 8px; color: var(--red); background: var(--surface); }
 .surface.new-task-surface { width: min(1120px, 100%); padding: 32px 34px 36px; }
+.surface.skill-map-surface {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 14px 16px 12px;
+}
+.surface.skill-map-surface .surface-header { margin-bottom: 10px; }
+.surface.skill-map-surface .new-task-lead { margin-bottom: 10px; }
 .new-task-lead { margin: 0 0 18px; max-width: 62ch; color: var(--ink-2); line-height: 1.45; }
 .skill-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; margin-bottom: 12px; }
 .skill-grid-compact { margin-top: 16px; }
@@ -299,14 +311,61 @@ kbd { padding: 1px 4px; border: 1px solid var(--line-strong); border-radius: 4px
 .skill-map-path code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ghost-button { border: 0; border-radius: 8px; padding: 6px 10px; background: var(--field); color: var(--ink-2); }
 .skill-map-empty { margin: 0; color: var(--ink-2); }
-.skill-map-viewport { height: min(420px, 46vh); min-height: 220px; overflow: hidden; border-radius: 10px; background: var(--inset); cursor: grab; }
-.skill-map-svg { width: 100%; height: 100%; display: block; }
-.skill-map-edge { fill: none; stroke: var(--line-strong); stroke-width: 1.4; }
-.skill-map-node { cursor: pointer; }
-.skill-map-node circle { fill: var(--surface); stroke: var(--ink-3); stroke-width: 1.5; }
-.skill-map-node text { fill: var(--ink); font-size: 11px; font-family: var(--font-sans); }
-.skill-map-node.is-active circle { fill: var(--accent); stroke: var(--accent-ink); }
-.skill-map-node.is-active text { fill: var(--accent-ink); font-weight: 600; }
+.skill-map-viewport {
+  flex: 1 1 0;
+  min-height: 280px;
+  height: auto;
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--inset);
+}
+.skill-map-viewport .react-flow { background: var(--inset); }
+.skill-map-viewport .react-flow__minimap { background: var(--surface); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.skill-map-viewport .react-flow__controls { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; box-shadow: none; }
+.skill-map-viewport .react-flow__controls-button { background: var(--surface); border-color: var(--line); fill: var(--ink-2); }
+.skill-map-viewport .react-flow__edge-path { stroke: var(--line-strong); }
+.skill-map-viewport .react-flow__edge.is-related .react-flow__edge-path { stroke-dasharray: 6 4; }
+.skill-map-viewport .react-flow__attribution { background: transparent; color: var(--ink-3); }
+.skill-flow-node {
+  min-width: 168px;
+  max-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-card);
+}
+.skill-flow-node.is-feature { border-color: color-mix(in srgb, var(--accent) 55%, var(--line-strong)); }
+.skill-flow-node.is-active {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+.skill-flow-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+}
+.skill-flow-kind {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+.skill-flow-hit strong { font-size: 13px; color: var(--ink); }
+.skill-flow-hit small { color: var(--ink-2); font-size: 11px; }
+.skill-map-summary { margin: 0 0 8px; max-width: 72ch; color: var(--ink-2); line-height: 1.45; }
+.skill-map-files { max-height: 4.75rem; overflow: auto; margin: 0 0 8px; padding-left: 18px; color: var(--ink-2); }
+.skill-map-files code { font-size: 12px; }
+.skill-map-focus { flex: 0 0 auto; }
 .skill-card p { margin: 0 0 8px; color: var(--ink-2); }
 .skill-card .kicker { margin: 0 0 8px; }
 .skill-command { display: block; min-width: 0; padding: 8px 10px; border-radius: 8px; background: var(--inset); color: var(--accent-ink); font-size: 12px; }
@@ -316,7 +375,17 @@ kbd { padding: 1px 4px; border: 1px solid var(--line-strong); border-radius: 4px
 .workflow-list li:last-child { margin-bottom: 0; }
 .new-task-split { flex: 1 1 0; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
 .new-task-split[data-collapsed="false"] { grid-template-rows: minmax(0, 1fr) 8px minmax(0, 1fr); }
-.new-task-guide { min-width: 0; min-height: 0; overflow: auto; }
+.new-task-guide {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) minmax(120px, 32%);
+}
+.new-task-guide .new-task-surface:not(.skill-map-surface) {
+  min-height: 0;
+  overflow: auto;
+}
 .new-task-terminal { min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-rows: minmax(0, 1fr); }
 .new-task-terminal .terminal-dock,
 .new-task-terminal .terminal-host { min-height: 0; height: 100%; max-height: 100%; overflow: hidden; }

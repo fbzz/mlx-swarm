@@ -18,7 +18,8 @@ to direct host-agent work, not Swarm.
 ## Show the graph
 
 Obtain the config path from the cockpit or project `.mlx-swarm/swarm.json`.
-Your first reply in this turn must include the mermaid graph. Run:
+Your first reply in this turn must include the mermaid graph of features
+(or packages if the workspace has no `lat.md`). Run:
 
 `mlx-swarm --config CONFIG map --format mermaid`
 
@@ -33,7 +34,8 @@ full SVG.
 ## Honor cockpit focus
 
 If `.mlx-swarm/ui-state.json` contains `focusPaths`, those are the operator's
-highlighted subgraph. Treat them as the inspection ceiling:
+highlighted feature (implementing files and the lat.md page). Treat them as
+the inspection ceiling:
 
 - inspect only those paths and their descendants below `workspaceRoot`;
 - when later planning with `mlx-swarm-commander`, confine `allowedPaths` to

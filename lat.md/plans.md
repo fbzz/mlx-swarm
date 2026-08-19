@@ -74,8 +74,8 @@ Each task has an id, role, prompt, optional gate, and optional dependsOn.
 
 Available task roles and their default generation parameters.
 
-- **implementation**: Code generation (temp 0.15, top_p 0.9, max_tokens 1024)
-- **test**: Test writing (temp 0.10, top_p 0.95, max_tokens 1024)
+- **implementation**: Code generation (temp 0.15, top_p 0.9, max_tokens 2048)
+- **test**: Test writing (temp 0.10, top_p 0.95, max_tokens 2048)
 - **review**: Code review (temp 0.0, top_p 1.0, max_tokens 768)
 - **general**: General purpose (temp 0.2, top_p 0.9, max_tokens 1536)
 
@@ -134,9 +134,12 @@ budget. `contextRefs` selects unique labels from
 `context.authoritativeSources`; unselected sources are omitted from the worker
 prompt. `interfaceContract` freezes the boundary the worker must preserve.
 
-When the exact transformation is already known, `executionMode:
+When the exact transformation is a tiny already-known literal, `executionMode:
 "deterministic-edit"` embeds `deterministicEdits`, permits no generation
-override or repair, and consumes zero local generation calls. Plan validation
+override or repair, and consumes zero local generation calls. Whole files,
+pages, and tests stay `local-agent`: the planner names the transformation, the
+runtime attaches the live file, and the local model renders the manifest. Plan
+validation
 rejects a deterministic-edit task whose compact serialized `{"edits": [...]}`
 payload exceeds its own `gate.maxCharacters`, so a self-contradictory task
 fails at import instead of at runtime. A task that omits `maxRepairAttempts`

@@ -97,6 +97,9 @@ All config fields with types, defaults, and constraints.
 - **worker.capabilities.maxGenerationTokens** (default 2048): Hard per-task
   generation ceiling for the bundled profile. Values through 8192 are
   accepted by the contract; a plan exceeding the configured value is rejected.
+  Schema-v3 mutating local-agent tasks also preflight `expectedOutputTokens`
+  at no more than 70% of the task ceiling and 1,400 tokens on the shipped
+  exact-edit envelope.
 - **worker.capabilities.specialization**: `unknown`, `general`, `code`, or
   `mixed`.
 - **worker.capabilities.delegationLevel**: `exact-edit`,

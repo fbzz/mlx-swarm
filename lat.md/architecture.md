@@ -31,7 +31,7 @@ src/mlx_swarm/
   ui.py              — localhost-only HTTP API, run launcher, and history serialization
   ui_static/         — packaged HTML, CSS, and JavaScript operator cockpit
   skill_install.py   — host-aware installation of bundled Agent Skills
-  codebase_map.py    — bounded workspace graph for the New task skill map
+  `codebase_map.py`    — feature/package graph for the New task skill map
   cli.py             — runtime, commander, cockpit, map, and skill commands
 ```
 
