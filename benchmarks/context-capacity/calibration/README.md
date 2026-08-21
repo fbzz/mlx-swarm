@@ -2,40 +2,50 @@
 
 Calibration of the `mlx-community/Qwen3.6-35B-A3B-4bit` local worker on this
 machine (Apple M4 Pro, 48 GiB). Written to the machine-local
-`.mlx-swarm/swarm.json` (which is gitignored); the evidence lives here.
+`.mlx-swarm/swarm.json` (gitignored); the evidence lives here.
 
-## Result
+## Result — oracle-verified diagnosis calibration (passed)
 
-`worker.capabilities.calibration` was moved from `unmeasured` to:
+`mlx-swarm eval replay-local bugsinpy-sonnet-preliminary-20260818t181355z`
+(worker mode `reasoning-edit`, 768 reasoning tokens, **zero frontier calls**)
+replayed the two frozen Sonnet-authored calibration plans against the local
+worker and verified each fix with the independent BugsInPy oracle running the
+pinned `mlx-swarm-bugsinpy-amd64` container (`linux/amd64`):
+
+| Case | Fix | Oracle | Score |
+| --- | --- | --- | --- |
+| black-11 | split_line comment placement | pytest exit 0 | 1 |
+| fastapi-6 | form list-param handling | pytest exit 0 | 1 |
+
+Promotion gate: **passed** (`measuredEligible: true`). Evidence:
+`bugsinpy-replay-20260821-oracle-passed.json` / `.log`
+(replay.json sha256 `1246a404f170fd945e7fa1ad8e14b9a61aef56653253a9cc54ace8b87acc9590`).
+
+On the strength of this, the machine-local config was set to:
 
 ```json
-{ "status": "passed", "passedCases": 45, "totalCases": 45,
-  "evidenceSha256": "657106b30259aa80091a7b9f88da430abedcdee9ce72952ba6f3d37936c6693d" }
+"delegationLevel": "bounded-implementation",
+"calibration": { "status": "passed", "passedCases": 2, "totalCases": 2,
+  "evidenceSha256": "1246a404f170fd945e7fa1ad8e14b9a61aef56653253a9cc54ace8b87acc9590" }
 ```
 
-`delegationLevel` stays `exact-edit` (unchanged).
+Because `.mlx-swarm/` is gitignored, the config change takes effect on this
+machine and is not in the repo; only this evidence is.
 
-## Basis — exact-edit context calibration (measured)
+## Supporting — exact-edit context calibration
 
-The evidence digest is the `results.json` of the copy-mode context-capacity
-promotion matrix (`promotion-v1`): the worker returned an exact edit manifest
-in 45/45 cases across 2048–32768 rendered tokens at start/middle/end over three
-trials. The retrieve-mode matrix (worker locates the anchor itself) also passed
-45/45 (`a07c545a…f9433d`). This directly evidences the declared `exact-edit`
-delegation level. See `../results/`.
+The context-capacity matrix independently shows the worker returns an exact
+edit manifest in 45/45 cases across 2048–32768 rendered tokens in both copy
+and retrieve modes (`../results/`, digests `657106b3…` and `a07c545a…`).
 
-## Diagnosis calibration — attempted, blocked on the oracle
+## Reproducing
 
-A frozen-plan BugsInPy replay (`mlx-swarm eval replay-local`, zero frontier
-calls) was run against the two calibration cases `black-11` and `fastapi-6`.
-The worker produced **gate-passing edit manifests for both** (see
-`bugsinpy-replay-20260821.json` / `.log`), but the independent oracle reported
-`infrastructure_error` and the promotion gate stayed locked, because the pinned
-Docker/colima BugsInPy image is absent and cannot be rebuilt on the current
-free disk (~10 GiB). Colima was started only to check for the image and stopped
-again; no measured-work gate was changed.
+1. `colima start` (needs the pinned `mlx-swarm-bugsinpy-amd64` image in the VM
+   and ~15 GiB free host disk).
+2. `python -m mlx_swarm.cli --config .swarm/eval-config.json eval replay-local \`
+   `  bugsinpy-sonnet-preliminary-20260818t181355z \`
+   `  --worker-mode reasoning-edit --reasoning-max-tokens 768`
 
-To complete the oracle-verified diagnosis (`bounded-implementation`) calibration,
-bring up colima with the pinned `mlx-swarm-bugsinpy-amd64` image (see
-`benchmarks/bugsinpy-glm52/RUNBOOK.md`) on a machine with sufficient free disk,
-then re-run the replay.
+The first attempt on 2026-08-21 failed with `infrastructure_error` because
+colima was stopped; starting it (after clearing stale lima locks) and freeing
+host disk to ~44 GiB let the oracle run and pass.

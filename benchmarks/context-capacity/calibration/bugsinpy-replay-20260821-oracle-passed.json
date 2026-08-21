@@ -1,13 +1,13 @@
 {
   "schemaVersion": 1,
-  "replayId": "20260821t115339z-544a8ab5",
+  "replayId": "20260821t121615z-1adbf974",
   "evaluationId": "bugsinpy-sonnet-preliminary-20260818t181355z",
   "workerMode": "reasoning-edit",
   "reasoningMaxTokens": 768,
   "frontierCalls": 0,
   "planSourceType": "frozen-frontier",
   "diagnosticOnly": false,
-  "mlxSwarmCommit": "05d9ca668dba3cbca8a7ea9cee634c4aff7c1ce8",
+  "mlxSwarmCommit": "c8da0fc8871a36e8a3e9abd8d1bd7ff144d572ff",
   "model": {
     "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
     "revision": "",
@@ -17,15 +17,18 @@
     "black-11",
     "fastapi-6"
   ],
-  "passedCases": [],
+  "passedCases": [
+    "black-11",
+    "fastapi-6"
+  ],
   "results": [
     {
       "schemaVersion": 1,
-      "replayId": "20260821t115339z-544a8ab5",
+      "replayId": "20260821t121615z-1adbf974",
       "evaluationId": "bugsinpy-sonnet-preliminary-20260818t181355z",
       "caseId": "black-11",
-      "status": "invalid",
-      "score": 0,
+      "status": "completed",
+      "score": 1,
       "workerMode": "reasoning-edit",
       "reasoningMaxTokens": 768,
       "frontierCalls": 0,
@@ -40,8 +43,8 @@
           "path": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/cases/black-11/arms/mlx-swarm/artifacts/black-11-splitline-misplaced-comment-fix/20260818T184746Z-b2ab944a/attempts/apply-frontier-edits/attempt-001.json"
         }
       ],
-      "sessionDir": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/local-replays/20260821t115339z-544a8ab5/black-11/artifacts/black-11-splitline-misplaced-comment-fix/20260821T115340Z-e00b088a",
-      "elapsedSeconds": 57.00914970800659,
+      "sessionDir": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/local-replays/20260821t121615z-1adbf974/black-11/artifacts/black-11-splitline-misplaced-comment-fix/20260821T121616Z-054009b1",
+      "elapsedSeconds": 61.2218829590056,
       "localUsage": {
         "promptTokens": 12628,
         "generationTokens": 941,
@@ -50,8 +53,8 @@
       },
       "taskEvidence": {
         "apply-frontier-edits": {
-          "status": "rejected_by_operator",
-          "error": "Verifier infrastructure failed; measurement is invalid.",
+          "status": "completed",
+          "error": null,
           "gateResult": {
             "configured": true,
             "passed": true,
@@ -83,7 +86,7 @@
               "bugsinpy-acceptance"
             ],
             "baseCommit": "4cd559744c93e062733e66372aa2d0ed2ac8b833",
-            "createdAt": "2026-08-21T11:54:33.086218Z",
+            "createdAt": "2026-08-21T12:17:10.998460Z",
             "decisionStatus": "awaiting_approval"
           },
           "verificationResults": [
@@ -101,14 +104,14 @@
               ],
               "cwd": ".",
               "timeoutSeconds": 1800,
-              "startedAt": "2026-08-21T11:54:35.020209Z",
-              "finishedAt": "2026-08-21T11:54:35.518082Z",
-              "elapsedSeconds": 0.4978705829998944,
-              "exitCode": 2,
+              "startedAt": "2026-08-21T12:17:12.827434Z",
+              "finishedAt": "2026-08-21T12:17:16.763779Z",
+              "elapsedSeconds": 3.9363056660004077,
+              "exitCode": 0,
               "timedOut": false,
               "output": "artifacts/apply-frontier-edits/verification/bugsinpy-acceptance/attempt-001.log",
-              "outputSha256": "1eee459e5c3005faa5509779867768a7427898804174341ce1ce9c7cd30e632b",
-              "outputBytes": 183,
+              "outputSha256": "91e67f55dcb6b1c2470b8a6d17791dd4ea0aff1cf0d6430ea1a83c4a4d98809e",
+              "outputBytes": 334,
               "outputTruncated": false,
               "trackedChangesRejected": [],
               "trackedChangesRestored": [],
@@ -116,7 +119,7 @@
               "remainingWorkspaceChanges": [],
               "lineageError": null,
               "processGroupCleanupError": null,
-              "passed": false
+              "passed": true
             }
           ],
           "generationAttempts": [
@@ -142,19 +145,19 @@
         }
       },
       "oracle": {
-        "passed": false,
-        "exitCode": null,
-        "evidence": "Verifier infrastructure failed independently of the candidate: infrastructure_error:"
+        "passed": true,
+        "exitCode": 0,
+        "evidence": "$ /evaluation/cache/environments/black-2b40cba5f7d166fe/bin/python -m unittest -q tests.test_black.BlackTestCase.test_comments6\n----------------------------------------------------------------------\nRan 1 test in 0.087s\n\nOK\n"
       },
-      "recordedAt": "2026-08-21T11:54:37.882466+00:00"
+      "recordedAt": "2026-08-21T12:17:20.683519+00:00"
     },
     {
       "schemaVersion": 1,
-      "replayId": "20260821t115339z-544a8ab5",
+      "replayId": "20260821t121615z-1adbf974",
       "evaluationId": "bugsinpy-sonnet-preliminary-20260818t181355z",
       "caseId": "fastapi-6",
-      "status": "invalid",
-      "score": 0,
+      "status": "completed",
+      "score": 1,
       "workerMode": "reasoning-edit",
       "reasoningMaxTokens": 768,
       "frontierCalls": 0,
@@ -169,8 +172,8 @@
           "path": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/cases/fastapi-6/arms/mlx-swarm/artifacts/fastapi6-form-bare-sequence-fix/20260818T185044Z-509d490d/attempts/apply-frontier-edits/attempt-001.json"
         }
       ],
-      "sessionDir": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/local-replays/20260821t115339z-544a8ab5/fastapi-6/artifacts/fastapi6-form-bare-sequence-fix/20260821T115441Z-0163be71",
-      "elapsedSeconds": 49.0311223749959,
+      "sessionDir": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/local-replays/20260821t121615z-1adbf974/fastapi-6/artifacts/fastapi6-form-bare-sequence-fix/20260821T121722Z-a7ea6e87",
+      "elapsedSeconds": 63.66346912500012,
       "localUsage": {
         "promptTokens": 7999,
         "generationTokens": 898,
@@ -179,8 +182,8 @@
       },
       "taskEvidence": {
         "apply-frontier-edits": {
-          "status": "rejected_by_operator",
-          "error": "Verifier infrastructure failed; measurement is invalid.",
+          "status": "completed",
+          "error": null,
           "gateResult": {
             "configured": true,
             "passed": true,
@@ -209,7 +212,7 @@
               "bugsinpy-acceptance"
             ],
             "baseCommit": "e886b8d9c3c0d908a03e1c68bd2b4d2cddb56161",
-            "createdAt": "2026-08-21T11:55:27.814488Z",
+            "createdAt": "2026-08-21T12:18:08.843350Z",
             "decisionStatus": "awaiting_approval"
           },
           "verificationResults": [
@@ -227,14 +230,14 @@
               ],
               "cwd": ".",
               "timeoutSeconds": 1800,
-              "startedAt": "2026-08-21T11:55:29.698534Z",
-              "finishedAt": "2026-08-21T11:55:30.185021Z",
-              "elapsedSeconds": 0.4864748330001021,
-              "exitCode": 2,
+              "startedAt": "2026-08-21T12:18:10.786311Z",
+              "finishedAt": "2026-08-21T12:18:26.791574Z",
+              "elapsedSeconds": 16.00510045899864,
+              "exitCode": 0,
               "timedOut": false,
               "output": "artifacts/apply-frontier-edits/verification/bugsinpy-acceptance/attempt-001.log",
-              "outputSha256": "1eee459e5c3005faa5509779867768a7427898804174341ce1ce9c7cd30e632b",
-              "outputBytes": 183,
+              "outputSha256": "1ea3e045991fd23b20650abac4d1613ba9edf10c7c5b2f38ccd07016f00946b8",
+              "outputBytes": 2053,
               "outputTruncated": false,
               "trackedChangesRejected": [],
               "trackedChangesRestored": [],
@@ -242,7 +245,7 @@
               "remainingWorkspaceChanges": [],
               "lineageError": null,
               "processGroupCleanupError": null,
-              "passed": false
+              "passed": true
             }
           ],
           "generationAttempts": [
@@ -268,22 +271,25 @@
         }
       },
       "oracle": {
-        "passed": false,
-        "exitCode": null,
-        "evidence": "Verifier infrastructure failed independently of the candidate: infrastructure_error:"
+        "passed": true,
+        "exitCode": 0,
+        "evidence": "$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_list_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/local-replays/20260821t121615z-1adbf974/fastapi-6/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 2.09s ===============================\n\n$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_set_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/local-replays/20260821t121615z-1adbf974/fastapi-6/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 2.37s ===============================\n\n$ /evaluation/cache/environments/fastapi-e335045f846e92e2/bin/python -m pytest tests/test_forms_from_non_typing_sequences.py::test_python_tuple_param_as_form\n============================= test session starts ==============================\nplatform linux -- Python 3.8.20, pytest-5.4.3, py-1.8.1, pluggy-0.13.1\nrootdir: /evaluation/local-replays/20260821t121615z-1adbf974/fastapi-6/oracle\ncollected 1 item\n\ntests/test_forms_from_non_typing_sequences.py .                          [100%]\n\n============================== 1 passed in 2.27s ===============================\n"
       },
-      "recordedAt": "2026-08-21T11:55:32.412152+00:00"
+      "recordedAt": "2026-08-21T12:18:44.447906+00:00"
     }
   ],
   "promotionGate": {
-    "status": "failed",
-    "measuredEligible": false,
+    "status": "passed",
+    "measuredEligible": true,
     "requiredCases": [
       "black-11",
       "fastapi-6"
     ],
-    "passedCases": [],
-    "reason": "Measured work remains locked until every frozen calibration replay passes the independent oracle."
+    "passedCases": [
+      "black-11",
+      "fastapi-6"
+    ],
+    "reason": "Every frozen calibration replay passed the independent oracle."
   },
-  "recordedAt": "2026-08-21T11:55:32.412864+00:00"
+  "recordedAt": "2026-08-21T12:18:44.448427+00:00"
 }
