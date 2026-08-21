@@ -120,7 +120,10 @@ All config fields with types, defaults, and constraints.
   records the declared `argv`; at run time a bare `python` or `python3`
   executes as the interpreter running the swarm, and a worktree `src/`
   directory is prepended to `PYTHONPATH`, so verification imports the
-  patched tree rather than an editable install of the main checkout.
+  patched tree rather than an editable install of the main checkout. The
+  session's `runtime-tmp` and `runtime-home` are fenced with
+  `GIT_CEILING_DIRECTORIES`, so tests that treat their temporary directory
+  as outside any repository do not discover the enclosing checkout.
 
 ## Validation
 

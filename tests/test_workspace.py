@@ -1156,7 +1156,8 @@ def test_verification_runs_swarm_interpreter_with_worktree_src(
     raw["workspace"]["verificationProfiles"]["syntax"]["argv"] = [
         "python3",
         "-c",
-        "import os, sys; print(sys.executable); print(os.environ['PYTHONPATH'])",
+        "import os, sys; print(sys.executable); print(os.environ['PYTHONPATH']); "
+        "print(os.environ['GIT_CEILING_DIRECTORIES'])",
     ]
     raw["workspace"]["verificationProfiles"]["syntax"]["environment"] = {
         "PYTHONPATH": "/opt/extra",
@@ -1188,13 +1189,20 @@ def test_verification_runs_swarm_interpreter_with_worktree_src(
     assert results[0]["argv"] == [
         "python3",
         "-c",
-        "import os, sys; print(sys.executable); print(os.environ['PYTHONPATH'])",
+        "import os, sys; print(sys.executable); print(os.environ['PYTHONPATH']); "
+        "print(os.environ['GIT_CEILING_DIRECTORIES'])",
     ]
     log = (session.dir / results[0]["output"]).read_text(encoding="utf-8")
-    interpreter, python_path = log.splitlines()[:2]
+    interpreter, python_path, ceilings = log.splitlines()[:3]
     assert interpreter == sys.executable
     worktree_src = str(Path(snapshot["worktreePath"]) / "src")
     assert python_path == os.pathsep.join([worktree_src, "/opt/extra"])
+    # Temporary and home directories of the session are fenced from Git
+    # discovery so tests there do not resolve the enclosing repository.
+    assert ceilings == os.pathsep.join([
+        str((session.dir / "runtime-tmp").resolve()),
+        str((session.dir / "runtime-home").resolve()),
+    ])
 
 
 def test_verification_output_is_bounded(tmp_path: Path) -> None:
@@ -3661,3 +3669,22 @@ def test_concurrent_artifact_decisions_cannot_overwrite_evidence(
         ).read_text()
     )
     assert persisted == accepted[0]
+
+
+def test_discover_git_root_honors_ceiling_directories(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from mlx_swarm.workspace import WorkspaceError, discover_git_root
+
+    repo, _config_path = _repo(tmp_path)
+    scratch = repo / "scratch" / "nested"
+    scratch.mkdir(parents=True)
+    assert discover_git_root(scratch) == repo.resolve()
+    # The verification runner fences session temp/home directories this way;
+    # the Git wrapper must let the fence through even though it drops every
+    # other inherited GIT_* override (GIT_DIR here must not leak in).
+    monkeypatch.setenv("GIT_CEILING_DIRECTORIES", str((repo / "scratch").resolve()))
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "must-be-dropped"))
+    with pytest.raises(WorkspaceError):
+        discover_git_root(scratch)
