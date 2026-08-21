@@ -116,7 +116,11 @@ All config fields with types, defaults, and constraints.
 - **workspace.verificationProfiles** (schema v2, required, object): Named,
   immutable verification authority. A profile has a non-empty fixed `argv`,
   optional relative `cwd` (default `.`), `timeoutSeconds` (1–3600), unique
-  `inheritEnv` names, and explicit string `environment` values.
+  `inheritEnv` names, and explicit string `environment` values. The receipt
+  records the declared `argv`; at run time a bare `python` or `python3`
+  executes as the interpreter running the swarm, and a worktree `src/`
+  directory is prepended to `PYTHONPATH`, so verification imports the
+  patched tree rather than an editable install of the main checkout.
 
 ## Validation
 

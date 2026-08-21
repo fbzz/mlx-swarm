@@ -26,6 +26,10 @@ All notable changes to MLX Swarm are documented in this file.
 
 ### Changed
 
+- Verification profiles run a bare `python`/`python3` as the swarm's own
+  interpreter and prepend the worktree `src/` to `PYTHONPATH`, so worktree
+  pytest exercises the patched modules instead of the main checkout's
+  editable install (receipts still record the declared argv).
 - Gate normalization strips only a leading reasoning block; a `</think>`
   quoted inside a JSON or fenced payload no longer truncates the output.
 - Forbidden diff-metadata detection matches line prefixes only, so patch
