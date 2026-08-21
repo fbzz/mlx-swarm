@@ -163,3 +163,64 @@ def test_edit_manifest_worker_prompt_preserves_diff_approval_boundary() -> None:
     assert '"edits"' in prompt
     assert "runtime will materialize and validate the unified diff" in prompt
     assert "do not return a Git diff" in prompt
+
+
+def test_local_agent_prompt_attaches_live_workspace_file(tmp_path: Path) -> None:
+    source = tmp_path / "src"
+    source.mkdir()
+    (source / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
+    task = TaskDef(
+        id="edit",
+        role="implementation",
+        prompt="Change VALUE to 2.",
+        artifact_type="patch",
+        allowed_paths=("src/value.py",),
+        verification=("unit",),
+        worker_output_protocol="edit-manifest-v1",
+        execution_mode="local-agent",
+    )
+    session = _mock_session({})
+    session.workspace_snapshot = lambda: {
+        "executionPath": str(tmp_path),
+        "worktreePath": str(tmp_path),
+    }
+
+    prompt = compose_prompt(None, task, session=session)
+
+    assert "WORKSPACE FILE: src/value.py" in prompt
+    assert "VALUE = 1" in prompt
+    assert "Use it as the old text for edit-manifest-v1" in prompt
+
+
+def test_deterministic_edit_prompt_skips_workspace_file(tmp_path: Path) -> None:
+    (tmp_path / "value.py").write_text("VALUE = 1\n", encoding="utf-8")
+    task = TaskDef(
+        id="edit",
+        role="implementation",
+        prompt="Apply the known bytes.",
+        artifact_type="patch",
+        allowed_paths=("value.py",),
+        execution_mode="deterministic-edit",
+    )
+    session = _mock_session({})
+    session.workspace_snapshot = lambda: {"executionPath": str(tmp_path)}
+    prompt = compose_prompt(None, task, session=session)
+    assert "WORKSPACE FILE:" not in prompt
+
+
+def test_review_prompt_truncates_large_dependency_output() -> None:
+    huge = "x" * 4000
+    task = TaskDef(
+        id="review",
+        role="review",
+        prompt="Review it",
+        artifact_type="review",
+        depends_on=("land-index",),
+    )
+    session = _mock_session({"land-index": huge})
+    session.state = {"tasks": {}}
+    prompt = compose_prompt(None, task, session=session)
+    assert "DEPENDENCY OUTPUT: land-index" in prompt
+    assert "characters omitted" in prompt
+    assert huge not in prompt
+    assert huge[:800] in prompt

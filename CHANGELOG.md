@@ -6,23 +6,47 @@ All notable changes to MLX Swarm are documented in this file.
 
 ### Added
 
+- Local context-capacity benchmark (`python -m mlx_swarm.context_benchmark`):
+  exact edit-manifest success by rendered prompt size across tiers, anchor
+  positions, and trials on one resident backend; checkpoints every case to
+  `cases.jsonl`, prints per-case progress, and resumes with `--resume`.
+  `--mode retrieve` makes the model locate the anchor and author the
+  manifest, scored by applying the edit exactly as the runtime does;
+  `--decoys N` plants functions returning the same literal so the anchor
+  must be pinned to the target.
 - Electron desktop app (`mlx-swarm app`): open a folder, live graph, Apply and
   Reject in a task inspector, and a docked PTY. The browser cockpit still
   serves the same API at `127.0.0.1:8765`.
 - Public landing page under `website/` with structural pytest coverage.
-- New task skill map: bounded workspace graph (`GET /api/workspace/map`,
-  `mlx-swarm map`, `mlx-swarm map --format mermaid`), `mlx-swarm-skill-map`
-  Agent Skill, and New task install cards. Clicking a graph node stores
-  `focusPaths` without rebinding the workspace or creating a commander request.
+- New task skill map: React Flow feature graph from `lat.md` / `@lat` (package
+  graph otherwise), `GET /api/workspace/map`, `mlx-swarm map --format mermaid`,
+  `mlx-swarm-skill-map` Agent Skill, and New task install cards. Clicking a
+  feature stores implementing `focusPaths` without rebinding the workspace or
+  creating a commander request.
 - `reasoningEffort` on the swarm config (default `low`) so Qwen chat templates
   do not spend the worker ceiling on hidden reasoning.
 
 ### Changed
 
+- Verification profiles run a bare `python`/`python3` as the swarm's own
+  interpreter and prepend the worktree `src/` to `PYTHONPATH`, so worktree
+  pytest exercises the patched modules instead of the main checkout's
+  editable install (receipts still record the declared argv); the session's
+  temp and home directories are fenced with `GIT_CEILING_DIRECTORIES` so
+  tests there do not discover the enclosing repository.
+- Gate normalization strips only a leading reasoning block; a `</think>`
+  quoted inside a JSON or fenced payload no longer truncates the output.
 - Forbidden diff-metadata detection matches line prefixes only, so patch
   bodies may mention phrases such as "copy to " without failing the gate.
 - README describes the desktop app, Cursor skill install, and 400 collected
   tests as the current product.
+- Commander defaults mutating work to local-agent: the frontier plans and
+  assembles the DAG; the local model renders the edit-manifest. Live
+  allowed-path files are attached to worker prompts. `deterministic-edit`
+  remains only for tiny literals.
+- The shipped Qwen3.6 35B-A3B profile uses `direct` generation, a 2,048-token
+  exact-edit ceiling, and 1,400 expected-output preflight. `reasoning-edit`
+  stays an explicit opt-in.
 
 ## [0.5.1] - 2026-08-01
 

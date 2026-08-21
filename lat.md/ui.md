@@ -21,8 +21,8 @@ launch. Non-local bind hosts are rejected.
   New task split ratio, and `focusPaths` from the skill map.
 - `POST /api/workspace/open` creates or opens `<folder>/.mlx-swarm` and rebinds
   the live cockpit.
-- `GET /api/workspace/map` scans the opened workspace into a bounded
-  parent/child graph and writes `.mlx-swarm/codebase-map.json`.
+- `GET /api/workspace/map` scans the opened workspace into a feature graph
+  (`lat.md` + `@lat`) or a package graph and writes `.mlx-swarm/codebase-map.json`.
 - `GET /api/plans` discovers and validates frontier-authored plan files.
 - `GET /api/commander/requests` lists frontier planning requests.
 - `GET /api/commander/requests/{requestId}` returns its prompt, validation,
@@ -67,11 +67,12 @@ The packaged interface is a React app from
 [[src/mlx_swarm/ui_static/index.html]]. The desktop shell (`mlx-swarm app`)
 uses the same API.
 
-New task shows the SVG codebase graph first, then commander and skill-map
-install cards. Clicking a node stores `focusPaths` in `.mlx-swarm/ui-state.json`.
-It does not rebind the workspace or create a commander request.
-`mlx-swarm --config CONFIG map` writes the same graph; `--format mermaid`
-prints a fenced flowchart for `/mlx-swarm-skill-map`.
+New task fills the top pane with a React Flow graph of features (from
+`lat.md` and `@lat` tags; packages otherwise), then commander and skill-map
+install cards. Clicking a feature stores its implementing paths as `focusPaths`
+in `.mlx-swarm/ui-state.json`. It does not rebind the workspace or create a
+commander request. `mlx-swarm --config CONFIG map` writes the same graph;
+`--format mermaid` prints a fenced flowchart for `/mlx-swarm-skill-map`.
 
 ## Dashboard
 

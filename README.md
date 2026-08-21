@@ -51,14 +51,14 @@ ceiling.
 - **Browser cockpit.** `mlx-swarm ui` serves the same API at
   `127.0.0.1:8765` without Node. Use it when you do not want the desktop
   window.
-- **Exact-edit workers plus deterministic writes.** When bytes are already
-  known, `deterministic-edit` lands them with zero local tokens. When judgment
-  is required, the shipped profile stays at `exact-edit`.
+- **Exact-edit workers.** The frontier host freezes diagnosis and the DAG.
+  Local agents render the edit-manifest. `deterministic-edit` is only for a
+  tiny already-known literal, not whole files.
 - **Two bundled skills.** `mlx-swarm skill install` writes
   `mlx-swarm-commander` and `mlx-swarm-skill-map`. New task shows a bounded
-  codebase graph, then the skill install cards. Clicking a node stores
-  `focusPaths` without starting a run. `mlx-swarm map --format mermaid` prints
-  the same graph for `/mlx-swarm-skill-map`.
+  bounded codebase graph, then the skill install cards. Clicking a feature
+  stores its implementing files as `focusPaths` without starting a run.
+  `mlx-swarm map --format mermaid` prints the same graph for `/mlx-swarm-skill-map`.
 - **Isolated Git worktrees.** Supervised mode pauses on every patch. YOLO
   applies inside the frozen scope. Isolated branches are never merged for you.
 - **Durable evidence.** Plans, apply receipts, verification logs, commits, and
@@ -102,7 +102,8 @@ flowchart LR
 The bundled `mlx-swarm-commander` skill refuses Swarm when the change is one or
 two files of copy, layout, or a literal replacement. For governed work it
 returns exactly one plan: a wide, shallow DAG, disjoint path ceilings, and
-either `deterministic-edit` or a mechanical exact-edit prompt. It does not
+either a mechanical exact-edit prompt the local model must render, or, for a
+tiny literal only, `deterministic-edit`. It does not
 choose supervised versus YOLO; that stays an operator decision.
 
 ### 2. Approve, then execute
@@ -229,11 +230,10 @@ and mutation paths are compatible. Context is not sliced into two 128K shares.
 | Prompt characters | 80,000 | Conservative pre-tokenization ceiling per task |
 | Physical batch input | 49,152 tokens | Combined rendered input for one local batch |
 | Task generation | 2,048 tokens | Hard per-task output ceiling |
-| Exact-edit recommendation | ≤1,024 tokens | Preferred ceiling for small mechanical edits |
+| Exact-edit recommendation | ≤2,048 tokens | Preferred ceiling for mechanical edits; keep expected output ≤1,400 |
 
 If an artifact would exceed about 70% of its generation ceiling, split the task
-or embed the bytes as `deterministic-edit`. Blind retries will not invent a
-larger model.
+into more local-agent work. Blind retries will not invent a larger model.
 
 ## Safe by construction
 

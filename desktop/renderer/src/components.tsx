@@ -1,6 +1,20 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type MutableRefObject, type ReactNode } from "react";
+import {
+  Background,
+  Controls,
+  Handle,
+  MiniMap,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  MarkerType,
+  type Edge,
+  type Node,
+  type NodeProps,
+} from "@xyflow/react";
+import "@xyflow/react/dist/style.css";
 import type {
   AttemptPayload,
   CommanderRequest,
@@ -1256,9 +1270,22 @@ export function clampTerminalSplit(value: number) {
   return Math.min(MAX_TERMINAL_SPLIT, Math.max(MIN_TERMINAL_SPLIT, value));
 }
 
+export function focusPathsForNode(node: CodebaseMapNode): string[] {
+  if (node.sourcePaths?.length) return node.sourcePaths.slice(0, 32);
+  return node.path ? [node.path] : [];
+}
+
 export function layoutSkillMap(
   nodes: CodebaseMapNode[],
+  edges: Array<{ source: string; target: string; kind?: string }> = [],
 ): Record<string, { x: number; y: number }> {
+  const features = nodes.filter((node) => node.kind === "feature");
+  if (features.length) {
+    return layoutFeatureNetwork(
+      features,
+      edges.filter((edge) => edge.kind === "related"),
+    );
+  }
   const children = new Map<string, CodebaseMapNode[]>();
   for (const node of nodes) {
     if (!node.parentId) continue;
@@ -1267,23 +1294,66 @@ export function layoutSkillMap(
     children.set(node.parentId, list);
   }
   const positions: Record<string, { x: number; y: number }> = {};
-  const gap = 28;
-  const dx = 168;
-  let leafY = 24;
+  const gap = 88;
+  let leafY = 32;
   const visit = (node: CodebaseMapNode, depth: number) => {
     const kids = children.get(node.id) || [];
     if (!kids.length) {
-      positions[node.id] = { x: 32 + depth * dx, y: leafY };
+      positions[node.id] = { x: 40 + depth * 280, y: leafY };
       leafY += gap;
       return positions[node.id];
     }
     const placed = kids.map((child) => visit(child, depth + 1));
     const y = (placed[0].y + placed[placed.length - 1].y) / 2;
-    positions[node.id] = { x: 32 + depth * dx, y };
+    positions[node.id] = { x: 40 + depth * 280, y };
     return positions[node.id];
   };
   const roots = nodes.filter((node) => !node.parentId);
   for (const root of roots.length ? roots : nodes.slice(0, 1)) visit(root, 0);
+  return positions;
+}
+
+function layoutFeatureNetwork(
+  nodes: CodebaseMapNode[],
+  edges: Array<{ source: string; target: string; kind?: string }>,
+): Record<string, { x: number; y: number }> {
+  const ids = nodes.map((node) => node.id);
+  const outgoing = new Map<string, string[]>();
+  const incoming = new Map<string, number>();
+  for (const id of ids) {
+    outgoing.set(id, []);
+    incoming.set(id, 0);
+  }
+  for (const edge of edges) {
+    if (!outgoing.has(edge.source) || !incoming.has(edge.target)) continue;
+    outgoing.get(edge.source)?.push(edge.target);
+    incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
+  }
+  const layers: string[][] = [];
+  const placed = new Set<string>();
+  let current = ids.filter((id) => incoming.get(id) === 0);
+  if (!current.length && ids.length) current = [ids[0]];
+  while (current.length) {
+    layers.push(current);
+    current.forEach((id) => placed.add(id));
+    const next: string[] = [];
+    for (const id of current) {
+      for (const target of outgoing.get(id) || []) {
+        if (placed.has(target) || next.includes(target)) continue;
+        next.push(target);
+      }
+    }
+    current = next;
+  }
+  for (const id of ids) {
+    if (!placed.has(id)) layers.push([id]);
+  }
+  const positions: Record<string, { x: number; y: number }> = {};
+  layers.forEach((layer, column) => {
+    layer.forEach((id, row) => {
+      positions[id] = { x: 40 + column * 280, y: 32 + row * 120 };
+    });
+  });
   return positions;
 }
 
@@ -1391,6 +1461,75 @@ export function SkillGuide({
   );
 }
 
+type SkillFlowData = {
+  path: string;
+  label: string;
+  kind: string;
+  fileCount?: number;
+  onSelect?: () => void;
+};
+
+const skillFlowNodeTypes = { skill: SkillFlowNode };
+
+function SkillFlowNode({ data, selected }: NodeProps<Node<SkillFlowData>>) {
+  return (
+    <div className={`skill-flow-node${data.kind === "feature" ? " is-feature" : ""}${selected ? " is-active" : ""}`}>
+      <Handle type="target" position={Position.Left} />
+      <button
+        type="button"
+        data-node={data.path}
+        className="skill-flow-hit"
+        onClick={(event) => {
+          event.stopPropagation();
+          data.onSelect?.();
+        }}
+      >
+        <span className="skill-flow-kind">{data.kind}</span>
+        <strong>{data.label}</strong>
+        {typeof data.fileCount === "number" && data.fileCount > 0 ? (
+          <small>{data.fileCount} files</small>
+        ) : null}
+      </button>
+      <Handle type="source" position={Position.Right} />
+    </div>
+  );
+}
+
+export function skillMapFlowElements(
+  map: CodebaseMap,
+  selectedId?: string | null,
+  onSelect?: (node: CodebaseMapNode) => void,
+): { nodes: Node<SkillFlowData>[]; edges: Edge[] } {
+  const visual = map.mode === "features"
+    ? (map.nodes || []).filter((node) => node.kind === "feature")
+    : (map.nodes || []);
+  const positions = layoutSkillMap(visual, map.edges || []);
+  const nodes = visual.map((node) => ({
+    id: node.id,
+    type: "skill" as const,
+    position: positions[node.id] || { x: 0, y: 0 },
+    selected: node.id === selectedId,
+    data: {
+      path: node.path,
+      label: node.name,
+      kind: node.kind,
+      fileCount: node.fileCount,
+      onSelect: () => onSelect?.(node),
+    },
+  }));
+  const allowed = new Set(nodes.map((node) => node.id));
+  const edges = (map.edges || [])
+    .filter((edge) => edge.kind !== "implements" && allowed.has(edge.source) && allowed.has(edge.target))
+    .map((edge) => ({
+      id: `${edge.source}->${edge.target}`,
+      source: edge.source,
+      target: edge.target,
+      className: edge.kind === "related" ? "is-related" : undefined,
+      markerEnd: { type: MarkerType.ArrowClosed, width: 18, height: 18 },
+    }));
+  return { nodes, edges };
+}
+
 export function SkillMapGraph({
   map,
   error,
@@ -1407,24 +1546,19 @@ export function SkillMapGraph({
   canOpenFolder?: boolean;
 }) {
   const [localFocus, setLocalFocus] = useState(focusPaths);
-  const selected = localFocus[0] || "";
-  const positions = useMemo(() => layoutSkillMap(map?.nodes || []), [map]);
-  const [pan, setPan] = useState({ x: 0, y: 0 });
-  const [zoom, setZoom] = useState(1);
-  const drag = useRef<{ x: number; y: number; panX: number; panY: number } | null>(null);
+  const selectedNode = useMemo(() => {
+    const nodes = map?.nodes || [];
+    return (
+      nodes.find((node) => {
+        const paths = focusPathsForNode(node);
+        return paths.length > 0 && paths.every((path, index) => localFocus[index] === path);
+      }) || nodes.find((node) => node.path && localFocus[0] === node.path) || null
+    );
+  }, [map, localFocus]);
 
   useEffect(() => {
     setLocalFocus(focusPaths);
   }, [focusPaths]);
-
-  const width = useMemo(() => {
-    const xs = Object.values(positions).map((point) => point.x);
-    return Math.max(640, (xs.length ? Math.max(...xs) : 0) + 220);
-  }, [positions]);
-  const height = useMemo(() => {
-    const ys = Object.values(positions).map((point) => point.y);
-    return Math.max(280, (ys.length ? Math.max(...ys) : 0) + 48);
-  }, [positions]);
 
   async function copyPath(path: string) {
     try {
@@ -1434,31 +1568,54 @@ export function SkillMapGraph({
     }
   }
 
-  function selectNode(path: string) {
-    setLocalFocus([path]);
-    onFocus?.([path]);
-    void copyPath(path);
+  function selectNode(node: CodebaseMapNode) {
+    const paths = focusPathsForNode(node);
+    setLocalFocus(paths);
+    onFocus?.(paths);
+    void copyPath(node.kind === "feature" ? node.name : paths[0] || node.path);
   }
+
+  const flow = useMemo(
+    () => (map ? skillMapFlowElements(map, selectedNode?.id, selectNode) : { nodes: [], edges: [] }),
+    [map, selectedNode?.id],
+  );
 
   return (
     <section className="surface new-task-surface skill-map-surface min-w-0">
       <header className="surface-header">
         <div className="min-w-0">
           <p className="kicker">Skill map</p>
-          <h2>Point Swarm at the codebase</h2>
+          <h2>Point Swarm at a feature</h2>
         </div>
+        {map?.mode === "features" ? <ToolChip>Features</ToolChip> : map ? <ToolChip>Packages</ToolChip> : null}
         {map?.truncated ? <ToolChip>Truncated</ToolChip> : null}
       </header>
       <p className="new-task-lead">
-        Click a folder or file to highlight it. The path is copied and stored as
+        Click a feature to highlight the files that implement it. Those paths are stored as
         {" "}<code>focusPaths</code> for {MAP_SKILL}. It does not open a different folder or create a plan.
       </p>
-      {selected ? (
-        <p className="skill-map-path">
-          <span className="kicker">Focus</span>
-          <code title={selected}>{selected}</code>
-          <button type="button" className="ghost-button" onClick={() => void copyPath(selected)}>Copy path</button>
-        </p>
+      {selectedNode ? (
+        <div className="skill-map-focus">
+          <p className="skill-map-path">
+            <span className="kicker">Focus</span>
+            <code title={selectedNode.name}>{selectedNode.name}</code>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => void copyPath(selectedNode.kind === "feature" ? selectedNode.name : selectedNode.path)}
+            >
+              Copy path
+            </button>
+          </p>
+          {selectedNode.summary ? <p className="skill-map-summary">{selectedNode.summary}</p> : null}
+          {focusPathsForNode(selectedNode).length ? (
+            <ul className="skill-map-files">
+              {focusPathsForNode(selectedNode).map((path) => (
+                <li key={path}><code title={path}>{path}</code></li>
+              ))}
+            </ul>
+          ) : null}
+        </div>
       ) : null}
       {error ? <p className="skill-map-empty">{error}</p> : null}
       {!error && !map ? <p className="skill-map-empty">Loading skill map…</p> : null}
@@ -1471,79 +1628,28 @@ export function SkillMapGraph({
         </div>
       ) : null}
       {map && map.nodes.length > 0 ? (
-        <div
-          className="skill-map-viewport"
-          onWheel={(event) => {
-            event.preventDefault();
-            setZoom((value) => Math.min(2.2, Math.max(0.45, value + (event.deltaY > 0 ? -0.08 : 0.08))));
-          }}
-          onMouseDown={(event) => {
-            if ((event.target as HTMLElement).closest("[data-node]")) return;
-            drag.current = { x: event.clientX, y: event.clientY, panX: pan.x, panY: pan.y };
-          }}
-          onMouseMove={(event) => {
-            if (!drag.current) return;
-            setPan({
-              x: drag.current.panX + event.clientX - drag.current.x,
-              y: drag.current.panY + event.clientY - drag.current.y,
-            });
-          }}
-          onMouseUp={() => {
-            drag.current = null;
-          }}
-          onMouseLeave={() => {
-            drag.current = null;
-          }}
-        >
-          <svg
-            className="skill-map-svg"
-            viewBox={`0 0 ${width} ${height}`}
-            role="img"
-            aria-label="Codebase skill map"
-          >
-            <g transform={`translate(${pan.x} ${pan.y}) scale(${zoom})`}>
-              {(map.edges || []).map((edge) => {
-                const from = positions[edge.source];
-                const to = positions[edge.target];
-                if (!from || !to) return null;
-                return (
-                  <path
-                    key={`${edge.source}->${edge.target}`}
-                    className="skill-map-edge"
-                    d={`M ${from.x + 10} ${from.y} C ${from.x + 70} ${from.y}, ${to.x - 40} ${to.y}, ${to.x - 10} ${to.y}`}
-                  />
-                );
-              })}
-              {(map.nodes || []).map((node) => {
-                const point = positions[node.id];
-                if (!point) return null;
-                const active = selected === node.path;
-                return (
-                  <g
-                    key={node.id}
-                    data-node={node.path}
-                    transform={`translate(${point.x} ${point.y})`}
-                    className={`skill-map-node${active ? " is-active" : ""}`}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      selectNode(node.path);
-                    }}
-                    role="button"
-                    tabIndex={0}
-                    onKeyDown={(event) => {
-                      if (event.key === "Enter" || event.key === " ") {
-                        event.preventDefault();
-                        selectNode(node.path);
-                      }
-                    }}
-                  >
-                    <circle r="7" />
-                    <text x="14" y="4">{node.name}{node.kind !== "file" && node.fileCount ? ` (${node.fileCount})` : ""}</text>
-                  </g>
-                );
-              })}
-            </g>
-          </svg>
+        <div className="skill-map-viewport" data-testid="skill-map-graph" aria-label="Codebase skill map">
+          <ReactFlowProvider>
+            <ReactFlow
+              nodes={flow.nodes}
+              edges={flow.edges}
+              nodeTypes={skillFlowNodeTypes}
+              fitView
+              minZoom={0.35}
+              maxZoom={1.8}
+              nodesConnectable={false}
+              edgesFocusable={false}
+              panOnScroll
+              onNodeClick={(_, flowNode) => {
+                const node = (map.nodes || []).find((item) => item.id === flowNode.id);
+                if (node) selectNode(node);
+              }}
+            >
+              <Background gap={18} size={1} />
+              <MiniMap pannable zoomable />
+              <Controls showInteractive={false} />
+            </ReactFlow>
+          </ReactFlowProvider>
         </div>
       ) : null}
     </section>

@@ -437,6 +437,7 @@ def test_truncated_generation_escalates_ceiling_and_repairs(
             required_patterns=(GatePattern("must-pass", "PASS"),),
         ),
         max_repair_attempts=1,
+        generation_override={"max_tokens": 1024},
     )
     backend = TruncateFirstCallBackend([
         ["truncated output"],

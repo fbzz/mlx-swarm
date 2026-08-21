@@ -154,9 +154,11 @@ Default personal roots respect `CLAUDE_CONFIG_DIR` and `CODEX_HOME`;
 `--skills-dir` overrides either.
 
 `mlx-swarm-skill-map` refreshes `.mlx-swarm/codebase-map.json` via
-`mlx-swarm --config CONFIG map --format mermaid`, pastes that flowchart into
-the host reply, reads New task `focusPaths`, and confines later commander
-inspection to that subgraph. It never approves or launches.
+`mlx-swarm --config CONFIG map --format mermaid`. The graph is a feature map
+from `lat.md` wiki-links and `@lat` tags when those exist, otherwise a package
+map. Clicking a feature stores its implementing paths as `focusPaths`. The
+skill pastes that flowchart into the host reply and confines later commander
+inspection to the focused subgraph. It never approves or launches.
 
 Before claiming a phase, the commander skill routes a one- or two-file cosmetic,
 copy/layout-only, or literal mechanical change directly when it crosses no

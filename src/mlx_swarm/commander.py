@@ -433,9 +433,13 @@ WORKSPACE EXECUTION CONTRACT
 - Every task must declare executionMode, contextRefs, interfaceContract, and
   expectedOutputTokens.
 - artifactType is patch, test-suite, review, or report.
-- executionMode local-agent delegates one bounded operation to MLX.
-- executionMode deterministic-edit embeds already-known exact old/new edits in
-  deterministicEdits. The runtime applies those bytes without loading a model.
+- executionMode local-agent is the default for every mutating task. The local
+  model must render the edit-manifest. Do not pre-author file bodies in the
+  plan.
+- executionMode deterministic-edit is reserved for a tiny already-known
+  literal (one config key, one-line constant). Whole files, pages, tests, and
+  generated assets are local-agent work. Split them until each artifact fits
+  the generation ceiling; do not dump the remainder as deterministicEdits.
 - Every patch and test-suite task must use workerOutputProtocol
   edit-manifest-v1. Direct unified-diff generation is retired in schema v3.
 - edit-manifest-v1 requires a JSON gate whose jsonRequiredKeys and
@@ -486,9 +490,10 @@ APPROVED WORKSPACE ROOT
 {inspection_root}
 
 {revision_contract}
-Inspect only files below the approved workspace root. Put any material source
-text needed by local agents into context.authoritativeSources as inline
-content.
+Inspect only files below the approved workspace root. Put the exact source
+excerpt that justifies each transformation into context.authoritativeSources
+as inline content. The runtime attaches current allowed-path files to
+local-agent prompts; do not paste finished replacement files into the plan.
 When a source comes from a workspace file, include its repository-relative
 path in the label and copy one exact contiguous excerpt. Never summarize,
 rewrite, or silently remove lines inside a source excerpt.
@@ -564,17 +569,34 @@ PLAN LIMITS
 {EXACT_EDIT_EXPECTED_MAX_TOKENS} expected output
   tokens and set max_tokens to at most \
 {min(EXACT_EDIT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
-- Reject or deterministically split a local patch or test-suite task whose
-  expected output would exceed 70 percent of max_tokens or \
+- Reject or split a local patch or test-suite task whose expected output
+  would exceed 70 percent of max_tokens or \
 {EXACT_EDIT_EXPECTED_MAX_TOKENS} tokens. Estimate expected output from the
   literal characters of the artifact text at roughly 3.5 characters per
-  token; one asset or anchor per mutating task.
+  token; one asset or anchor per mutating task. Split oversized work into
+  more local-agent tasks. Do not embed the leftover bytes as
+  deterministic-edit.
 - gate.maxCharacters must cover the full expected artifact: for a
   deterministic-edit task it must be at least the length of the compact
   serialized {{"edits": [...]}} payload (plan import rejects a smaller
   gate), and for a local-agent task at least five characters per expected
   output token — size the gate with real headroom above the estimate, or
   a correct artifact fails by a few percent.
+- Local workers over-produce test suites: asked for a test file they write
+  every case they can think of, overrun gate.maxCharacters, and hit the
+  generation ceiling. For every test-suite task name the exact test
+  functions to write (at most about eight) and the behaviors each covers,
+  keep one module under test per task, and set expectedOutputTokens from
+  that enumerated scope rather than from the module's size.
+- The task prompt of every test-suite task must state the importable package
+  name exactly as verification resolves it (for a src layout that is
+  `import package`, never `import src.package`) and the test runner
+  profile in use, so the worker does not guess an import root.
+- On this worker enumerated test suites emit about 1.7x the character
+  estimate, so set a test-suite max_tokens of 2048 and expect one ceiling
+  escalation; specify each fixture's exact default return value rather than
+  describing it, because the worker will otherwise write a fake whose
+  default contradicts a test that asserts that default.
 - For review tasks, normally set max_tokens to at most \
 {min(REVIEW_DEFAULT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
   Use at most \
@@ -656,9 +678,12 @@ def _worker_capability_contract(config: SwarmConfig) -> str:
     ) or "- Capability is unmeasured; assume limited independent diagnosis."
     delegation_rules = {
         "exact-edit": (
-            "- You own the causal diagnosis and edit design.\n"
-            "- If you already know the literal old and new bytes, use "
-            "executionMode deterministic-edit; do not ask MLX to copy them.\n"
+            "- You own the causal diagnosis, graph, and edit design.\n"
+            "- Do not embed finished file bodies in deterministicEdits. "
+            "Name the file, symbol, source anchors, and old-to-new "
+            "transformation; the local worker renders the manifest.\n"
+            "- Use deterministic-edit only for a tiny literal that would "
+            "waste a model load (one key, one constant).\n"
             "- Delegate one mechanical, bounded source transformation per "
             "mutating task.\n"
             "- Name exact files and symbols, include exact source anchors, "
@@ -694,8 +719,8 @@ WORKER CAPABILITY CONTRACT
 - generation mode: {config.worker.mode}
 - reasoning-stage token ceiling: {config.worker.reasoning_max_tokens}
 - prompt ceiling: {min(config.batch.max_prompt_characters, MAX_PROMPT_CHARS)} characters
-- local agents cannot inspect the workspace, call tools, run verification,
-  invent commands, or recover missing source context.
+- local agents cannot call tools, run verification, invent commands, or
+  inspect paths outside the files the runtime attaches from allowedPaths.
 - calibration: {calibration["status"]} \
 ({calibration["passedCases"]}/{calibration["totalCases"]} passed; \
 evidence SHA-256: {calibration["evidenceSha256"] or "(none)"})
@@ -706,7 +731,8 @@ Observed limitations:
 Delegation policy:
 {delegation_rules}
 - The plan is authoritative. Do not ask the local model to validate or replace
-  your diagnosis; give it the minimum exact edit it must render.
+  your diagnosis. Give it the transformation and source; it must render the
+  edit-manifest.
 """
 
 

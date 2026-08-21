@@ -23,9 +23,9 @@ See [[src/mlx_swarm/backend.py#_resolve_model_path]].
 4. Render every request through the tokenizer's native chat template.
    When thinking is disabled, templates that forcibly open a thinking block are closed in the assistant prefix so reasoning cannot consume the artifact budget.
 5. For strict JSON and edit-manifest tasks, default to deterministic sampling
-   and a 1024-token completion budget unless the plan explicitly overrides
-   them. This improves small-model structure reliability and avoids needless
-   sampler fragmentation.
+   and the exact-edit completion budget (2,048 tokens on the shipped 35B
+   profile) unless the plan explicitly overrides them. This keeps sampler
+   groups compatible for true MLX batching.
 6. Reject a request when its rendered prompt tokens plus requested generation
    tokens exceed the worker profile's declared context window.
 7. Group tasks by compatible sampler settings, then split physical batches so

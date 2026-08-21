@@ -363,7 +363,7 @@ Default install copies both `mlx-swarm-commander` and `mlx-swarm-skill-map`;
 `--skill` selects one. The commander contract routes simple low-risk one- or
 two-file cosmetic or literal mechanical edits directly, while explicitly
 governed work continues through Commander. The skill-map contract prints the
-mermaid graph from `mlx-swarm map --format mermaid`, then honors cockpit
+feature mermaid graph from `mlx-swarm map --format mermaid`, then honors cockpit
 `focusPaths` instead of walking the tree ad hoc.
 
 ## UI

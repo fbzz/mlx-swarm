@@ -494,9 +494,12 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     assert "edit-manifest-v1" in prompt
     assert "verification may contain only these profile IDs: unit" in prompt
     assert "workers never receive or produce command arrays" in prompt
-    assert "target 350 to 700 expected output" in prompt
-    assert "most 1024" in prompt
+    assert "target 350 to 1400 expected output" in prompt
+    assert "most 2048" in prompt
     assert "deterministic-edit" in prompt
+    assert "local-agent is the default" in prompt
+    assert "Do not pre-author file bodies" in prompt
+    assert "Do not embed finished file bodies" in prompt
     assert "contextRefs" in prompt
     assert "pairwise disjoint" in prompt
     assert "maxRepairAttempts 1 for local-agent tasks" in prompt
@@ -504,7 +507,7 @@ def test_workspace_commander_emits_typed_plan_and_binds_execution_digest(
     assert "propagates failure" in prompt
     assert "gate.maxCharacters must cover the full expected artifact" in prompt
     assert "3.5 characters per" in prompt
-    assert '"maxCharacters": 3500' in prompt
+    assert '"maxCharacters": 7000' in prompt
     assert "20000" not in prompt
     assert "aggregate rendered prompt budget per physical batch: 49152" in prompt
     assert "never divide it into fixed per-agent" in prompt

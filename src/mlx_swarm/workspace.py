@@ -8,6 +8,7 @@ import fcntl
 import hashlib
 import json
 import os
+import sys
 import re
 import signal
 import subprocess
@@ -2744,11 +2745,36 @@ def _run_verification_profile(
     env["TMPDIR"] = str(runtime_tmp.resolve())
     env["MLX_SWARM_SESSION_ID"] = session_dir.name
     env["MLX_SWARM_WORKSPACE"] = str(worktree)
+    # The session's HOME and TMPDIR usually live inside the artifacts tree,
+    # which may itself sit inside the operator's repository. Fence Git
+    # discovery there so a test that treats its temporary directory as
+    # "outside any repository" does not climb into the enclosing checkout.
+    env["GIT_CEILING_DIRECTORIES"] = os.pathsep.join([
+        str(runtime_tmp.resolve()),
+        str(runtime_home.resolve()),
+    ])
+    # A worktree of a src-layout project must be imported from its own src:
+    # an editable install of the main checkout would otherwise shadow the
+    # patched modules and verification would test the wrong tree.
+    source_root = worktree / "src"
+    if source_root.is_dir():
+        existing = env.get("PYTHONPATH", "")
+        env["PYTHONPATH"] = (
+            str(source_root) + (os.pathsep + existing if existing else "")
+        )
     argv = [str(value) for value in profile["argv"]]
+    # The receipt records the declared profile argv (the immutable authority
+    # it is validated against); the process runs a resolved copy. A bare
+    # python on PATH is whatever the shell happens to resolve, so run
+    # verification with the interpreter that runs the swarm: its pytest and
+    # project dependencies are the ones already proven to import.
+    command = list(argv)
+    if command and command[0] in ("python", "python3"):
+        command[0] = sys.executable
     started_at = utc_now()
     started = time.perf_counter()
     process = subprocess.Popen(
-        argv,
+        command,
         cwd=cwd,
         env=env,
         stdin=subprocess.DEVNULL,
@@ -3150,10 +3176,12 @@ def _run(
         "check": False,
     }
     if argv and argv[0] == "git":
+        # Drop inherited Git overrides except the discovery fence, which only
+        # limits how far upward Git may search for a repository.
         git_env = {
             key: value
             for key, value in os.environ.items()
-            if not key.startswith("GIT_")
+            if not key.startswith("GIT_") or key == "GIT_CEILING_DIRECTORIES"
         }
         git_env["GIT_CONFIG_NOSYSTEM"] = "1"
         git_env["GIT_CONFIG_GLOBAL"] = os.devnull

@@ -38,11 +38,12 @@ def test_codebase_map_skips_generated_dirs_and_collapses_large_folders(
     kinds = {node["path"]: node["kind"] for node in payload["nodes"]}
 
     assert payload["workspaceRoot"] == str(tmp_path.resolve())
+    assert payload["mode"] == "packages"
     assert payload["truncated"] is False
     assert "src" in paths
     assert "src/pkg" in paths
     assert kinds["src/pkg"] == "package"
-    assert "src/pkg/mod.py" in paths
+    assert "src/pkg/mod.py" not in paths
     assert "node_modules" not in paths
     assert ".git" not in paths
     assert ".mlx-swarm" not in paths
@@ -51,6 +52,7 @@ def test_codebase_map_skips_generated_dirs_and_collapses_large_folders(
     assert not any(path.startswith("vendor/") for path in paths)
     vendor = next(node for node in payload["nodes"] if node["path"] == "vendor")
     assert vendor["fileCount"] == 12
+    assert vendor["sourcePaths"] == ["vendor"]
     assert any(
         edge["source"] == "src" and edge["target"] == "src/pkg"
         for edge in payload["edges"]
@@ -81,6 +83,51 @@ def test_codebase_map_mermaid_shows_parent_child_edges(
     diagram = render_mermaid(build_codebase_map(tmp_path))
     assert diagram.startswith("```mermaid\nflowchart LR\n")
     assert 'n_src(["src"])' in diagram
-    assert 'n_src_main_py["main.py"]' in diagram
-    assert "n_src --> n_src_main_py" in diagram
+    assert "n_src_main_py" not in diagram
+    assert "n_. --> n_src" in diagram or "n__ --> n_src" in diagram
     assert diagram.rstrip().endswith("```")
+
+
+def test_codebase_map_uses_lat_features_not_source_files(
+    tmp_path: Path,
+) -> None:
+    lat = tmp_path / "lat.md"
+    lat.mkdir()
+    (lat / "index.md").write_text("# Index\n\n- [[Commander]]\n", encoding="utf-8")
+    (lat / "commander.md").write_text(
+        "# Commander\n\nFrontier planning.\n\nSee [[Plans]] and [[src/app.py]].\n",
+        encoding="utf-8",
+    )
+    (lat / "plans.md").write_text("# Plans\n\nTask DAG.\n", encoding="utf-8")
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "app.py").write_text(
+        "# @lat: [[Commander]]\nprint(1)\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "src" / "other.py").write_text("print(2)\n", encoding="utf-8")
+
+    payload = build_codebase_map(tmp_path)
+    by_name = {node["name"]: node for node in payload["nodes"]}
+    kinds = {node["kind"] for node in payload["nodes"]}
+
+    assert payload["mode"] == "features"
+    assert kinds == {"feature"}
+    assert "Commander" in by_name
+    assert "Plans" in by_name
+    assert "Index" not in by_name
+    assert by_name["Commander"]["summary"].startswith("Frontier planning")
+    assert by_name["Commander"]["sourcePaths"] == [
+        "lat.md/commander.md",
+        "src/app.py",
+    ]
+    assert "src/other.py" not in by_name["Commander"]["sourcePaths"]
+    assert any(
+        edge["source"] == "feature:commander"
+        and edge["target"] == "feature:plans"
+        and edge["kind"] == "related"
+        for edge in payload["edges"]
+    )
+    diagram = render_mermaid(payload)
+    assert 'n_feature_commander(["Commander"])' in diagram
+    assert "src/app.py" not in diagram
+    assert "n_feature_commander --> n_feature_plans" in diagram

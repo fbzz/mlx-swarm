@@ -6,6 +6,7 @@ Local MLX swarm agent framework with context persistence and DAG execution.
 - [[backend]] — MLX batch backend: model resolution, loading, and batched generation.
 - [[config]] — Swarm configuration JSON schema: model, batch, and artifacts settings.
 - [[commander]] — Frontier planning requests, digest approval, final review, and separate usage receipts.
+- [[context-capacity-benchmark]] — Local exact-edit context matrix, failure taxonomy, and highest all-pass tier.
 - [[decisions]] — Key design decisions and their trade-offs.
 - [[economics-evaluation]] — Reproducible BugsInPy paired study, immutable evidence, metrics, and claim gate.
 - [[executor]] — DAG executor: topological sort, batch-by-level, repair loops.

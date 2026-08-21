@@ -407,10 +407,10 @@ def test_schema_v3_rejects_expected_output_above_exact_edit_ceiling(
         "src/value.py",
         context_ref="source",
     )
-    task["expectedOutputTokens"] = 701
-    task["generationOverride"]["max_tokens"] = 1024
+    task["expectedOutputTokens"] = 1401
+    task["generationOverride"]["max_tokens"] = 2048
 
-    with pytest.raises(ContractError, match="preflight budget of 700 tokens"):
+    with pytest.raises(ContractError, match="preflight budget of 1400 tokens"):
         load_plan(_write_plan(tmp_path, {
             "schemaVersion": 3,
             "integrationVerification": ["unit"],

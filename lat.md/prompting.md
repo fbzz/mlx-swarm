@@ -17,11 +17,12 @@ When a plan includes a [[Plans|context object]], the prompt is assembled from th
 4. **AUTHORITATIVE SOURCE**: One section per source, with label, origin, and sha256.
 5. **GLOBAL CONSTRAINTS**: Numbered list of constraints.
 6. **AUTOMATIC REJECTION CONDITIONS**: Numbered list of rejection criteria.
-7. **DEPENDENCY OUTPUT**: For each `dependsOn` task, the normalized output of that task (if completed).
-8. **WORKER IDENTITY**: The task id and role.
-9. **ROLE-SPECIFIC TASK**: The task's prompt text.
-10. **DETERMINISTIC VALIDATION**: Exact gate checks the worker must satisfy.
-11. **OUTPUT PROTOCOL**: Task-specific instructions, falling back to shared context.
+7. **DEPENDENCY OUTPUT**: For each `dependsOn` task, the normalized output of that task (if completed). Review and report tasks receive a truncated dump and should use the live workspace file.
+8. **WORKSPACE FILE**: For local-agent mutating tasks, the current UTF-8 contents of each allowed path that exists at the execution root, capped so the prompt stays inside the worker budget.
+9. **WORKER IDENTITY**: The task id and role.
+10. **ROLE-SPECIFIC TASK**: The task's prompt text.
+11. **DETERMINISTIC VALIDATION**: Exact gate checks the worker must satisfy.
+12. **OUTPUT PROTOCOL**: Task-specific instructions, falling back to shared context.
 
 ## Without Context
 

@@ -53,8 +53,8 @@
     }
   },
   "worker": {
-    "mode": "reasoning-edit",
-    "reasoningMaxTokens": 1536,
+    "mode": "direct",
+    "reasoningMaxTokens": 768,
     "capabilities": {
       "parameterScale": "35B-A3B",
       "contextWindowTokens": 262144,
@@ -68,7 +68,7 @@
       "limitations": [
         "Calibration on this machine is unmeasured; reproduce a calibration run before raising delegationLevel above exact-edit.",
         "Multi-file diagnosis, API discovery, and architecture choices remain with the frontier at every measured level.",
-        "Use at most 700 expected output tokens and a 1024-token ceiling for bounded edits; the runtime escalates a truncated task once before requiring a split."
+        "Use at most 1400 expected output tokens and a 2048-token ceiling for bounded edits; the runtime escalates a truncated task once before requiring a split."
       ],
       "calibration": {
         "status": "unmeasured",
