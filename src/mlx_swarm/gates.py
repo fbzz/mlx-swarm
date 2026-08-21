@@ -29,6 +29,30 @@ _MODEL_SPECIAL_TOKENS = ("<|im_end|>", "<|endoftext|>", "<|im_start|>")
 _JSON_UNSET = object()
 
 
+def _strip_thinking_block(text: str) -> str | None:
+    """Drop a leading reasoning block; leave think tags inside the payload.
+
+    Chat templates may open ``<think>`` in the assistant prefix, so the output
+    can begin with reasoning and a bare ``</think>``; it can also carry a full
+    ``<think>...</think>`` block first. A ``</think>`` that appears only after
+    payload text (for example inside a string in generated code or tests) is
+    content, not a block boundary, so None means "leave the output unchanged".
+    """
+    close = "</think>"
+    close_at = text.find(close)
+    if close_at == -1:
+        return None
+    if text.lstrip().startswith("<think>"):
+        return text[close_at + len(close):]
+    open_at = text.find("<think>")
+    if open_at != -1 and open_at < close_at:
+        return None
+    head = text[:close_at].lstrip()
+    if head.startswith(("{", "[", "```", "<manifest>")):
+        return None
+    return text[close_at + len(close):]
+
+
 def strip_preamble(text: str) -> str:
     """Remove common LLM preambles like 'Here is the code.' before actual output."""
     return _AGGRESSIVE_PREAMBLE.sub("", text, count=1)
@@ -39,8 +63,9 @@ def normalize_output(output: str, gate: OutputGate | None) -> tuple[str, list[st
     normalized = output
     normalizations: list[str] = []
 
-    if "</think>" in normalized:
-        normalized = normalized.rsplit("</think>", 1)[1]
+    without_thinking = _strip_thinking_block(normalized)
+    if without_thinking is not None:
+        normalized = without_thinking
         normalizations.append("thinking-block")
 
     token_positions = [

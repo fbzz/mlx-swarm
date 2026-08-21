@@ -188,3 +188,30 @@ def test_normalize_output_removes_thinking_and_special_tokens() -> None:
     assert normalized == "def valid():\n    return True"
     assert "thinking-block" in normalizations
     assert "model-special-token-suffix" in normalizations
+
+
+def test_normalize_output_strips_leading_thinking_block_only() -> None:
+    gate = OutputGate(output_format="json")
+    leading, normalizations = normalize_output(
+        "<think>\nplan the edit\n</think>\n{\"edits\": []}",
+        gate,
+    )
+    assert leading == '{"edits": []}'
+    assert "thinking-block" in normalizations
+
+    # A think tag quoted inside the payload is content, not a block boundary:
+    # the edit manifest must survive intact.
+    payload = (
+        '{"edits": [{"path": "tests/test_gates.py", "old": "", '
+        '"new": "output = \\"reasoning</think>\\\\n<think>x</think>\\""}]}'
+    )
+    for text in (payload, "<think>\nthinking\n</think>\n" + payload):
+        normalized, _ = normalize_output(text, gate)
+        assert normalized == payload
+
+    bare_close_in_json, normalizations = normalize_output(
+        '{"verdict": "</think>"}',
+        gate,
+    )
+    assert bare_close_in_json == '{"verdict": "</think>"}'
+    assert "thinking-block" not in normalizations
