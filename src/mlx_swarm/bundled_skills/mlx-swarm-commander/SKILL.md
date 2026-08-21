@@ -81,6 +81,15 @@ local-agent task at least five characters per expected output token —
 size the gate with real headroom above the estimate, or a correct
 artifact fails by a few percent.
 
+Local workers over-produce test suites: asked for "tests for module X" they
+write every case they can think of, overrun `gate.maxCharacters`, and hit the
+generation ceiling. For every test-suite task enumerate the exact test
+functions to write (at most about eight) and what each covers, keep one
+module under test per task, size `expectedOutputTokens` from that enumerated
+scope, and state the importable package name exactly as verification
+resolves it (`import package` for a `src/` layout, never `import
+src.package`).
+
 ## Shape the DAG
 
 Plan wide and shallow. Add `dependsOn` ONLY when a task consumes a parent's

@@ -582,6 +582,16 @@ PLAN LIMITS
   gate), and for a local-agent task at least five characters per expected
   output token — size the gate with real headroom above the estimate, or
   a correct artifact fails by a few percent.
+- Local workers over-produce test suites: asked for a test file they write
+  every case they can think of, overrun gate.maxCharacters, and hit the
+  generation ceiling. For every test-suite task name the exact test
+  functions to write (at most about eight) and the behaviors each covers,
+  keep one module under test per task, and set expectedOutputTokens from
+  that enumerated scope rather than from the module's size.
+- The task prompt of every test-suite task must state the importable package
+  name exactly as verification resolves it (for a src layout that is
+  `import package`, never `import src.package`) and the test runner
+  profile in use, so the worker does not guess an import root.
 - For review tasks, normally set max_tokens to at most \
 {min(REVIEW_DEFAULT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
   Use at most \
