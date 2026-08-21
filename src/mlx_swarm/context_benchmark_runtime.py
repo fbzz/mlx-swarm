@@ -1,19 +1,22 @@
-"""Context benchmark runtime orchestration."""
+"""Resident-backend matrix runner for the local context benchmark."""
 
 from __future__ import annotations
 
-import json
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any
 
-from .backend import MLXBatchBackend, SwarmConfig
-from .contracts import SwarmConfig as SwarmConfigType
-from .context_benchmark_case import run_case
+from .backend import MLXBatchBackend
 from .context_benchmark_aggregate import aggregate_records
+from .context_benchmark_case import run_case
+from .context_benchmark_prompt import MODES
+from .contracts import SwarmConfig, load_config
 from .model_identity import model_directory_identity
 
 __all__ = ["run_benchmark"]
+
+CaseObserver = Callable[[dict[str, Any], int, int], None]
 
 
 def run_benchmark(
@@ -25,74 +28,99 @@ def run_benchmark(
     max_generation_tokens: int,
     seed: int | None = None,
     backend_factory: Callable[[SwarmConfig], Any] = MLXBatchBackend,
+    on_case: CaseObserver | None = None,
+    completed_cases: Sequence[Mapping[str, Any]] = (),
+    mode: str = "copy",
 ) -> dict[str, Any]:
-    """Run the full context capacity benchmark matrix.
+    """Run the tier × position × trial matrix on one resident backend.
 
-    Args:
-        config_path: Path to the swarm configuration JSON file.
-        tiers: Sequence of context capacity tiers to test.
-        positions: Sequence of prompt positions (start, middle, end).
-        trials: Number of trials per position.
-        tolerance_tokens: Token tolerance for fitting.
-        max_generation_tokens: Maximum tokens for generation.
-        seed: Random seed for reproducibility.
-        backend_factory: Factory to create the backend instance.
-
-    Returns:
-        A schema-v1 benchmark payload.
+    ``on_case`` is called after every freshly executed case with the record,
+    the number of matrix cells finished so far (resumed cells included), and
+    the matrix size. ``completed_cases`` are records from an earlier run of
+    the same matrix; a cell whose ``caseId``, ``seed``, and ``mode`` match is
+    reused instead of re-run, which lets an interrupted run resume.
     """
-    config: SwarmConfig = json.loads(config_path.read_text())
-    if not tiers or not positions or trials <= 0:
-        raise ValueError("Tiers, positions, and trials must be valid.")
-    if tolerance_tokens < 0 or max_generation_tokens <= 0:
-        raise ValueError("Tolerance and max generation must be positive.")
+    if mode not in MODES:
+        raise ValueError(f"mode must be one of {MODES}")
+    if not tiers or not positions:
+        raise ValueError("tiers and positions must be nonempty.")
+    if trials <= 0:
+        raise ValueError("trials must be positive.")
+    if max_generation_tokens <= 0:
+        raise ValueError("max_generation_tokens must be positive.")
+    if tolerance_tokens < 0:
+        raise ValueError("tolerance_tokens must be nonnegative.")
 
-    effective_seed = seed if seed is not None else config.seed
-    effective_max_gen = min(
+    config = load_config(config_path)
+    effective_seed = config.seed if seed is None else seed
+    effective_max_generation = min(
         max_generation_tokens,
         config.worker.capabilities.max_generation_tokens,
     )
-
+    reusable = {
+        str(case.get("caseId")): dict(case)
+        for case in completed_cases
+        if case.get("seed") == effective_seed
+        and case.get("caseId")
+        and (case.get("mode") or "copy") == mode
+    }
+    total = len(tiers) * len(positions) * trials
     backend = backend_factory(config)
     records: list[dict[str, Any]] = []
+    identity: dict[str, Any] = {}
+    resumed = 0
     try:
         backend.open()
         for tier in tiers:
             for position in positions:
                 for trial in range(1, trials + 1):
+                    case_id = f"{int(tier)}-{position}-{trial}"
+                    if case_id in reusable:
+                        records.append(reusable[case_id])
+                        resumed += 1
+                        continue
                     record = run_case(
                         backend=backend,
                         config=config,
-                        tier=tier,
+                        tier=int(tier),
                         position=position,
                         trial=trial,
                         seed=effective_seed,
                         tolerance_tokens=tolerance_tokens,
-                        max_generation_tokens=effective_max_gen,
+                        max_generation_tokens=effective_max_generation,
+                        mode=mode,
                     )
                     records.append(record)
-
+                    if on_case is not None:
+                        on_case(record, len(records), total)
         identity = model_directory_identity(backend.model_path)
-        aggregated = aggregate_records(
-            records=records,
-            tiers=tiers,
-            positions=positions,
-            trials=trials,
-        )
-
-        return {
-            "schemaVersion": 1,
-            "createdAt": datetime.now(timezone.utc).isoformat(),
-            "model": {
-                "repository": str(backend.model_path),
-                "identity": identity,
-            },
-            "reproducibility": {
-                "seed": effective_seed,
-                "toleranceTokens": tolerance_tokens,
-                "maxGenerationTokens": effective_max_gen,
-            },
-            "results": aggregated,
-        }
     finally:
         backend.close()
+
+    aggregate = aggregate_records(records, tiers, positions, trials)
+    return {
+        "schemaVersion": 1,
+        "createdAt": datetime.now(timezone.utc).isoformat(),
+        "metadata": {
+            "modelName": config.model.repository,
+            "modelSha256": identity.get("sha256"),
+            "mode": mode,
+            "seed": effective_seed,
+            "toleranceTokens": tolerance_tokens,
+            "maxGenerationTokens": effective_max_generation,
+            "resumedCases": resumed,
+        },
+        "model": {
+            "repository": config.model.repository,
+            "localPath": str(getattr(backend, "model_path", "")),
+            "identity": identity,
+        },
+        "reproducibility": {
+            "mode": mode,
+            "seed": effective_seed,
+            "toleranceTokens": tolerance_tokens,
+            "maxGenerationTokens": effective_max_generation,
+        },
+        "aggregate": aggregate,
+        "cases": records,
+    }

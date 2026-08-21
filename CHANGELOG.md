@@ -6,6 +6,12 @@ All notable changes to MLX Swarm are documented in this file.
 
 ### Added
 
+- Local context-capacity benchmark (`python -m mlx_swarm.context_benchmark`):
+  exact edit-manifest success by rendered prompt size across tiers, anchor
+  positions, and trials on one resident backend; checkpoints every case to
+  `cases.jsonl`, prints per-case progress, and resumes with `--resume`.
+  `--mode retrieve` makes the model locate the anchor and author the
+  manifest, scored by applying the edit exactly as the runtime does.
 - Electron desktop app (`mlx-swarm app`): open a folder, live graph, Apply and
   Reject in a task inspector, and a docked PTY. The browser cockpit still
   serves the same API at `127.0.0.1:8765`.
@@ -20,6 +26,8 @@ All notable changes to MLX Swarm are documented in this file.
 
 ### Changed
 
+- Gate normalization strips only a leading reasoning block; a `</think>`
+  quoted inside a JSON or fenced payload no longer truncates the output.
 - Forbidden diff-metadata detection matches line prefixes only, so patch
   bodies may mention phrases such as "copy to " without failing the gate.
 - README describes the desktop app, Cursor skill install, and 400 collected

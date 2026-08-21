@@ -1,48 +1,84 @@
 # Context Capacity Benchmark Architecture
 
+This page describes the local-only exact-edit context benchmark. It measures
+whether the configured MLX model can return one exact edit manifest as
+rendered prompt size grows.
+
 ## Overview
-The `context_benchmark` module is a standalone, observational tool designed to measure the effective context window of a configured local MLX model for exact edit-manifest success. It operates independently of the main MLX Swarm executor, ensuring that normal workspace prompting, session management, and backend generation behaviors remain completely unmodified.
+
+The CLI is a standalone observational runner. It does not change executor,
+prompting, or session behavior.
+
+`python -m mlx_swarm.context_benchmark` loads one resident
+`MLXBatchBackend`, fits each case with `_render_prompt`, scores with
+`normalize_output`, and writes `results.json` plus `report.md`.
 
 ## Core Components
 
-### 2. Pure Modules
-- **`context_benchmark_types`**: Defines the data structures for benchmark cases, tiers, positions, and results.
-- **`context_benchmark_prompt`**: Constructs the raw prompt string for a given case, integrating context, distractors, and anchors.
-- **`context_benchmark_fit`**: Uses the real chat-template tokenizer to calculate `renderedPromptTokens`. It rejects cases where the token count exceeds the requested tier plus `--tolerance-tokens`.
-- **`context_benchmark_score`**: Applies `normalize_output` to the model's response and scores it against the expected edit manifest using exact equality checks.
-- **`context_benchmark_aggregate`**: Collects results, calculates success rates, and identifies the highest all-pass tier.
-- **`context_benchmark_report`**: Generates the human-readable `report.md` summary.
+Split modules keep prompt construction, fitting, scoring, and running
+separate so each concern stays testable without loading weights.
 
-### 3. Runner Modules
-- **`context_benchmark_case`**: Handles the lifecycle of a single benchmark case: prompt construction, token fitting, backend invocation, and result recording.
-- **`context_benchmark_runtime`**: Orchestrates the promotion matrix (tiers x positions x trials). It opens a single `MLXBatchBackend` instance, iterates through cases sequentially with `temperature=0`, and collects results.
-- **`context_benchmark` (CLI)**: The entry point (`python -m mlx_swarm.context_benchmark`) that parses arguments (config, output-dir, tiers, positions, trials, tolerance, seed) and initiates the runtime.
-- **Artifacts**: Emits `results.json` (machine-readable data) and `report.md` (human-readable summary) containing failure taxonomy, success rates, highest all-pass tier, token/time/load totals, model identity, and reproducibility parameters.
+### Pure Modules
+
+These modules have no backend or filesystem side effects.
+
+- **`context_benchmark_types`**: Shared positions, outcomes, `PromptFit`, and `ScoreResult`.
+- **`context_benchmark_prompt`**: JSON-only wrapper, one `TARGET_OLD` haystack, deterministic distractors, and two modes: `copy` states the exact manifest to return; `retrieve` names the change and the model must find the anchor and author the manifest.
+- **`context_benchmark_fit`**: Binary-search unit counts against real rendered tokens.
+- **`context_benchmark_score`**: Exact normalized one-edit manifest equality; in `retrieve` mode a manifest also passes when it applies the way `materialize_edit_manifest` applies edit-manifest-v1 (one non-empty `old` that occurs once in the file and reproduces the expected file).
+- **`context_benchmark_aggregate`**: Pass rates and the highest all-pass tier.
+- **`context_benchmark_report`**: Markdown summary of a schema-v1 payload.
+
+### Runner Modules
+
+These modules open one backend and emit artifacts.
+
+- **`context_benchmark_case`**: Fit, optional singleton `generate`, and one case record with `wallSeconds` and `peakMemoryGigabytes`.
+- **`context_benchmark_runtime`**: Sequential tier × position × trial matrix with an `on_case` observer and `completed_cases` reuse for resumed runs.
+- **`context_benchmark`**: CLI for `--config`, `--output-dir`, tiers, positions, trials, tolerance, seed, `--mode`, `--resume`, and `--quiet`; appends one `cases.jsonl` record and one stderr progress line per finished case.
 
 ## Key Design Principles
 
-- **Observational Only**: This benchmark does not modify normal workspace truncation, executor behavior, or backend generation configurations. It is purely for measurement.
-- **Real Tokenization**: Uses the actual chat-template tokenizer to determine prompt length, avoiding character-count ambiguities. Cases exceeding the configured tolerance are explicitly classified as `invalid_fit_out_of_tolerance`.
-- **One-Case-At-A-Time**: To isolate variables and ensure deterministic results, each benchmark case is submitted individually to the resident backend.
-- **Exact Scoring**: Results are scored based on exact normalized manifest equality. Approximate or semantically similar edits are not accepted.
-- **Failure Taxonomy**: Results are classified into categories: `pass`, `invalid_json`, `invalid_schema`, `wrong_edit`, `token_fit_out_of_tolerance`, `suspected_token_limit`, or `inference_error`.
+The benchmark is local, exact, and sequential. It never calls a frontier
+adapter.
+
+- **Observational only**: no executor or workspace-prompt changes.
+- **Real tokenization**: `_render_prompt` counts tokens; out-of-tolerance cases are `token_fit_out_of_tolerance`.
+- **One case at a time**: `generate([task], [prompt])` with temperature 0.
+- **Exact scoring**: in `copy` mode only the normalized expected manifest passes; in `retrieve` mode the applied file must equal the expected file, so any unique anchor is exact and a near-miss is `wrong_edit`.
+- **Failure taxonomy**: `pass`, `invalid_json`, `invalid_schema`, `wrong_edit`, `token_fit_out_of_tolerance`, `suspected_token_limit`, `inference_error`.
+- **Checkpointed**: every finished case is appended to `cases.jsonl` before the next one starts, so an interrupted matrix keeps its evidence; `--resume` reuses records whose `caseId` and `seed` match instead of re-running them.
+- **Observable**: each case records wall time and peak memory next to generation time, so a slow case can be attributed to host stalls rather than the model.
 
 ## Testing Strategy
-Unit tests for this module must:
-- Inject token-count and backend seams (mocking `MLXBatchBackend` and tokenizer outputs).
-- **Not** import or load MLX model weights.
-- **Not** require network access or a frontier adapter.
-- Verify that the runner correctly handles token fitting, backend calls, and artifact generation.
+
+Unit tests inject tokenizer and backend seams. They must not import `mlx`
+or `mlx_lm`, load weights, use the network, or run the real matrix.
 
 ## Integration Points
-- **Backend**: Uses `MLXBatchBackend` and respects its metrics (e.g., `renderedPromptTokens`, `hitTokenLimit`).
-- **Gates**: Uses `OutputGate` for normalization and validation of model outputs.
-- **Config**: Uses `load_config` and `TaskDef` from the existing configuration system.
+
+The runner reuses existing load, render, and gate contracts.
+
+- **Backend**: `MLXBatchBackend`, `_render_prompt`, `renderedPromptTokens`, `suspectedTokenLimit`.
+- **Gates**: `normalize_output` with a JSON `OutputGate`.
+- **Config**: `load_config` and `TaskDef`.
 
 ## Promotion Matrix
-The benchmark runs a promotion matrix across:
-- **Tiers**: 2048, 4096, 8192, 16384, 32768 tokens.
-- **Positions**: start, middle, end.
-- **Trials**: 3 deterministic trials per tier/position combination.
 
-This structure allows for the identification of the effective context boundary where exact edit reliability degrades, independent of nominal context-window size.
+The published matrix is three trials at start, middle, and end across
+2048, 4096, 8192, 16384, and 32768 rendered-token tiers.
+
+The highest all-pass tier is the largest requested tier where every
+position and trial passed. See [[src/mlx_swarm/context_benchmark.py]].
+
+## Measured Capacity
+
+Prefill dominates: the model emits the same 44-token manifest at every
+tier, so case time grows linearly with rendered tokens.
+
+On an M4 Pro a 32768-token case takes about 90 s (copy) or 50 s
+(retrieve) at roughly 22 GB peak, and both modes pass every cell of the
+promotion matrix on the calibrated Qwen3.6-35B-A3B-4bit worker.
+Each checkpointed record is the evidence; the runbook in
+`benchmarks/context-capacity` carries the measured durations and the
+full matrix command.

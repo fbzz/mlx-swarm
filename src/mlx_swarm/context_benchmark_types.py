@@ -1,15 +1,15 @@
-"""Context benchmark type definitions and shared taxonomies."""
+"""Shared records and taxonomies for the local context benchmark."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, Tuple
+from typing import Any
 
-__all__ = ["PromptFit", "ScoreResult", "POSITIONS", "OUTCOMES"]
+__all__ = ["POSITIONS", "OUTCOMES", "PromptFit", "ScoreResult"]
 
-POSITIONS: Tuple[str, ...] = ("start", "middle", "end")
+POSITIONS: tuple[str, ...] = ("start", "middle", "end")
 
-OUTCOMES: Tuple[str, ...] = (
+OUTCOMES: tuple[str, ...] = (
     "pass",
     "token_fit_out_of_tolerance",
     "suspected_token_limit",
@@ -22,16 +22,13 @@ OUTCOMES: Tuple[str, ...] = (
 
 @dataclass(frozen=True)
 class PromptFit:
-    """Immutable record of prompt fitting metrics."""
-
     prompt: str
     requested_tokens: int
     rendered_tokens: int
     unit_count: int
     within_tolerance: bool
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Return a JSON-safe camelCase-key dictionary."""
+    def to_dict(self) -> dict[str, Any]:
         return {
             "prompt": self.prompt,
             "requestedTokens": self.requested_tokens,
@@ -43,14 +40,11 @@ class PromptFit:
 
 @dataclass(frozen=True)
 class ScoreResult:
-    """Immutable record of benchmark scoring outcomes."""
-
     outcome: str
-    normalizations: Tuple[str, ...] = field(default_factory=tuple)
+    normalizations: tuple[str, ...] = field(default_factory=tuple)
     detail: str = ""
 
-    def to_dict(self) -> Dict[str, Any]:
-        """Return a JSON-safe camelCase-key dictionary."""
+    def to_dict(self) -> dict[str, Any]:
         return {
             "outcome": self.outcome,
             "normalizations": list(self.normalizations),

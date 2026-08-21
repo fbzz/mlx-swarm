@@ -1,92 +1,123 @@
-"""Context benchmark scoring and validation utilities."""
+"""Exact edit-manifest scoring for the local context benchmark."""
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Tuple
+from typing import Any
 
-from .context_benchmark_types import OUTCOMES, ScoreResult
-from .context_benchmark_prompt import SYNTHETIC_PATH, TARGET_OLD, TARGET_NEW
-from .gates import normalize_output, OutputGate
+from .context_benchmark_prompt import (
+    SYNTHETIC_PATH,
+    TARGET_NEW,
+    TARGET_OLD,
+    manifest_json,
+)
+from .context_benchmark_types import ScoreResult
+from .contracts import OutputGate
+from .gates import normalize_output
 
 __all__ = ["expected_manifest", "score_output"]
 
 
-def expected_manifest() -> Dict[str, Any]:
-    """Return the exact JSON manifest expected for a successful benchmark case."""
-    return {
-        "edits": [
-            {
-                "path": SYNTHETIC_PATH,
-                "old": TARGET_OLD,
-                "new": TARGET_NEW,
-            }
-        ]
-    }
+def expected_manifest() -> dict[str, Any]:
+    parsed = json.loads(manifest_json())
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Context-benchmark manifest must be a JSON object.")
+    return parsed
 
 
-def score_output(raw_output: str, suspected_token_limit: bool = False) -> ScoreResult:
-    """Score a raw model output against the expected benchmark manifest.
+def score_output(
+    raw_output: str,
+    suspected_token_limit: bool = False,
+    *,
+    source: str | None = None,
+) -> ScoreResult:
+    """Score one completion.
 
-    Args:
-        raw_output: The raw string output from the model.
-        suspected_token_limit: Flag indicating if the output was truncated.
-
-    Returns:
-        A ScoreResult indicating the outcome of the scoring.
+    Without ``source`` (copy mode) only the normalized expected manifest
+    passes. With ``source`` (retrieve mode) a manifest also passes when it
+    applies the way the runtime applies edit-manifest-v1: one edit on the
+    synthetic path whose non-empty ``old`` occurs exactly once in the file
+    and whose replacement reproduces the expected file, so a smaller or
+    larger unique anchor is as correct as the canonical one.
     """
     gate = OutputGate(output_format="json", strip_single_code_fence=True)
     normalized, normalizations = normalize_output(raw_output, gate)
-
+    names = tuple(normalizations)
     try:
         parsed = json.loads(normalized)
     except (json.JSONDecodeError, TypeError):
         return ScoreResult(
             outcome="invalid_json",
-            normalizations=tuple(normalizations),
-            detail="Failed to parse normalized output as JSON.",
+            normalizations=names,
+            detail=_detail("Failed to parse normalized output as JSON."),
         )
-
-    if not isinstance(parsed, dict):
-        return ScoreResult(
-            outcome="invalid_schema",
-            normalizations=tuple(normalizations),
-            detail="Normalized output is not a JSON object.",
-        )
-
-    expected = expected_manifest()
-
-    if parsed == expected:
+    if parsed == expected_manifest():
         return ScoreResult(
             outcome="pass",
-            normalizations=tuple(normalizations),
-            detail="Output matches expected manifest exactly.",
+            normalizations=names,
+            detail=_detail("Output matches expected manifest exactly."),
         )
-
+    applied_detail: str | None = None
+    if source is not None and _valid_edit_shape(parsed):
+        applied_detail = _applied_edit_detail(parsed["edits"][0], source)
+        if applied_detail is None:
+            return ScoreResult(
+                outcome="pass",
+                normalizations=names,
+                detail=_detail("Applied edit reproduces the expected file."),
+            )
     if suspected_token_limit:
         return ScoreResult(
             outcome="suspected_token_limit",
-            normalizations=tuple(normalizations),
-            detail="Output may be truncated due to token limits.",
+            normalizations=names,
+            detail=_detail("Non-exact completion was flagged as token-limited."),
         )
-
-    # Check for valid schema structure but wrong content
-    edits = parsed.get("edits")
-    if (
-        isinstance(edits, list)
-        and len(edits) == 1
-        and isinstance(edits[0], dict)
-        and set(edits[0].keys()) == {"path", "old", "new"}
-        and all(isinstance(v, str) for v in edits[0].values())
-    ):
+    if _valid_edit_shape(parsed):
         return ScoreResult(
             outcome="wrong_edit",
-            normalizations=tuple(normalizations),
-            detail="Valid schema but content does not match expected manifest.",
+            normalizations=names,
+            detail=_detail(
+                applied_detail
+                or "Valid schema but content does not match expected manifest."
+            ),
         )
-
     return ScoreResult(
         outcome="invalid_schema",
-        normalizations=tuple(normalizations),
-        detail="Output does not match expected schema structure.",
+        normalizations=names,
+        detail=_detail("Output does not match expected schema structure."),
     )
+
+
+def _applied_edit_detail(edit: dict[str, str], source: str) -> str | None:
+    """Return None when the edit applies to the expected file, else why not."""
+    if edit["path"] != SYNTHETIC_PATH:
+        return f"Edit path is not {SYNTHETIC_PATH}."
+    old, new = edit["old"], edit["new"]
+    if not old:
+        return "Old text is empty."
+    if old == new:
+        return "Edit is a no-op."
+    occurrences = source.count(old)
+    if occurrences != 1:
+        return f"Old text must match exactly once in the file; found {occurrences}."
+    if source.replace(old, new, 1) != source.replace(TARGET_OLD, TARGET_NEW, 1):
+        return "Applied edit does not reproduce the expected file."
+    return None
+
+
+def _valid_edit_shape(parsed: Any) -> bool:
+    if not isinstance(parsed, dict) or set(parsed) != {"edits"}:
+        return False
+    edits = parsed["edits"]
+    if not isinstance(edits, list) or len(edits) != 1:
+        return False
+    edit = edits[0]
+    return (
+        isinstance(edit, dict)
+        and set(edit) == {"path", "old", "new"}
+        and all(isinstance(value, str) for value in edit.values())
+    )
+
+
+def _detail(text: str) -> str:
+    return text[:240]
