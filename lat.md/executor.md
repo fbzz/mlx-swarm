@@ -74,7 +74,9 @@ Git commits without duplicate apply. See
 ## Repair Loop
 
 After initial generation, rejected tasks with remaining task-level and global
-`--max-repair` budget enter the repair loop. The CLI and cockpit default the
+`--max-repair` budget enter the repair loop.
+
+The CLI and cockpit default the
 global cap to one; tasks still opt in per task, and plan tasks that omit
 `maxRepairAttempts` keep the zero default:
 

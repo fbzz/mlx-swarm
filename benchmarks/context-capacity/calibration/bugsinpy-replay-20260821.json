@@ -1,0 +1,289 @@
+{
+  "schemaVersion": 1,
+  "replayId": "20260821t115339z-544a8ab5",
+  "evaluationId": "bugsinpy-sonnet-preliminary-20260818t181355z",
+  "workerMode": "reasoning-edit",
+  "reasoningMaxTokens": 768,
+  "frontierCalls": 0,
+  "planSourceType": "frozen-frontier",
+  "diagnosticOnly": false,
+  "mlxSwarmCommit": "05d9ca668dba3cbca8a7ea9cee634c4aff7c1ce8",
+  "model": {
+    "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "revision": "",
+    "localPath": ""
+  },
+  "requiredCases": [
+    "black-11",
+    "fastapi-6"
+  ],
+  "passedCases": [],
+  "results": [
+    {
+      "schemaVersion": 1,
+      "replayId": "20260821t115339z-544a8ab5",
+      "evaluationId": "bugsinpy-sonnet-preliminary-20260818t181355z",
+      "caseId": "black-11",
+      "status": "invalid",
+      "score": 0,
+      "workerMode": "reasoning-edit",
+      "reasoningMaxTokens": 768,
+      "frontierCalls": 0,
+      "planSourceType": "frozen-frontier",
+      "diagnosticOnly": false,
+      "sourcePlan": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/cases/black-11/arms/mlx-swarm/artifacts/_commander/requests/eval-black-11/plan.validated.json",
+      "sourcePlanSha256": "4029f926f3216703e1af781fd5d2d649f5bc3a24de2d85b45591b50fc306fba2",
+      "sourcePromptEvidence": [
+        {
+          "taskId": "apply-frontier-edits",
+          "promptSha256": "af1f00b35d58747abb9d3f7469f62888b93de70f063efb6c9070770b1e974668",
+          "path": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/cases/black-11/arms/mlx-swarm/artifacts/black-11-splitline-misplaced-comment-fix/20260818T184746Z-b2ab944a/attempts/apply-frontier-edits/attempt-001.json"
+        }
+      ],
+      "sessionDir": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/local-replays/20260821t115339z-544a8ab5/black-11/artifacts/black-11-splitline-misplaced-comment-fix/20260821T115340Z-e00b088a",
+      "elapsedSeconds": 57.00914970800659,
+      "localUsage": {
+        "promptTokens": 12628,
+        "generationTokens": 941,
+        "generationCalls": 2,
+        "modelLoads": 1
+      },
+      "taskEvidence": {
+        "apply-frontier-edits": {
+          "status": "rejected_by_operator",
+          "error": "Verifier infrastructure failed; measurement is invalid.",
+          "gateResult": {
+            "configured": true,
+            "passed": true,
+            "violations": [],
+            "normalizations": [
+              "edit-manifest-v1-to-unified-diff"
+            ]
+          },
+          "artifact": {
+            "schemaVersion": 1,
+            "taskId": "apply-frontier-edits",
+            "artifactType": "patch",
+            "sha256": "c44cea9bfa55a5808a983d00f336ade34b53215d9fbf50025a3b5541848f2a15",
+            "payload": "payload.diff",
+            "affectedPaths": [
+              "black.py"
+            ],
+            "allowedPaths": [
+              "CONTRIBUTING.md",
+              "Pipfile",
+              "black.py",
+              "blackd.py",
+              "blib2to3",
+              "mypy.ini",
+              "plugin",
+              "profiling"
+            ],
+            "verification": [
+              "bugsinpy-acceptance"
+            ],
+            "baseCommit": "4cd559744c93e062733e66372aa2d0ed2ac8b833",
+            "createdAt": "2026-08-21T11:54:33.086218Z",
+            "decisionStatus": "awaiting_approval"
+          },
+          "verificationResults": [
+            {
+              "schemaVersion": 2,
+              "taskId": "apply-frontier-edits",
+              "profileId": "bugsinpy-acceptance",
+              "attempt": 1,
+              "argv": [
+                "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+                "-m",
+                "mlx_swarm.evaluation",
+                "verify-case",
+                "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/cases/black-11/verifier.json"
+              ],
+              "cwd": ".",
+              "timeoutSeconds": 1800,
+              "startedAt": "2026-08-21T11:54:35.020209Z",
+              "finishedAt": "2026-08-21T11:54:35.518082Z",
+              "elapsedSeconds": 0.4978705829998944,
+              "exitCode": 2,
+              "timedOut": false,
+              "output": "artifacts/apply-frontier-edits/verification/bugsinpy-acceptance/attempt-001.log",
+              "outputSha256": "1eee459e5c3005faa5509779867768a7427898804174341ce1ce9c7cd30e632b",
+              "outputBytes": 183,
+              "outputTruncated": false,
+              "trackedChangesRejected": [],
+              "trackedChangesRestored": [],
+              "workspaceChanges": [],
+              "remainingWorkspaceChanges": [],
+              "lineageError": null,
+              "processGroupCleanupError": null,
+              "passed": false
+            }
+          ],
+          "generationAttempts": [
+            {
+              "attempt": 1,
+              "phase": "generation",
+              "path": "attempts/apply-frontier-edits/attempt-001.json",
+              "promptSha256": "af1f00b35d58747abb9d3f7469f62888b93de70f063efb6c9070770b1e974668",
+              "outputSha256": "f6d7a30c8c77bf6502748ac605bfa142088ecdeccab173a94bfd6e172e837596",
+              "gatePassed": true,
+              "repeatedOutput": false
+            }
+          ],
+          "reasoningAttempts": [
+            {
+              "attempt": 1,
+              "phase": "generation-reasoning",
+              "path": "reasoning-attempts/apply-frontier-edits/attempt-001.json",
+              "promptSha256": "c36d9656c9bd77377138227359061d3e020a0196520211c96222ce13623d4753",
+              "outputSha256": "31d10b732ea65c5ae382fc4deb341f59c48f7c3a32ce9f93bef8d91bbe9e962e"
+            }
+          ]
+        }
+      },
+      "oracle": {
+        "passed": false,
+        "exitCode": null,
+        "evidence": "Verifier infrastructure failed independently of the candidate: infrastructure_error:"
+      },
+      "recordedAt": "2026-08-21T11:54:37.882466+00:00"
+    },
+    {
+      "schemaVersion": 1,
+      "replayId": "20260821t115339z-544a8ab5",
+      "evaluationId": "bugsinpy-sonnet-preliminary-20260818t181355z",
+      "caseId": "fastapi-6",
+      "status": "invalid",
+      "score": 0,
+      "workerMode": "reasoning-edit",
+      "reasoningMaxTokens": 768,
+      "frontierCalls": 0,
+      "planSourceType": "frozen-frontier",
+      "diagnosticOnly": false,
+      "sourcePlan": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/cases/fastapi-6/arms/mlx-swarm/artifacts/_commander/requests/eval-fastapi-6/plan.validated.json",
+      "sourcePlanSha256": "5b2f7d650f1f8a21f350fddfdb2853c4f8f9b2ebbe8edb83bb0bfa777d6f1734",
+      "sourcePromptEvidence": [
+        {
+          "taskId": "apply-frontier-edits",
+          "promptSha256": "edfbdb0f3316010f44aaa87918cc4ee08fc2819f2ff63a6da51719397ff1b22e",
+          "path": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/cases/fastapi-6/arms/mlx-swarm/artifacts/fastapi6-form-bare-sequence-fix/20260818T185044Z-509d490d/attempts/apply-frontier-edits/attempt-001.json"
+        }
+      ],
+      "sessionDir": "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/local-replays/20260821t115339z-544a8ab5/fastapi-6/artifacts/fastapi6-form-bare-sequence-fix/20260821T115441Z-0163be71",
+      "elapsedSeconds": 49.0311223749959,
+      "localUsage": {
+        "promptTokens": 7999,
+        "generationTokens": 898,
+        "generationCalls": 2,
+        "modelLoads": 1
+      },
+      "taskEvidence": {
+        "apply-frontier-edits": {
+          "status": "rejected_by_operator",
+          "error": "Verifier infrastructure failed; measurement is invalid.",
+          "gateResult": {
+            "configured": true,
+            "passed": true,
+            "violations": [],
+            "normalizations": [
+              "edit-manifest-v1-to-unified-diff"
+            ]
+          },
+          "artifact": {
+            "schemaVersion": 1,
+            "taskId": "apply-frontier-edits",
+            "artifactType": "patch",
+            "sha256": "28926afd7051ede4b8330f7cbd9799febec8b97cd29032a67f304707247549c8",
+            "payload": "payload.diff",
+            "affectedPaths": [
+              "fastapi/dependencies/utils.py"
+            ],
+            "allowedPaths": [
+              "CONTRIBUTING.md",
+              "fastapi",
+              "mypy.ini",
+              "pending_tests",
+              "scripts"
+            ],
+            "verification": [
+              "bugsinpy-acceptance"
+            ],
+            "baseCommit": "e886b8d9c3c0d908a03e1c68bd2b4d2cddb56161",
+            "createdAt": "2026-08-21T11:55:27.814488Z",
+            "decisionStatus": "awaiting_approval"
+          },
+          "verificationResults": [
+            {
+              "schemaVersion": 2,
+              "taskId": "apply-frontier-edits",
+              "profileId": "bugsinpy-acceptance",
+              "attempt": 1,
+              "argv": [
+                "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3",
+                "-m",
+                "mlx_swarm.evaluation",
+                "verify-case",
+                "/Users/fzuin/Desktop/swarm-agents/.swarm/evaluations/bugsinpy-sonnet-preliminary-20260818t181355z/cases/fastapi-6/verifier.json"
+              ],
+              "cwd": ".",
+              "timeoutSeconds": 1800,
+              "startedAt": "2026-08-21T11:55:29.698534Z",
+              "finishedAt": "2026-08-21T11:55:30.185021Z",
+              "elapsedSeconds": 0.4864748330001021,
+              "exitCode": 2,
+              "timedOut": false,
+              "output": "artifacts/apply-frontier-edits/verification/bugsinpy-acceptance/attempt-001.log",
+              "outputSha256": "1eee459e5c3005faa5509779867768a7427898804174341ce1ce9c7cd30e632b",
+              "outputBytes": 183,
+              "outputTruncated": false,
+              "trackedChangesRejected": [],
+              "trackedChangesRestored": [],
+              "workspaceChanges": [],
+              "remainingWorkspaceChanges": [],
+              "lineageError": null,
+              "processGroupCleanupError": null,
+              "passed": false
+            }
+          ],
+          "generationAttempts": [
+            {
+              "attempt": 1,
+              "phase": "generation",
+              "path": "attempts/apply-frontier-edits/attempt-001.json",
+              "promptSha256": "edfbdb0f3316010f44aaa87918cc4ee08fc2819f2ff63a6da51719397ff1b22e",
+              "outputSha256": "9c4e425b913249caee82c619e89c54ca81267eae42e3eecf8ba1ac92a2b7664f",
+              "gatePassed": true,
+              "repeatedOutput": false
+            }
+          ],
+          "reasoningAttempts": [
+            {
+              "attempt": 1,
+              "phase": "generation-reasoning",
+              "path": "reasoning-attempts/apply-frontier-edits/attempt-001.json",
+              "promptSha256": "a843444630aee23f2eae5caf2a339b2901e48c65d083c205ed77e812f787b649",
+              "outputSha256": "34a6d28440138c7923450b4b68d6c32fc65238ad4ec3b137aa66feeb664cb575"
+            }
+          ]
+        }
+      },
+      "oracle": {
+        "passed": false,
+        "exitCode": null,
+        "evidence": "Verifier infrastructure failed independently of the candidate: infrastructure_error:"
+      },
+      "recordedAt": "2026-08-21T11:55:32.412152+00:00"
+    }
+  ],
+  "promotionGate": {
+    "status": "failed",
+    "measuredEligible": false,
+    "requiredCases": [
+      "black-11",
+      "fastapi-6"
+    ],
+    "passedCases": [],
+    "reason": "Measured work remains locked until every frozen calibration replay passes the independent oracle."
+  },
+  "recordedAt": "2026-08-21T11:55:32.412864+00:00"
+}

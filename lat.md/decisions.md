@@ -87,6 +87,7 @@ Model resolution uses local cache only (local_files_only=True for HuggingFace). 
 
 Frontier-authored deterministic edits pass through the same gate as model
 output so every artifact receives identical normalization and validation.
+
 Instead of exempting them from the size gate, plan validation rejects a task
 whose serialized `deterministicEdits` exceed its own `gate.maxCharacters` —
 converting a guaranteed mid-run cascade into an import-time error. Runtime
@@ -97,6 +98,7 @@ gate failures on deterministic edits now name the exact violations.
 Re-encoding decoded output does not reliably reproduce the generated token
 count, so the backend reports an exact `hitTokenLimit` alongside a
 `suspectedTokenLimit` that fires within a 16-token margin of the ceiling.
+
 The executor treats the suspicion as truncation only when the gate also
 failed: a gate-passing artifact near its ceiling is complete, so a margin
 false positive never fails good output. Recovering the real per-sequence
@@ -108,7 +110,9 @@ deterministic-replay skip.
 ## Smart Repair Escalates Only max_tokens
 
 A truncated task with repair budget retries once with a doubled generation
-ceiling bounded by the capability maximum and declared context window. Repair
+ceiling bounded by the capability maximum and declared context window.
+
+Repair
 never varies temperature or seed: sampler settings key the MLX batch groups,
 so varying them would fragment batching and destroy replay determinism. A
 repair dispatch whose prompt and effective sampler match a recorded prior
@@ -118,6 +122,7 @@ default the global repair cap to one; plans opt in per task.
 ## Bounded Plan Re-Import With Full Error Reporting
 
 Plan validation accumulates every task error and reports them all at once.
+
 An invalid commander import leaves the claim open for up to three total
 attempts, each with its own numbered receipt and raw evidence; bytes
 identical to any recorded invalid attempt are re-reported without spending
@@ -133,5 +138,6 @@ model.
 
 The cockpit's Approve-and-run and the CLI's `run --approve-preview` bind the
 canonical plan digest and the execution digest in a single operator action.
+
 The digests remain independently computed, recorded, and revalidated — only
 the number of manual copy/paste steps changed, not the authority model.

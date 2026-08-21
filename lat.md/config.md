@@ -140,4 +140,15 @@ Schema-v1 configs reject `workspace` as an unknown field. Schema-v2 workspace
 execution auto-detects the nearest Git top-level above the config directory;
 see [[workspace-execution]].
 
+## Desktop application storage
+
+The desktop app keeps each opened folder self-contained under a project-local
+`.mlx-swarm/` store; see [[src/mlx_swarm/app_storage.py]].
+
+`ensure_project_store` migrates legacy runs and config into the folder and
+copies a legacy global cache once; a thin catalog registers recently opened
+folders without moving their runs, and UI state (terminal split, focus paths)
+round-trips per project. Artifacts stay beside the config unless an absolute
+`artifacts` path overrides the project store.
+
 See [[Architecture]] for how config flows into the executor.
