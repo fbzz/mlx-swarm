@@ -55,16 +55,19 @@ def run_case(
     tolerance_tokens: int,
     max_generation_tokens: int,
     mode: str = "copy",
+    decoys: int = 0,
 ) -> dict[str, Any]:
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
+    if decoys < 0:
+        raise ValueError("decoys must be non-negative.")
     started = time.perf_counter()
     case_id = f"{tier}-{position}-{trial}"
     task = benchmark_task(case_id, max_generation_tokens, seed)
     generation_config = effective_generation_config(task, config)
 
     def prompt_for_units(unit_count: int) -> str:
-        return build_prompt(unit_count, position, trial, seed, mode)
+        return build_prompt(unit_count, position, trial, seed, mode, decoys)
 
     def token_count(prompt: str) -> int:
         return len(
@@ -80,6 +83,7 @@ def run_case(
     record: dict[str, Any] = {
         "caseId": case_id,
         "mode": mode,
+        "decoys": decoys,
         "tier": int(tier),
         "position": position,
         "trial": trial,
@@ -124,7 +128,7 @@ def run_case(
     suspected = bool(group.get("suspectedTokenLimit"))
     raw_output = outputs[0] if outputs else ""
     source = (
-        source_body(fit.unit_count, position, trial, seed)
+        source_body(fit.unit_count, position, trial, seed, decoys)
         if mode == "retrieve"
         else None
     )

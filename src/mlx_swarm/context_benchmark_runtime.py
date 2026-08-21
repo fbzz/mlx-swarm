@@ -31,17 +31,21 @@ def run_benchmark(
     on_case: CaseObserver | None = None,
     completed_cases: Sequence[Mapping[str, Any]] = (),
     mode: str = "copy",
+    decoys: int = 0,
 ) -> dict[str, Any]:
     """Run the tier × position × trial matrix on one resident backend.
 
     ``on_case`` is called after every freshly executed case with the record,
     the number of matrix cells finished so far (resumed cells included), and
     the matrix size. ``completed_cases`` are records from an earlier run of
-    the same matrix; a cell whose ``caseId``, ``seed``, and ``mode`` match is
-    reused instead of re-run, which lets an interrupted run resume.
+    the same matrix; a cell whose ``caseId``, ``seed``, ``mode``, and
+    ``decoys`` match is reused instead of re-run, which lets an interrupted
+    run resume.
     """
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
+    if decoys < 0:
+        raise ValueError("decoys must be nonnegative.")
     if not tiers or not positions:
         raise ValueError("tiers and positions must be nonempty.")
     if trials <= 0:
@@ -63,6 +67,7 @@ def run_benchmark(
         if case.get("seed") == effective_seed
         and case.get("caseId")
         and (case.get("mode") or "copy") == mode
+        and int(case.get("decoys") or 0) == decoys
     }
     total = len(tiers) * len(positions) * trials
     backend = backend_factory(config)
@@ -89,6 +94,7 @@ def run_benchmark(
                         tolerance_tokens=tolerance_tokens,
                         max_generation_tokens=effective_max_generation,
                         mode=mode,
+                        decoys=decoys,
                     )
                     records.append(record)
                     if on_case is not None:
@@ -105,6 +111,7 @@ def run_benchmark(
             "modelName": config.model.repository,
             "modelSha256": identity.get("sha256"),
             "mode": mode,
+            "decoys": decoys,
             "seed": effective_seed,
             "toleranceTokens": tolerance_tokens,
             "maxGenerationTokens": effective_max_generation,
@@ -117,6 +124,7 @@ def run_benchmark(
         },
         "reproducibility": {
             "mode": mode,
+            "decoys": decoys,
             "seed": effective_seed,
             "toleranceTokens": tolerance_tokens,
             "maxGenerationTokens": effective_max_generation,

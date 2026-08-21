@@ -79,6 +79,7 @@ def test_main_writes_expected_artifacts(
     assert captured["max_generation_tokens"] == 256
     assert captured["seed"] == 9
     assert captured["mode"] == "copy"
+    assert captured["decoys"] == 0
     assert captured["completed_cases"] == []
     assert callable(captured["on_case"])
     results_path = output_dir / "results.json"
@@ -255,8 +256,14 @@ def test_parser_defaults() -> None:
     assert args.max_generation_tokens == 512
     assert args.seed is None
     assert args.mode == "copy"
+    assert args.decoys == 0
     assert args.resume is False
     assert args.quiet is False
+
+
+def test_main_rejects_negative_decoys(tmp_path: Path) -> None:
+    with pytest.raises(SystemExit):
+        main(["--config", "c.json", "--output-dir", str(tmp_path), "--decoys", "-1"])
 
 
 def test_parser_mode_choices() -> None:

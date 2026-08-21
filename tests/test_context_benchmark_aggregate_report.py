@@ -105,6 +105,7 @@ def test_render_report_includes_identity_and_escapes_pipes() -> None:
     assert "abc123" in report
     assert "Seed**: 9" in report
     assert "Mode**: copy" in report
+    assert "Decoys**: 0" in report
     assert "n/a" in report
     assert "wrong_edit: 1" in report
     assert "start\\|mid" in report

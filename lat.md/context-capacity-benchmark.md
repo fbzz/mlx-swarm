@@ -23,7 +23,7 @@ separate so each concern stays testable without loading weights.
 These modules have no backend or filesystem side effects.
 
 - **`context_benchmark_types`**: Shared positions, outcomes, `PromptFit`, and `ScoreResult`.
-- **`context_benchmark_prompt`**: JSON-only wrapper, one `TARGET_OLD` haystack, deterministic distractors, and two modes: `copy` states the exact manifest to return; `retrieve` names the change and the model must find the anchor and author the manifest.
+- **`context_benchmark_prompt`**: JSON-only wrapper, one `TARGET_OLD` haystack, deterministic distractors, and two modes: `copy` states the exact manifest to return; `retrieve` names the change and the model must find the anchor and author the manifest; `decoys` adds functions that also return the old literal so only an anchor pinned to the target is unique.
 - **`context_benchmark_fit`**: Binary-search unit counts against real rendered tokens.
 - **`context_benchmark_score`**: Exact normalized one-edit manifest equality; in `retrieve` mode a manifest also passes when it applies the way `materialize_edit_manifest` applies edit-manifest-v1 (one non-empty `old` that occurs once in the file and reproduces the expected file).
 - **`context_benchmark_aggregate`**: Pass rates and the highest all-pass tier.
@@ -35,7 +35,7 @@ These modules open one backend and emit artifacts.
 
 - **`context_benchmark_case`**: Fit, optional singleton `generate`, and one case record with `wallSeconds` and `peakMemoryGigabytes`.
 - **`context_benchmark_runtime`**: Sequential tier × position × trial matrix with an `on_case` observer and `completed_cases` reuse for resumed runs.
-- **`context_benchmark`**: CLI for `--config`, `--output-dir`, tiers, positions, trials, tolerance, seed, `--mode`, `--resume`, and `--quiet`; appends one `cases.jsonl` record and one stderr progress line per finished case.
+- **`context_benchmark`**: CLI for `--config`, `--output-dir`, tiers, positions, trials, tolerance, seed, `--mode`, `--decoys`, `--resume`, and `--quiet`; appends one `cases.jsonl` record and one stderr progress line per finished case.
 
 ## Key Design Principles
 

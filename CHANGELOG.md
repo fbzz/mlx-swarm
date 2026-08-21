@@ -11,7 +11,9 @@ All notable changes to MLX Swarm are documented in this file.
   positions, and trials on one resident backend; checkpoints every case to
   `cases.jsonl`, prints per-case progress, and resumes with `--resume`.
   `--mode retrieve` makes the model locate the anchor and author the
-  manifest, scored by applying the edit exactly as the runtime does.
+  manifest, scored by applying the edit exactly as the runtime does;
+  `--decoys N` plants functions returning the same literal so the anchor
+  must be pinned to the target.
 - Electron desktop app (`mlx-swarm app`): open a folder, live graph, Apply and
   Reject in a task inspector, and a docked PTY. The browser cockpit still
   serves the same API at `127.0.0.1:8765`.

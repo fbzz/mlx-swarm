@@ -107,3 +107,28 @@ def test_retrieve_prompt_names_the_change_without_the_manifest() -> None:
         assert prompt.endswith("Now return only the JSON object. Do not rewrite the file.\n")
         assert build_prompt(4, position, 1, 7, "retrieve") == prompt
         assert build_prompt(4, position, 1, 7, "copy") == build_prompt(4, position, 1, 7)
+
+
+def test_decoys_make_the_bare_literal_ambiguous_but_keep_the_target_unique() -> None:
+    from mlx_swarm.context_benchmark_prompt import decoy_unit
+
+    assert decoy_unit(1, 7, 2) == 'def decoy_1_s7_t2() -> str:\n    return "before"\n'
+    for position in ("start", "middle", "end"):
+        plain = source_body(6, position, 1, 7)
+        decoyed = source_body(6, position, 1, 7, decoys=3)
+        assert plain.count('"before"') == 1
+        assert decoyed.count('"before"') == 4
+        assert decoyed.count(TARGET_OLD) == 1
+        assert decoyed.count("def decoy_") == 3
+        assert decoyed.count("def distractor_") == 6
+        assert source_body(6, position, 1, 7, decoys=3) == decoyed
+        prompt = build_prompt(6, position, 1, 7, "retrieve", 3)
+        assert SOURCE_BEGIN + decoyed + SOURCE_END in prompt
+        assert build_prompt(6, position, 1, 7, "copy", 3) != build_prompt(6, position, 1, 7, "copy")
+    # Decoys are spread through the body, not bunched at one end.
+    body = source_body(10, "start", 1, 7, decoys=3)
+    slots = [body.index(f"def decoy_{i}_") for i in range(3)]
+    assert slots == sorted(slots)
+    assert body.index("def distractor_0_") < slots[0] < body.index("def distractor_9_")
+    with pytest.raises(ValueError):
+        source_body(6, "start", 1, 7, decoys=-1)

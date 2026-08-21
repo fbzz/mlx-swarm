@@ -14,6 +14,7 @@ __all__ = [
     "TARGET_NEW",
     "TARGET_OLD",
     "build_prompt",
+    "decoy_unit",
     "distractor_unit",
     "manifest_json",
     "parse_mode",
@@ -86,6 +87,13 @@ def distractor_unit(index: int, seed: int, trial: int) -> str:
     )
 
 
+def decoy_unit(index: int, seed: int, trial: int) -> str:
+    """A function that also returns "before", so the bare literal is not a
+    unique anchor and the edit must be pinned to the target function."""
+    name = f"decoy_{index}_s{seed}_t{trial}"
+    return f'def {name}() -> str:\n    return "before"\n'
+
+
 def manifest_json() -> str:
     return json.dumps(
         {
@@ -105,21 +113,29 @@ def source_body(
     position: str,
     trial: int,
     seed: int,
+    decoys: int = 0,
 ) -> str:
     if unit_count < 0:
         raise ValueError("unit_count must be non-negative.")
+    if decoys < 0:
+        raise ValueError("decoys must be non-negative.")
     if position not in POSITIONS:
         raise ValueError(f"position must be one of {POSITIONS}")
     if trial <= 0:
         raise ValueError("trial must be positive.")
 
     units = [distractor_unit(index, seed, trial) for index in range(unit_count)]
+    # Spread decoys evenly through the distractors so one sits in every
+    # region the target can occupy; insert back to front so indices hold.
+    for index in reversed(range(decoys)):
+        slot = round((index + 1) * len(units) / (decoys + 1))
+        units.insert(slot, decoy_unit(index, seed, trial))
     if position == "start":
         source_parts = [TARGET_OLD, *units]
     elif position == "end":
         source_parts = [*units, TARGET_OLD]
     else:
-        middle = unit_count // 2
+        middle = len(units) // 2
         source_parts = [*units[:middle], TARGET_OLD, *units[middle:]]
     return "".join(source_parts)
 
@@ -130,10 +146,11 @@ def build_prompt(
     trial: int,
     seed: int,
     mode: str = "copy",
+    decoys: int = 0,
 ) -> str:
     if mode not in MODES:
         raise ValueError(f"mode must be one of {MODES}")
-    source = source_body(unit_count, position, trial, seed)
+    source = source_body(unit_count, position, trial, seed, decoys)
     if mode == "copy":
         manifest = manifest_json()
         return (

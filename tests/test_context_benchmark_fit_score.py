@@ -134,3 +134,20 @@ def test_score_output_retrieve_mode_applies_the_edit() -> None:
         suspected_token_limit=True,
         source=source,
     ).outcome == "suspected_token_limit"
+
+
+def test_score_output_retrieve_mode_rejects_ambiguous_anchor_with_decoys() -> None:
+    from mlx_swarm.context_benchmark_prompt import TARGET_NEW, TARGET_OLD, source_body
+
+    source = source_body(6, "middle", 1, 7, decoys=2)
+
+    def manifest(old: str, new: str) -> str:
+        return json.dumps({"edits": [{"path": "context_probe.py", "old": old, "new": new}]})
+
+    ambiguous = score_output(manifest('"before"', '"after"'), source=source)
+    assert ambiguous.outcome == "wrong_edit"
+    assert "found 3" in ambiguous.detail
+    pinned = manifest(TARGET_OLD.rstrip("\n"), TARGET_NEW.rstrip("\n"))
+    assert score_output(pinned, source=source).outcome == "pass"
+    decoy_edit = manifest('def decoy_0_s7_t1() -> str:\n    return "before"', 'def decoy_0_s7_t1() -> str:\n    return "after"')
+    assert score_output(decoy_edit, source=source).outcome == "wrong_edit"

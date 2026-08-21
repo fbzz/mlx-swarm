@@ -26,6 +26,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
     )
     seed = metadata.get("seed", reproducibility.get("seed", "n/a"))
     mode = metadata.get("mode", reproducibility.get("mode", "copy"))
+    decoys = metadata.get("decoys", reproducibility.get("decoys", 0))
     max_tokens = metadata.get(
         "maxGenerationTokens",
         reproducibility.get("maxGenerationTokens", "n/a"),
@@ -41,6 +42,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
         f"- **Model**: {_cell(model_name)}",
         f"- **Model identity SHA**: {_cell(model_sha)}",
         f"- **Mode**: {_cell(mode)}",
+        f"- **Decoys**: {_cell(decoys)}",
         f"- **Seed**: {_cell(seed)}",
         f"- **Max generation tokens**: {_cell(max_tokens)}",
         f"- **Tolerance tokens**: {_cell(tolerance)}",

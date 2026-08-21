@@ -15,6 +15,9 @@ Before running the full promotion matrix, ensure the following conditions are me
 - **copy** (default): the prompt states the exact manifest and the model must return it unchanged while the haystack grows. This measures output-format reliability under long context.
 - **retrieve**: the prompt only names the change ("in the function named target, change the returned string from before to after") and the model must locate the anchor in the file and author the manifest. Scoring applies the edit the way the runtime applies edit-manifest-v1: one non-empty `old` that occurs exactly once and reproduces the expected file passes, whatever anchor size the model chose; a non-unique anchor, wrong function, wrong path, or no-op is `wrong_edit`. Pass `--mode retrieve`; checkpoints of one mode are never reused by the other.
 
+### Decoys
+`--decoys N` inserts N functions that also `return "before"`, spread evenly through the distractors. The target function stays the only occurrence of the full `def target()` text, so copy mode is unchanged, but in retrieve mode the bare literal is no longer a unique anchor: a manifest whose `old` is just `"before"` is `wrong_edit` (`found N+1`) and the worker must pin the edit to the target function. Default 0; checkpoints with a different decoy count are never reused.
+
 ## Execution Commands
 
 ### Smoke Test
@@ -38,7 +41,7 @@ python -m mlx_swarm.context_benchmark \
   --trials 3 \
   --output-dir ./results/promotion
 ```
-Add `--resume` to the same command to finish a matrix that was interrupted. Add `--mode retrieve` (and a separate `--output-dir`) for the retrieval variant.
+Add `--resume` to the same command to finish a matrix that was interrupted. Add `--mode retrieve` (and a separate `--output-dir`) for the retrieval variant, and `--decoys 3` to make the anchor genuinely ambiguous.
 
 ### Expected Duration
 Generation is a fixed 44-token manifest, so case time is prefill time and grows with the tier. Measured 2026-08-21 on an M4 Pro (48 GiB) with `mlx-community/Qwen3.6-35B-A3B-4bit` over the full 45-case promotion matrix (3 trials × 3 positions per tier), all 45 cases passing:
@@ -79,6 +82,9 @@ Tasks are classified as:
 
 ### Highest All-Pass Tier
 The highest tier in the `--tiers` list where **all** trials for **all** positions resulted in `pass` status. If no tier achieves 100% pass rate, this field will be null.
+
+## Recording the Result
+The measurement is planner-facing evidence, not the worker calibration: `worker.capabilities.calibration` is reserved for the immutable BugsInPy replay digest and must stay `unmeasured` until that replay runs on this machine. Record the context result as one bounded statement in `worker.capabilities.strengths` of the swarm config — highest all-pass tier per mode, trials, the `results.json` SHA-256, and the per-case prefill cost — so the frontier planner sees how much rendered context the worker can be trusted with. Keep `batch.maxPromptCharacters` and `batch.maxBatchPromptTokens` at or below what the matrix demonstrated.
 
 ## Constraints & Guarantees
 - **No Frontier Models**: This benchmark never invokes a frontier model API.

@@ -54,6 +54,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--decoys",
+        type=int,
+        default=0,
+        help=(
+            "Number of decoy functions that also return \"before\" spread "
+            "through the distractors, so the bare literal is not a unique "
+            "anchor (default 0)."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help=(
@@ -99,6 +109,8 @@ def _progress_line(record: dict[str, Any], done: int, total: int) -> str:
 
 def main(argv: Sequence[str] | None = None, stderr: TextIO | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.decoys < 0:
+        raise SystemExit("--decoys must be non-negative.")
     err = sys.stderr if stderr is None else stderr
     args.output_dir.mkdir(parents=True, exist_ok=True)
     cases_path = args.output_dir / CASES_FILENAME
@@ -124,6 +136,7 @@ def main(argv: Sequence[str] | None = None, stderr: TextIO | None = None) -> int
         on_case=on_case,
         completed_cases=completed,
         mode=parse_mode(args.mode),
+        decoys=args.decoys,
     )
     (args.output_dir / "results.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False)

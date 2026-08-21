@@ -310,3 +310,56 @@ def test_run_benchmark_rejects_unknown_mode(tmp_path: Path) -> None:
             backend_factory=lambda loaded: FakeBackend(loaded, model_path=tmp_path / "model"),
             mode="guess",
         )
+
+
+def test_run_benchmark_decoys_flow_into_prompts_records_and_resume(tmp_path: Path) -> None:
+    FakeBackend.instances = []
+    config = _write_config(tmp_path)
+
+    class DecoyBackend(FakeBackend):
+        def generate(
+            self,
+            tasks: list[TaskDef],
+            prompts: list[str],
+        ) -> tuple[list[str], dict[str, Any]]:
+            self.generate_calls.append((tasks, prompts))
+            assert prompts[0].count('return "before"') == 3
+            text = json.dumps({
+                "edits": [{
+                    "path": "context_probe.py",
+                    "old": 'return "before"',
+                    "new": 'return "after"',
+                }]
+            })
+            return [text], {"promptTokens": 7, "generationTokens": 4, "groups": [{}]}
+
+    def factory(loaded: Any) -> DecoyBackend:
+        return DecoyBackend(loaded, model_path=tmp_path / "model")
+
+    undecoyed = {
+        "caseId": "64-start-1", "mode": "retrieve", "decoys": 0, "tier": 64,
+        "position": "start", "trial": 1, "seed": 11, "outcome": "pass",
+    }
+    payload = run_benchmark(
+        config_path=config,
+        tiers=(64,),
+        positions=("start",),
+        trials=1,
+        tolerance_tokens=64,
+        max_generation_tokens=32,
+        seed=11,
+        backend_factory=factory,
+        completed_cases=[undecoyed],
+        mode="retrieve",
+        decoys=2,
+    )
+    backend = FakeBackend.instances[0]
+    assert len(backend.generate_calls) == 1
+    assert payload["metadata"]["resumedCases"] == 0
+    assert payload["metadata"]["decoys"] == 2
+    assert payload["reproducibility"]["decoys"] == 2
+    case = payload["cases"][0]
+    assert case["decoys"] == 2
+    # The bare literal matches the target plus two decoys, so it is rejected.
+    assert case["outcome"] == "wrong_edit"
+    assert "found 3" in case["score"]["detail"]
