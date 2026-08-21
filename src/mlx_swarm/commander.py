@@ -592,6 +592,11 @@ PLAN LIMITS
   name exactly as verification resolves it (for a src layout that is
   `import package`, never `import src.package`) and the test runner
   profile in use, so the worker does not guess an import root.
+- On this worker enumerated test suites emit about 1.7x the character
+  estimate, so set a test-suite max_tokens of 2048 and expect one ceiling
+  escalation; specify each fixture's exact default return value rather than
+  describing it, because the worker will otherwise write a fake whose
+  default contradicts a test that asserts that default.
 - For review tasks, normally set max_tokens to at most \
 {min(REVIEW_DEFAULT_MAX_TOKENS, config.worker.capabilities.max_generation_tokens)}.
   Use at most \

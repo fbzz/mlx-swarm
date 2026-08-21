@@ -90,6 +90,8 @@ scope, and state the importable package name exactly as verification
 resolves it (`import package` for a `src/` layout, never `import
 src.package`).
 
+Two findings from re-running such a plan on this worker: it emits roughly 1.7x the character estimate for enumerated tests, so set a test-suite `max_tokens` of 2048 and expect the runtime's one ceiling escalation; and it will write an internally inconsistent fixture (a fake whose default return value contradicts a test asserting that default), so specify each fixture's exact default return value rather than describing it.
+
 ## Shape the DAG
 
 Plan wide and shallow. Add `dependsOn` ONLY when a task consumes a parent's
