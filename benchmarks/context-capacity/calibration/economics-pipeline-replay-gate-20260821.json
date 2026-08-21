@@ -1,0 +1,34 @@
+{
+  "replayId": "20260821t145204z-cdd20279",
+  "evaluationId": "bugsinpy-sonnet-preliminary-20260821t132535z",
+  "workerMode": "reasoning-edit",
+  "reasoningMaxTokens": 768,
+  "frontierCalls": 0,
+  "mlxSwarmCommit": "0bef8ee1c8bb0fffaed4de450176aa88527bbeae",
+  "model": {
+    "repository": "mlx-community/Qwen3.6-35B-A3B-4bit",
+    "revision": "",
+    "localPath": ""
+  },
+  "requiredCases": [
+    "black-11",
+    "fastapi-6"
+  ],
+  "passedCases": [
+    "black-11",
+    "fastapi-6"
+  ],
+  "promotionGate": {
+    "status": "passed",
+    "measuredEligible": true,
+    "requiredCases": [
+      "black-11",
+      "fastapi-6"
+    ],
+    "passedCases": [
+      "black-11",
+      "fastapi-6"
+    ],
+    "reason": "Every frozen calibration replay passed the independent oracle."
+  }
+}
