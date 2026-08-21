@@ -369,7 +369,7 @@ feature mermaid graph from `mlx-swarm map --format mermaid`, then honors cockpit
 ## UI
 
 [[UI]] server and serialization tests. See [[src/mlx_swarm/ui.py]] and the
-packaged assets under [[src/mlx_swarm/ui_static/index.html]].
+packaged assets under `src/mlx_swarm/ui_static/`.
 
 ### Plan catalog
 Only validated plans inside the approved root are launchable; artifact snapshots,
@@ -457,3 +457,13 @@ bounded one-megabyte logs, and process-group timeouts are asserted.
 Workspace preview, dual-digest launch, artifact decisions, status, cleanup,
 same-origin artifact endpoints, digest mismatch, subprocess arrays, and
 retained branches are covered.
+
+## Desktop app
+
+Project-local `.mlx-swarm` storage and the immutable review projections are
+covered; see [[src/mlx_swarm/app_storage.py]] and [[src/mlx_swarm/review.py]].
+
+Tests assert legacy runs and config migrate into the folder, a legacy global
+cache copies once, the recent-folder catalog does not move runs, UI state
+round-trips, the diff parser exposes file hunks and counts, and the attempt
+loader requires path confinement and matching digests.

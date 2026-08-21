@@ -193,8 +193,11 @@ daemon, pinned-container, or verifier-root failures classify the arm as
 
 ## Token-frugal replay (protocol 16)
 
-Identical frontier completions are transport-cached: every receipt-valid
-call freezes its response and usage receipt under
+Identical frontier completions are transport-cached: a repeated,
+receipt-valid call replays a frozen response and usage receipt at zero
+marginal cost.
+
+Every receipt-valid call freezes its response and usage receipt under
 `.swarm/evaluations/_frontier-cache/`, keyed by adapter, provider, model,
 completion ceiling, reasoning effort, and the prompt digest with wall-clock
 timing strings normalized (run durations vary per preparation and carry no

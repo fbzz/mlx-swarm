@@ -63,8 +63,8 @@ the original.
 
 ## New task
 
-The packaged interface is a React app from
-[[src/mlx_swarm/ui_static/index.html]]. The desktop shell (`mlx-swarm app`)
+The packaged interface is a React app under
+`src/mlx_swarm/ui_static/`. The desktop shell (`mlx-swarm app`)
 uses the same API.
 
 New task fills the top pane with a React Flow graph of features (from
@@ -109,5 +109,24 @@ The optional Codex CLI adapter may import its exact JSONL usage with the
 response; malformed streams are rejected and each accepted phase remains
 separate from local usage. Claude Code skill receipts currently remain
 unavailable rather than estimated.
+## Review surface
+
+The review surface is read-only: it projects a worker's prompt and its
+unified diff for inspection without mutating any artifact; see
+[[src/mlx_swarm/review.py]].
+
+`parse_unified_diff` exposes per-file hunks and added/removed counts, and
+`load_attempts` returns the recorded generation attempts only when each file
+stays confined to the session and its digests match.
+
+## Desktop shell
+
+`mlx-swarm app` runs the same cockpit inside an Electron shell over the local
+API; see [[src/mlx_swarm/desktop_app.py]].
+
+`launch_electron` starts the packaged React interface as a desktop window
+pointed at the running server, so the browser and desktop paths share one
+API and one serialization contract.
+
 The browser and server never invoke a frontier provider directly. See
 [[workspace-execution]].
